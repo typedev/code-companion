@@ -18,7 +18,7 @@ STATUS_CSS_CLASSES = {
 }
 
 
-class GitPanel(Gtk.Box):
+class GitChangesPanel(Gtk.Box):
     """Panel displaying git changes with stage/unstage/commit functionality."""
 
     __gsignals__ = {
@@ -197,8 +197,13 @@ class GitPanel(Gtk.Box):
         branch = self.service.get_branch_name()
         self.branch_label.set_label(branch)
 
-        # Clear content
-        while child := self.content_box.get_first_child():
+        # Clear content - collect children first to avoid modification during iteration
+        children = []
+        child = self.content_box.get_first_child()
+        while child:
+            children.append(child)
+            child = child.get_next_sibling()
+        for child in children:
             self.content_box.remove(child)
 
         # Get status

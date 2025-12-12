@@ -2,7 +2,7 @@ from .history import HistoryService
 from .project_registry import ProjectRegistry
 from .project_lock import ProjectLock
 from .tasks_service import TasksService, Task, TaskInput
-from .git_service import GitService, GitFileStatus, FileStatus
+from .git_service import GitService, GitFileStatus, FileStatus, GitCommit
 
 __all__ = [
     "HistoryService",
@@ -14,4 +14,5 @@ __all__ = [
     "GitService",
     "GitFileStatus",
     "FileStatus",
+    "GitCommit",
 ]

@@ -61,11 +61,10 @@ class ProjectLock:
             if pid == self._pid:
                 return False  # It's us
 
-            # Check if PID exists
-            try:
-                os.kill(pid, 0)  # Signal 0 = check existence
+            # Check if PID exists and is a python process (our app)
+            if self._is_process_alive(pid):
                 return True  # Process exists, locked
-            except OSError:
+            else:
                 # Process doesn't exist, stale lock
                 self.lock_file.unlink()
                 return False
@@ -76,4 +75,73 @@ class ProjectLock:
                 self.lock_file.unlink()
             except OSError:
                 pass
+            return False
+
+    def force_release(self) -> bool:
+        """Force release lock by killing the owning process."""
+        if not self.lock_file.exists():
+            return True
+
+        try:
+            with open(self.lock_file, "r") as f:
+                pid = int(f.read().strip())
+
+            # Don't kill ourselves
+            if pid == self._pid:
+                return True
+
+            # Try to kill the process
+            try:
+                os.kill(pid, 15)  # SIGTERM
+            except OSError:
+                pass  # Process may already be dead
+
+            # Remove lock file
+            try:
+                self.lock_file.unlink()
+            except OSError:
+                pass
+
+            return True
+
+        except (OSError, ValueError):
+            # Remove corrupted lock
+            try:
+                self.lock_file.unlink()
+            except OSError:
+                pass
+            return True
+
+    def get_lock_pid(self) -> int | None:
+        """Get the PID holding the lock, or None if not locked."""
+        if not self.lock_file.exists():
+            return None
+        try:
+            with open(self.lock_file, "r") as f:
+                return int(f.read().strip())
+        except (OSError, ValueError):
+            return None
+
+    def _is_process_alive(self, pid: int) -> bool:
+        """Check if process with given PID is alive and is our app."""
+        try:
+            # Check if process exists
+            os.kill(pid, 0)
+
+            # Verify it's a python process (could be our app)
+            cmdline_path = Path(f"/proc/{pid}/cmdline")
+            if cmdline_path.exists():
+                cmdline = cmdline_path.read_text()
+                # Check if it's python running our app
+                if "python" in cmdline and "claude-companion" in cmdline:
+                    return True
+                elif "python" in cmdline and "main.py" in cmdline:
+                    return True
+                elif "python" in cmdline and "src.main" in cmdline:
+                    return True
+                # PID exists but it's not our app - stale lock
+                return False
+            return True  # Can't read cmdline, assume alive
+
+        except (OSError, PermissionError):
             return False

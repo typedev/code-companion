@@ -76,6 +76,13 @@ class TerminalView(Gtk.Box):
         # Connect signals
         self.terminal.connect("child-exited", self._on_child_exited)
 
+        # Add key event controller for copy/paste shortcuts
+        # Use CAPTURE phase to intercept before terminal processes keys
+        key_controller = Gtk.EventControllerKey()
+        key_controller.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
+        key_controller.connect("key-pressed", self._on_key_pressed)
+        self.terminal.add_controller(key_controller)
+
         # Wrap in scrolled window
         scrolled = Gtk.ScrolledWindow()
         scrolled.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
@@ -83,6 +90,57 @@ class TerminalView(Gtk.Box):
         scrolled.set_vexpand(True)
 
         self.append(scrolled)
+
+    def _on_key_pressed(self, controller, keyval, keycode, state):
+        """Handle key press events for copy/paste."""
+        ctrl_pressed = state & Gdk.ModifierType.CONTROL_MASK
+        shift_pressed = state & Gdk.ModifierType.SHIFT_MASK
+
+        if ctrl_pressed:
+            # Get key name for layout-independent matching
+            key_name = Gdk.keyval_name(keyval)
+
+            # Ctrl+C - copy if there's selection, otherwise let terminal handle it
+            # Support both Latin 'c' and Cyrillic 'с' (Cyrillic_es)
+            if key_name in ("c", "Cyrillic_es") and not shift_pressed:
+                if self.terminal.get_has_selection():
+                    self.terminal.copy_clipboard_format(Vte.Format.TEXT)
+                    return True  # Stop propagation
+                # No selection - let Ctrl+C go through as SIGINT
+                return False
+
+            # Ctrl+V - paste
+            # Support both Latin 'v' and Cyrillic 'м' (Cyrillic_em)
+            if key_name in ("v", "Cyrillic_em") and not shift_pressed:
+                self._paste_from_clipboard()
+                return True  # Stop propagation
+
+            # Ctrl+Shift+C - always copy (standard terminal behavior)
+            if key_name in ("C", "Cyrillic_ES") and shift_pressed:
+                self.terminal.copy_clipboard_format(Vte.Format.TEXT)
+                return True
+
+            # Ctrl+Shift+V - always paste (standard terminal behavior)
+            if key_name in ("V", "Cyrillic_EM") and shift_pressed:
+                self._paste_from_clipboard()
+                return True
+
+        return False  # Let other keys pass through
+
+    def _paste_from_clipboard(self):
+        """Paste text from clipboard directly to terminal."""
+        clipboard = Gdk.Display.get_default().get_clipboard()
+        clipboard.read_text_async(None, self._on_clipboard_text_received)
+
+    def _on_clipboard_text_received(self, clipboard, result):
+        """Handle clipboard text received."""
+        try:
+            text = clipboard.read_text_finish(result)
+            if text:
+                # Feed text directly to terminal as input
+                self.terminal.feed_child(text.encode("utf-8"))
+        except Exception as e:
+            print(f"Clipboard paste error: {e}")
 
     def _spawn_shell(self, working_directory: str | None = None):
         """Spawn a shell in the terminal."""

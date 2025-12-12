@@ -98,8 +98,13 @@ class TasksPanel(Gtk.Box):
 
     def refresh(self):
         """Refresh the tasks list."""
-        # Clear existing
-        while child := self.tasks_box.get_first_child():
+        # Clear existing - collect children first to avoid modification during iteration
+        children = []
+        child = self.tasks_box.get_first_child()
+        while child:
+            children.append(child)
+            child = child.get_next_sibling()
+        for child in children:
             self.tasks_box.remove(child)
 
         # Load tasks

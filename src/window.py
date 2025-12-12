@@ -207,8 +207,7 @@ class MainWindow(Adw.ApplicationWindow):
         projects = self.history_service.get_projects()
 
         # Clear existing
-        while row := self.project_list.get_first_child():
-            self.project_list.remove(row)
+        self.project_list.remove_all()
 
         if not projects:
             # Show empty state in sidebar
@@ -303,8 +302,7 @@ class MainWindow(Adw.ApplicationWindow):
         sessions = self.history_service.get_sessions(project)
 
         # Clear existing
-        while row := self.session_list.get_first_child():
-            self.session_list.remove(row)
+        self.session_list.remove_all()
 
         if not sessions:
             label = Gtk.Label(label="No sessions found")

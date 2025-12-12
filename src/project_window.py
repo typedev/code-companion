@@ -6,7 +6,7 @@ from gi.repository import Adw, Gtk, GLib, Gio
 
 from .models import Session
 from .services import HistoryService, ProjectLock, ProjectRegistry, GitService
-from .widgets import SessionView, TerminalView, FileTree, FileEditor, TasksPanel, GitPanel, DiffView
+from .widgets import SessionView, TerminalView, FileTree, FileEditor, TasksPanel, GitChangesPanel, GitHistoryPanel, DiffView
 
 
 def escape_markup(text: str) -> str:
@@ -131,20 +131,22 @@ class ProjectWindow(Adw.ApplicationWindow):
         return header
 
     def _build_sidebar(self) -> Gtk.Box:
-        """Build the sidebar with Files/Changes tabs."""
+        """Build the sidebar with Files/Git tabs."""
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
 
         # Check if this is a git repo
         self.git_service = GitService(self.project_path)
-        is_git_repo = self.git_service.is_git_repo()
+        self._is_git_repo = self.git_service.is_git_repo()
+        if self._is_git_repo:
+            self.git_service.open()
 
-        # Tab switcher (only if git repo)
-        if is_git_repo:
+        # Top-level stack: Files / Git
+        if self._is_git_repo:
             self.sidebar_stack = Gtk.Stack()
             self.sidebar_stack.set_transition_type(Gtk.StackTransitionType.CROSSFADE)
             self.sidebar_stack.set_vexpand(True)
 
-            # Stack switcher
+            # Top-level stack switcher
             switcher = Gtk.StackSwitcher()
             switcher.set_stack(self.sidebar_stack)
             switcher.set_margin_start(12)
@@ -157,9 +159,9 @@ class ProjectWindow(Adw.ApplicationWindow):
             files_page = self._build_files_page()
             self.sidebar_stack.add_titled(files_page, "files", "Files")
 
-            # Changes page
-            changes_page = self._build_changes_page()
-            self.sidebar_stack.add_titled(changes_page, "changes", "Changes")
+            # Git page (with nested Changes/History tabs)
+            git_page = self._build_git_page()
+            self.sidebar_stack.add_titled(git_page, "git", "Git")
 
             box.append(self.sidebar_stack)
         else:
@@ -172,6 +174,7 @@ class ProjectWindow(Adw.ApplicationWindow):
     def _build_files_page(self) -> Gtk.Box:
         """Build the Files tab content."""
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        box.set_vexpand(True)
 
         # Header with refresh button
         header_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
@@ -207,11 +210,38 @@ class ProjectWindow(Adw.ApplicationWindow):
 
         return box
 
-    def _build_changes_page(self) -> Gtk.Box:
-        """Build the Changes tab content (git panel)."""
-        self.git_panel = GitPanel(str(self.project_path))
-        self.git_panel.connect("file-clicked", self._on_git_file_clicked)
-        return self.git_panel
+    def _build_git_page(self) -> Gtk.Box:
+        """Build the Git tab with nested Changes/History tabs."""
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        box.set_vexpand(True)
+
+        # Nested stack for Changes/History
+        self.git_stack = Gtk.Stack()
+        self.git_stack.set_transition_type(Gtk.StackTransitionType.CROSSFADE)
+        self.git_stack.set_vexpand(True)
+
+        # Nested stack switcher
+        git_switcher = Gtk.StackSwitcher()
+        git_switcher.set_stack(self.git_stack)
+        git_switcher.set_margin_start(12)
+        git_switcher.set_margin_end(12)
+        git_switcher.set_margin_top(4)
+        git_switcher.set_margin_bottom(4)
+        box.append(git_switcher)
+
+        # Changes panel
+        self.git_changes_panel = GitChangesPanel(str(self.project_path))
+        self.git_changes_panel.connect("file-clicked", self._on_git_file_clicked)
+        self.git_stack.add_titled(self.git_changes_panel, "changes", "Changes")
+
+        # History panel
+        self.git_history_panel = GitHistoryPanel(self.git_service)
+        self.git_history_panel.connect("commit-view-diff", self._on_commit_view_diff)
+        self.git_stack.add_titled(self.git_history_panel, "history", "History")
+
+        box.append(self.git_stack)
+
+        return box
 
     def _build_content(self) -> Gtk.Box:
         """Build the main content area with tab view."""
@@ -300,8 +330,7 @@ class ProjectWindow(Adw.ApplicationWindow):
         sessions = self.history_service.get_sessions_for_path(self.project_path)
 
         # Clear existing
-        while row := self.session_list.get_first_child():
-            self.session_list.remove(row)
+        self.session_list.remove_all()
 
         if not sessions:
             label = Gtk.Label(label="No sessions yet")
@@ -459,6 +488,25 @@ class ProjectWindow(Adw.ApplicationWindow):
         page.set_title(f"{status_prefix}{Path(path).name}")
         page.set_icon(Gio.ThemedIcon.new("document-edit-symbolic"))
         page.set_tooltip(f"Diff: {path}")
+
+        self.tab_view.set_selected_page(page)
+
+    def _on_commit_view_diff(self, history_panel, commit_hash: str):
+        """Handle commit diff view request."""
+        # Get full diff for commit
+        diff_text = self.git_service.get_commit_full_diff(commit_hash)
+
+        if not diff_text:
+            return
+
+        # Create a simple text view for full diff
+        # Parse the diff into old/new for DiffView
+        diff_view = DiffView("", diff_text, file_path=f"commit {commit_hash[:7]}")
+
+        # Add tab
+        page = self.tab_view.append(diff_view)
+        page.set_title(f"Commit {commit_hash[:7]}")
+        page.set_icon(Gio.ThemedIcon.new("emblem-documents-symbolic"))
 
         self.tab_view.set_selected_page(page)
 

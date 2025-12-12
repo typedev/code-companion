@@ -102,8 +102,7 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
         projects = self.registry.get_registered_projects()
 
         # Clear existing
-        while row := self.project_list.get_first_child():
-            self.project_list.remove(row)
+        self.project_list.remove_all()
 
         if not projects:
             self._show_empty_state()
@@ -183,18 +182,29 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
             self._load_projects()
             self.remove_button.set_sensitive(False)
 
-    def _open_project(self, project_path: str):
+    def _open_project(self, project_path: str, force: bool = False):
         """Open a project in a new process."""
         # Check if project is already open via lock file
         from .services.project_lock import ProjectLock
 
         lock = ProjectLock(project_path)
-        if lock.is_locked():
-            # Show error dialog
+
+        if force:
+            lock.force_release()
+        elif lock.is_locked():
+            # Show dialog with option to force open
+            pid = lock.get_lock_pid()
             dialog = Adw.AlertDialog()
             dialog.set_heading("Project Already Open")
-            dialog.set_body("The project is already open in another window.")
-            dialog.add_response("ok", "OK")
+            dialog.set_body(
+                f"The project is already open in another window (PID: {pid}).\n\n"
+                "If the window is not visible or the process is hung, "
+                "you can force close it and reopen."
+            )
+            dialog.add_response("cancel", "Cancel")
+            dialog.add_response("force", "Force Open")
+            dialog.set_response_appearance("force", Adw.ResponseAppearance.DESTRUCTIVE)
+            dialog.connect("response", self._on_force_open_response, project_path)
             dialog.present(self)
             return
 
@@ -203,3 +213,8 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
             [sys.executable, "-m", "src.main", "--project", project_path],
             start_new_session=True,
         )
+
+    def _on_force_open_response(self, dialog, response, project_path):
+        """Handle force open dialog response."""
+        if response == "force":
+            self._open_project(project_path, force=True)

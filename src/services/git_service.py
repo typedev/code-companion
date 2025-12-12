@@ -1,6 +1,7 @@
 """Git service using pygit2 for repository operations."""
 
 from dataclasses import dataclass
+from datetime import datetime
 from enum import Enum
 from pathlib import Path
 
@@ -24,6 +25,18 @@ class GitFileStatus:
     status: FileStatus
     staged: bool
     old_path: str | None = None  # For renames
+
+
+@dataclass
+class GitCommit:
+    """A git commit."""
+    hash: str
+    short_hash: str
+    message: str
+    author: str
+    author_email: str
+    timestamp: datetime
+    is_head: bool
 
 
 class GitService:
@@ -330,3 +343,162 @@ class GitService:
             if file_status.path not in result or not file_status.staged:
                 result[file_status.path] = file_status.status
         return result
+
+    # ==================== History Methods ====================
+
+    def get_commits(self, limit: int = 50) -> list[GitCommit]:
+        """Get recent commits from current branch."""
+        commits = []
+
+        try:
+            head_oid = self.repo.head.target
+        except pygit2.GitError:
+            return commits
+
+        for commit in self.repo.walk(head_oid, pygit2.GIT_SORT_TIME):
+            if len(commits) >= limit:
+                break
+
+            git_commit = GitCommit(
+                hash=str(commit.id),
+                short_hash=str(commit.id)[:7],
+                message=commit.message.strip(),
+                author=commit.author.name,
+                author_email=commit.author.email,
+                timestamp=datetime.fromtimestamp(commit.commit_time),
+                is_head=(commit.id == head_oid),
+            )
+            commits.append(git_commit)
+
+        return commits
+
+    def get_commit_diff(self, commit_hash: str) -> tuple[str, str]:
+        """
+        Get diff for a commit (compared to its parent).
+        Returns (old_content, new_content) as combined diff text.
+        """
+        try:
+            commit = self.repo.get(commit_hash)
+            if not commit:
+                return "", ""
+
+            # Get parent commit (or empty tree for initial commit)
+            if commit.parents:
+                parent = commit.parents[0]
+                diff = self.repo.diff(parent, commit)
+            else:
+                # Initial commit - diff against empty tree
+                diff = commit.tree.diff_to_tree(swap=True)
+
+            # Collect all changes as text
+            old_lines = []
+            new_lines = []
+
+            for patch in diff:
+                file_path = patch.delta.new_file.path
+                old_lines.append(f"--- a/{file_path}")
+                new_lines.append(f"+++ b/{file_path}")
+
+                for hunk in patch.hunks:
+                    for line in hunk.lines:
+                        if line.origin == '+':
+                            new_lines.append(f"+{line.content.rstrip()}")
+                        elif line.origin == '-':
+                            old_lines.append(f"-{line.content.rstrip()}")
+                        else:
+                            old_lines.append(f" {line.content.rstrip()}")
+                            new_lines.append(f" {line.content.rstrip()}")
+
+            return "\n".join(old_lines), "\n".join(new_lines)
+
+        except (pygit2.GitError, KeyError):
+            return "", ""
+
+    def get_commit_full_diff(self, commit_hash: str) -> str:
+        """Get full unified diff text for a commit."""
+        try:
+            commit = self.repo.get(commit_hash)
+            if not commit:
+                return ""
+
+            if commit.parents:
+                parent = commit.parents[0]
+                diff = self.repo.diff(parent, commit)
+            else:
+                diff = commit.tree.diff_to_tree(swap=True)
+
+            return diff.patch or ""
+
+        except (pygit2.GitError, KeyError):
+            return ""
+
+    def checkout_commit(self, commit_hash: str) -> None:
+        """Checkout a specific commit (detached HEAD)."""
+        try:
+            commit = self.repo.get(commit_hash)
+            if not commit:
+                raise RuntimeError(f"Commit {commit_hash} not found")
+
+            # Checkout the tree
+            self.repo.checkout_tree(commit)
+
+            # Set HEAD to the commit (detached)
+            self.repo.set_head(commit.id)
+
+        except pygit2.GitError as e:
+            raise RuntimeError(f"Checkout failed: {e}")
+
+    def reset_to_commit(self, commit_hash: str, hard: bool = False) -> None:
+        """Reset current branch to commit."""
+        try:
+            commit = self.repo.get(commit_hash)
+            if not commit:
+                raise RuntimeError(f"Commit {commit_hash} not found")
+
+            reset_type = pygit2.GIT_RESET_HARD if hard else pygit2.GIT_RESET_SOFT
+            self.repo.reset(commit.id, reset_type)
+
+        except pygit2.GitError as e:
+            raise RuntimeError(f"Reset failed: {e}")
+
+    def revert_commit(self, commit_hash: str) -> str:
+        """Create a revert commit. Returns new commit hash."""
+        try:
+            commit = self.repo.get(commit_hash)
+            if not commit:
+                raise RuntimeError(f"Commit {commit_hash} not found")
+
+            # Revert the commit
+            self.repo.revert_commit(commit, self.repo.head.peel(pygit2.Commit))
+
+            # Check if there are conflicts
+            if self.repo.index.conflicts:
+                self.repo.state_cleanup()
+                raise RuntimeError("Revert resulted in conflicts")
+
+            # Create the revert commit
+            tree_id = self.repo.index.write_tree()
+
+            # Get signature
+            config = self.repo.config
+            name = config["user.name"]
+            email = config["user.email"]
+            signature = pygit2.Signature(name, email)
+
+            message = f"Revert \"{commit.message.split(chr(10))[0]}\"\n\nThis reverts commit {commit_hash[:7]}."
+
+            new_commit_id = self.repo.create_commit(
+                "HEAD",
+                signature,
+                signature,
+                message,
+                tree_id,
+                [self.repo.head.target]
+            )
+
+            self.repo.state_cleanup()
+            return str(new_commit_id)[:7]
+
+        except pygit2.GitError as e:
+            self.repo.state_cleanup()
+            raise RuntimeError(f"Revert failed: {e}")

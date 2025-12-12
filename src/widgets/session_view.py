@@ -37,8 +37,13 @@ class SessionView(Gtk.Box):
         """Load and display a session's content."""
         self.current_session = session
 
-        # Clear existing messages
-        while child := self.message_list.get_first_child():
+        # Clear existing messages - collect children first to avoid modification during iteration
+        children = []
+        child = self.message_list.get_first_child()
+        while child:
+            children.append(child)
+            child = child.get_next_sibling()
+        for child in children:
             self.message_list.remove(child)
 
         # Load session content
@@ -63,5 +68,11 @@ class SessionView(Gtk.Box):
     def clear(self) -> None:
         """Clear the session view."""
         self.current_session = None
-        while child := self.message_list.get_first_child():
+        # Collect children first to avoid modification during iteration
+        children = []
+        child = self.message_list.get_first_child()
+        while child:
+            children.append(child)
+            child = child.get_next_sibling()
+        for child in children:
             self.message_list.remove(child)

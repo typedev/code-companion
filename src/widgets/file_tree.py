@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from gi.repository import Gtk, Gio, GLib, GObject, Pango
+from gi.repository import Gtk, Gio, GLib, GObject, Pango, Gdk
 
 from ..services import GitService, FileStatus
 
@@ -34,6 +34,7 @@ class FileTree(Gtk.Box):
         self.root_path = Path(root_path)
         self._expanded_paths: set[str] = set()
         self._git_status: dict[str, FileStatus] = {}
+        self.context_menu = None
 
         # Initialize git service
         self._git_service = GitService(self.root_path)
@@ -43,23 +44,37 @@ class FileTree(Gtk.Box):
 
         self._build_ui()
         self._setup_css()
-        self.refresh()
+        self._populate_tree()
 
     def _build_ui(self):
         """Build the file tree UI."""
         # Scrolled window
-        scrolled = Gtk.ScrolledWindow()
-        scrolled.set_vexpand(True)
-        scrolled.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
+        self.scrolled = Gtk.ScrolledWindow()
+        self.scrolled.set_vexpand(True)
+        self.scrolled.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
 
         # List box for tree items
         self.list_box = Gtk.ListBox()
-        self.list_box.set_selection_mode(Gtk.SelectionMode.SINGLE)
+        self.list_box.set_selection_mode(Gtk.SelectionMode.MULTIPLE)
         self.list_box.add_css_class("navigation-sidebar")
         self.list_box.connect("row-activated", self._on_row_activated)
 
-        scrolled.set_child(self.list_box)
-        self.append(scrolled)
+        # Right-click context menu
+        click_controller = Gtk.GestureClick()
+        click_controller.set_button(3)  # Right click
+        click_controller.connect("pressed", self._on_right_click)
+        self.list_box.add_controller(click_controller)
+
+        # Keyboard shortcuts
+        key_controller = Gtk.EventControllerKey()
+        key_controller.connect("key-pressed", self._on_key_pressed)
+        self.list_box.add_controller(key_controller)
+
+        self.scrolled.set_child(self.list_box)
+        self.append(self.scrolled)
+
+        # Create context menu
+        self._create_context_menu()
 
     def _setup_css(self):
         """Set up CSS for git status colors."""
@@ -81,20 +96,144 @@ class FileTree(Gtk.Box):
             Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
         )
 
-    def refresh(self):
-        """Refresh the file tree."""
+    def _create_context_menu(self):
+        """Create the right-click context menu."""
+        menu = Gio.Menu()
+        menu.append("Copy Path", "filetree.copy-path")
+        menu.append("Copy Relative Path", "filetree.copy-relative-path")
+
+        self.context_menu = Gtk.PopoverMenu.new_from_model(menu)
+        self.context_menu.set_parent(self.list_box)
+        self.context_menu.set_has_arrow(False)
+
+        # Action group
+        action_group = Gio.SimpleActionGroup()
+
+        copy_path_action = Gio.SimpleAction.new("copy-path", None)
+        copy_path_action.connect("activate", self._on_copy_path)
+        action_group.add_action(copy_path_action)
+
+        copy_rel_path_action = Gio.SimpleAction.new("copy-relative-path", None)
+        copy_rel_path_action.connect("activate", self._on_copy_relative_path)
+        action_group.add_action(copy_rel_path_action)
+
+        self.list_box.insert_action_group("filetree", action_group)
+
+    def _on_right_click(self, gesture, n_press, x, y):
+        """Handle right-click to show context menu."""
+        # Get row at position
+        row = self.list_box.get_row_at_y(int(y))
+        if row and hasattr(row, "path"):
+            # Select the row if not already selected
+            if not row.is_selected():
+                self.list_box.unselect_all()
+                self.list_box.select_row(row)
+
+        # Position and show menu
+        rect = Gdk.Rectangle()
+        rect.x = int(x)
+        rect.y = int(y)
+        rect.width = 1
+        rect.height = 1
+        self.context_menu.set_pointing_to(rect)
+        self.context_menu.popup()
+
+    def _on_key_pressed(self, controller, keyval, keycode, state):
+        """Handle keyboard shortcuts."""
+        ctrl_pressed = state & Gdk.ModifierType.CONTROL_MASK
+
+        if ctrl_pressed and keyval == Gdk.KEY_c:
+            # Ctrl+C - copy relative path
+            self._copy_selected_paths(relative=True)
+            return True
+
+        return False
+
+    def _get_selected_paths(self) -> list[Path]:
+        """Get list of selected paths."""
+        paths = []
+        for row in self.list_box.get_selected_rows():
+            if hasattr(row, "path"):
+                paths.append(row.path)
+        return paths
+
+    def _on_copy_path(self, action, param):
+        """Copy full path(s) to clipboard."""
+        self._copy_selected_paths(relative=False)
+
+    def _on_copy_relative_path(self, action, param):
+        """Copy relative path(s) to clipboard."""
+        self._copy_selected_paths(relative=True)
+
+    def _copy_selected_paths(self, relative: bool):
+        """Copy selected paths to clipboard."""
+        paths = self._get_selected_paths()
+        if not paths:
+            return
+
+        if relative:
+            text = "\n".join(self._get_relative_path(p) for p in paths)
+        else:
+            text = "\n".join(str(p) for p in paths)
+
+        clipboard = Gdk.Display.get_default().get_clipboard()
+        clipboard.set(text)
+
+    def _populate_tree(self):
+        """Initial population of the tree (without recreating list_box)."""
         # Update git status
         if self._is_git_repo:
             self._git_status = self._git_service.get_file_status_map()
         else:
             self._git_status = {}
 
-        # Clear existing
-        while row := self.list_box.get_first_child():
-            self.list_box.remove(row)
+        # Build tree from root
+        self._add_directory_contents(self.root_path, 0)
+
+    def refresh(self):
+        """Refresh the file tree."""
+        # Save scroll position
+        vadj = self.scrolled.get_vadjustment()
+        scroll_pos = vadj.get_value()
+
+        # Update git status
+        if self._is_git_repo:
+            self._git_status = self._git_service.get_file_status_map()
+        else:
+            self._git_status = {}
+
+        # Recreate list box to avoid GTK remove warnings
+        if self.context_menu:
+            self.context_menu.unparent()
+
+        old_list_box = self.list_box
+        self.list_box = Gtk.ListBox()
+        self.list_box.set_selection_mode(Gtk.SelectionMode.MULTIPLE)
+        self.list_box.add_css_class("navigation-sidebar")
+        self.list_box.connect("row-activated", self._on_row_activated)
+
+        # Right-click context menu
+        click_controller = Gtk.GestureClick()
+        click_controller.set_button(3)
+        click_controller.connect("pressed", self._on_right_click)
+        self.list_box.add_controller(click_controller)
+
+        # Keyboard shortcuts
+        key_controller = Gtk.EventControllerKey()
+        key_controller.connect("key-pressed", self._on_key_pressed)
+        self.list_box.add_controller(key_controller)
+
+        # Replace in scrolled window
+        self.scrolled.set_child(self.list_box)
+
+        # Recreate context menu with new parent
+        self._create_context_menu()
 
         # Build tree from root
         self._add_directory_contents(self.root_path, 0)
+
+        # Restore scroll position after UI updates
+        GLib.idle_add(lambda: vadj.set_value(scroll_pos) or False)
 
     def _add_directory_contents(self, directory: Path, depth: int):
         """Add contents of a directory to the tree."""

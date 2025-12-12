@@ -89,6 +89,7 @@ Session files are JSONL with event types: `user`, `assistant`, `tool_use`, `tool
 - [x] v0.4: Project workspace (file tree, file editor, multi-process architecture)
 - [x] v0.4.1: VSCode tasks.json support (tasks panel in sidebar)
 - [x] v0.5: Git integration (pygit2, Files/Changes tabs, stage/commit/push/pull, unified diff view)
+- [x] v0.5.1: Git history (commit list, checkout/reset/revert, Files/Git sidebar structure)
 - [ ] v0.6: TODO notes
 - [ ] v0.7: Polish (search, settings, packaging)
 - [ ] v1.0: Multi-agent orchestration with Git worktrees

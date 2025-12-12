@@ -128,15 +128,25 @@ class ToolCallCard(Gtk.Box):
             self.content_box.set_visible(True)
         else:
             self.expand_icon.set_from_icon_name("pan-end-symbolic")
-            # Clear content to save memory
-            while child := self.content_box.get_first_child():
+            # Clear content to save memory - collect children first
+            children = []
+            child = self.content_box.get_first_child()
+            while child:
+                children.append(child)
+                child = child.get_next_sibling()
+            for child in children:
                 self.content_box.remove(child)
             self.content_box.set_visible(False)
 
     def _build_content(self):
         """Build the expandable content area."""
-        # Clear existing content
-        while child := self.content_box.get_first_child():
+        # Clear existing content - collect children first
+        children = []
+        child = self.content_box.get_first_child()
+        while child:
+            children.append(child)
+            child = child.get_next_sibling()
+        for child in children:
             self.content_box.remove(child)
 
         if self.tool_name == "Edit":
