@@ -175,33 +175,55 @@ class GitChangesPanel(Gtk.Box):
         )
 
     def _setup_file_monitor(self):
-        """Set up file monitor for .git directory."""
-        git_dir = self.project_path / ".git"
-        if not git_dir.exists():
-            return
+        """Set up file monitors for .git directory and working tree."""
+        self._monitors = []
+        self._refresh_pending = False
 
+        # Monitor .git directory for index changes
+        git_dir = self.project_path / ".git"
+        if git_dir.exists():
+            try:
+                gfile = Gio.File.new_for_path(str(git_dir))
+                monitor = gfile.monitor_directory(Gio.FileMonitorFlags.NONE, None)
+                monitor.connect("changed", self._on_file_changed)
+                self._monitors.append(monitor)
+            except GLib.Error:
+                pass
+
+        # Monitor project root for working tree changes
         try:
-            gfile = Gio.File.new_for_path(str(git_dir))
-            self._file_monitor = gfile.monitor_directory(
-                Gio.FileMonitorFlags.NONE,
-                None
-            )
-            self._file_monitor.connect("changed", self._on_git_changed)
+            gfile = Gio.File.new_for_path(str(self.project_path))
+            monitor = gfile.monitor_directory(Gio.FileMonitorFlags.WATCH_MOVES, None)
+            monitor.connect("changed", self._on_file_changed)
+            self._monitors.append(monitor)
         except GLib.Error:
             pass
 
-    def _on_git_changed(self, monitor, file, other_file, event_type):
-        """Handle changes in .git directory."""
-        if event_type in (
+    def _on_file_changed(self, monitor, file, other_file, event_type):
+        """Handle file changes - debounced refresh."""
+        if event_type not in (
             Gio.FileMonitorEvent.CHANGED,
             Gio.FileMonitorEvent.CREATED,
             Gio.FileMonitorEvent.DELETED,
+            Gio.FileMonitorEvent.MOVED_IN,
+            Gio.FileMonitorEvent.MOVED_OUT,
         ):
-            # Debounce refresh
-            GLib.timeout_add(200, self._delayed_refresh)
+            return
+
+        # Skip .git internal files for working tree monitor
+        if file:
+            path = file.get_path()
+            if path and "/.git/" in path:
+                return
+
+        # Debounce - schedule refresh if not already pending
+        if not self._refresh_pending:
+            self._refresh_pending = True
+            GLib.timeout_add(300, self._delayed_refresh)
 
     def _delayed_refresh(self):
         """Delayed refresh to coalesce rapid changes."""
+        self._refresh_pending = False
         self.refresh()
         return False
 

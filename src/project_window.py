@@ -2,11 +2,11 @@
 
 from pathlib import Path
 
-from gi.repository import Adw, Gtk, GLib, Gio, Gdk
+from gi.repository import Adw, Gtk, GLib, Gio
 
 from .models import Session
 from .services import HistoryService, ProjectLock, ProjectRegistry, GitService, IconCache, ToastService
-from .widgets import SessionView, TerminalView, FileTree, FileEditor, TasksPanel, GitChangesPanel, GitHistoryPanel, DiffView, CommitDetailView, ClaudeHistoryPanel
+from .widgets import SessionView, TerminalView, FileTree, FileEditor, TasksPanel, GitChangesPanel, GitHistoryPanel, DiffView, CommitDetailView, ClaudeHistoryPanel, FileSearchDialog, SearchPanel
 
 
 def escape_markup(text: str) -> str:
@@ -49,6 +49,9 @@ class ProjectWindow(Adw.ApplicationWindow):
 
         # Connect destroy signal to release lock
         self.connect("destroy", self._on_destroy)
+
+        # Setup keyboard shortcuts
+        self._setup_shortcuts()
 
     def _setup_window(self):
         """Configure window properties."""
@@ -181,9 +184,44 @@ class ProjectWindow(Adw.ApplicationWindow):
         claude_page = self._build_claude_page()
         self.sidebar_stack.add_titled(claude_page, "claude", "Claude")
 
+        # Search page (content search) - use icon via page properties
+        search_page = self._build_search_page()
+        self.sidebar_stack.add_titled(search_page, "search", "")
+        # Set icon for search tab
+        stack_page = self.sidebar_stack.get_page(search_page)
+        stack_page.set_icon_name("system-search-symbolic")
+
         box.append(self.sidebar_stack)
 
         return box
+
+    def _build_search_page(self) -> Gtk.Box:
+        """Build the Search tab content."""
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        box.set_vexpand(True)
+
+        self.search_panel = SearchPanel(str(self.project_path))
+        self.search_panel.connect("open-file-at-line", self._on_search_open_file)
+        box.append(self.search_panel)
+
+        return box
+
+    def _on_search_open_file(self, panel, file_path: str, line_number: int, search_term: str):
+        """Handle search result click - open file at line."""
+        self._on_file_activated(self.file_tree, file_path)
+        # Go to line after file is opened
+        GLib.idle_add(lambda: self._go_to_line_in_editor(file_path, line_number, search_term))
+
+    def _go_to_line_in_editor(self, file_path: str, line_number: int, search_term: str = None):
+        """Go to specific line in already-open editor."""
+        for i in range(self.tab_view.get_n_pages()):
+            page = self.tab_view.get_nth_page(i)
+            child = page.get_child()
+            if hasattr(child, "file_path") and child.file_path == file_path:
+                if hasattr(child, "go_to_line"):
+                    child.go_to_line(line_number, search_term)
+                break
+        return False
 
     def _build_files_page(self) -> Gtk.Box:
         """Build the Files tab content."""
@@ -213,10 +251,27 @@ class ProjectWindow(Adw.ApplicationWindow):
         new_folder_btn.connect("clicked", self._on_new_folder_clicked)
         header_box.append(new_folder_btn)
 
+        # Delete button
+        self.delete_btn = Gtk.Button()
+        self.delete_btn.set_icon_name("user-trash-symbolic")
+        self.delete_btn.add_css_class("flat")
+        self.delete_btn.set_tooltip_text("Delete selected")
+        self.delete_btn.set_sensitive(False)
+        self.delete_btn.connect("clicked", self._on_delete_clicked)
+        header_box.append(self.delete_btn)
+
         # Spacer for alignment
         spacer = Gtk.Box()
         spacer.set_hexpand(True)
         header_box.append(spacer)
+
+        # File search button
+        file_search_btn = Gtk.Button()
+        file_search_btn.set_icon_name("system-search-symbolic")
+        file_search_btn.add_css_class("flat")
+        file_search_btn.set_tooltip_text("Search files (Ctrl+P)")
+        file_search_btn.connect("clicked", lambda btn: self._show_file_search())
+        header_box.append(file_search_btn)
 
         # Show ignored files toggle
         self.show_ignored_btn = Gtk.ToggleButton()
@@ -239,6 +294,7 @@ class ProjectWindow(Adw.ApplicationWindow):
         # File tree
         self.file_tree = FileTree(str(self.project_path))
         self.file_tree.connect("file-activated", self._on_file_activated)
+        self.file_tree.connect("selection-changed", self._on_file_selection_changed)
         box.append(self.file_tree)
 
         # Tasks panel (below file tree)
@@ -460,7 +516,7 @@ class ProjectWindow(Adw.ApplicationWindow):
 
     def _get_selected_directory(self) -> Path:
         """Get the selected directory in file tree, or project root."""
-        selected_paths = self.file_tree._get_selected_paths()
+        selected_paths = self.file_tree.get_selected_paths()
         if selected_paths:
             path = selected_paths[0]
             if path.is_dir():
@@ -502,6 +558,72 @@ class ProjectWindow(Adw.ApplicationWindow):
                 self._on_file_activated(self.file_tree, str(new_path))
         except OSError as e:
             ToastService.show_error(f"Failed to create {item_type}: {e}")
+
+    def _on_file_selection_changed(self, file_tree, has_selection: bool):
+        """Handle file tree selection change."""
+        self.delete_btn.set_sensitive(has_selection)
+
+    def _on_delete_clicked(self, button):
+        """Delete selected file or folder."""
+        selected_paths = self.file_tree.get_selected_paths()
+        if not selected_paths:
+            return
+
+        path = selected_paths[0]
+        item_type = "folder" if path.is_dir() else "file"
+        relative_path = path.relative_to(self.project_path) if path.is_relative_to(self.project_path) else path
+
+        dialog = Adw.AlertDialog()
+        dialog.set_heading(f"Delete {item_type}?")
+
+        if path.is_dir():
+            dialog.set_body(f"Are you sure you want to delete the folder '{relative_path}' and all its contents?\n\nThis action cannot be undone.")
+        else:
+            dialog.set_body(f"Are you sure you want to delete '{relative_path}'?\n\nThis action cannot be undone.")
+
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("delete", "Delete")
+        dialog.set_response_appearance("delete", Adw.ResponseAppearance.DESTRUCTIVE)
+        dialog.set_default_response("cancel")
+
+        dialog.connect("response", self._on_delete_dialog_response, path)
+        dialog.present(self)
+
+    def _on_delete_dialog_response(self, dialog, response, path: Path):
+        """Handle delete dialog response."""
+        if response != "delete":
+            return
+
+        import shutil
+
+        try:
+            if path.is_dir():
+                shutil.rmtree(path)
+                ToastService.show(f"Deleted folder: {path.name}")
+            else:
+                path.unlink()
+                ToastService.show(f"Deleted: {path.name}")
+
+            # Close any tabs with the deleted file
+            self._close_tabs_for_path(path)
+
+        except OSError as e:
+            ToastService.show_error(f"Failed to delete: {e}")
+
+    def _close_tabs_for_path(self, deleted_path: Path):
+        """Close any tabs that reference the deleted path."""
+        pages_to_close = []
+        for i in range(self.tab_view.get_n_pages()):
+            page = self.tab_view.get_nth_page(i)
+            child = page.get_child()
+            if hasattr(child, "file_path"):
+                child_path = Path(child.file_path)
+                # Check if the file is the deleted path or inside deleted folder
+                if child_path == deleted_path or deleted_path in child_path.parents:
+                    pages_to_close.append(page)
+
+        for page in pages_to_close:
+            self.tab_view.close_page(page)
 
     def _on_git_file_clicked(self, git_panel, path: str, staged: bool):
         """Handle git file click - open diff view."""
@@ -644,3 +766,68 @@ class ProjectWindow(Adw.ApplicationWindow):
     def _on_destroy(self, window):
         """Clean up on window destroy."""
         self.lock.release()
+
+    def _setup_shortcuts(self):
+        """Setup keyboard shortcuts using proper GTK4 approach."""
+        # Create shortcut controller with LOCAL scope
+        # LOCAL means shortcuts only work when this window has focus (not in dialogs)
+        shortcut_controller = Gtk.ShortcutController()
+        shortcut_controller.set_scope(Gtk.ShortcutScope.LOCAL)
+
+        # Ctrl+P - File search
+        shortcut_controller.add_shortcut(Gtk.Shortcut(
+            trigger=Gtk.ShortcutTrigger.parse_string("<Control>p"),
+            action=Gtk.CallbackAction.new(lambda *args: self._show_file_search() or True)
+        ))
+
+        # Ctrl+Shift+F - Switch to search tab and focus
+        shortcut_controller.add_shortcut(Gtk.Shortcut(
+            trigger=Gtk.ShortcutTrigger.parse_string("<Control><Shift>f"),
+            action=Gtk.CallbackAction.new(lambda *args: self._focus_search_panel() or True)
+        ))
+
+        self.add_controller(shortcut_controller)
+
+    def _show_file_search(self):
+        """Show file search dialog."""
+        # Collect file list from file tree
+        file_list = self._collect_file_list()
+
+        # Create and present dialog
+        dialog = FileSearchDialog(self.project_path, file_list)
+        dialog.connect("file-selected", self._on_file_search_selected)
+        dialog.present_dialog(self)
+
+    def _collect_file_list(self) -> list[Path]:
+        """Collect all files from project, respecting gitignore."""
+        files = []
+        show_ignored = self.show_ignored_btn.get_active()
+
+        # Walk the directory tree
+        for path in self.project_path.rglob("*"):
+            if not path.is_file():
+                continue
+
+            # Skip hidden files/folders
+            if any(part.startswith(".") for part in path.relative_to(self.project_path).parts):
+                continue
+
+            # Check gitignore patterns using file tree's method
+            if not show_ignored and self.file_tree._is_ignored(path):
+                continue
+
+            files.append(path)
+
+        # Sort by modification time (most recent first)
+        files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+
+        return files
+
+    def _on_file_search_selected(self, dialog, file_path: str):
+        """Handle file selection from search dialog."""
+        self._on_file_activated(self.file_tree, file_path)
+
+    def _focus_search_panel(self):
+        """Switch to search tab and focus the search entry."""
+        self.sidebar_stack.set_visible_child_name("search")
+        GLib.idle_add(lambda: self.search_panel.search_entry.grab_focus() or False)

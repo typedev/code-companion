@@ -138,6 +138,65 @@ Session files are JSONL with event types: `user`, `assistant`, `tool_use`, `tool
 - [ ] v0.7: Polish (search, settings, packaging)
 - [ ] v1.0: Multi-agent orchestration with Git worktrees
 
+## GTK4/libadwaita Gotchas
+
+### Text Input in Dialogs
+
+**CRITICAL**: Text input (Gtk.Entry) can break in dialogs if keyboard events are intercepted.
+
+**Working pattern** (see `tasks_panel.py`, `content_search_dialog.py`):
+```python
+# Use Adw.AlertDialog with set_extra_child()
+dialog = Adw.AlertDialog()
+dialog.set_heading("Title")
+
+entry = Gtk.Entry()  # or Gtk.SearchEntry
+box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+box.append(entry)
+
+dialog.set_extra_child(box)
+dialog.present(parent)
+```
+
+**For SearchEntry, disable global key capture**:
+```python
+search_entry = Gtk.SearchEntry()
+search_entry.set_key_capture_widget(None)  # IMPORTANT!
+```
+
+**NEVER do this**:
+```python
+# DON'T add EventControllerKey to dialog - it intercepts ALL key presses!
+key_controller = Gtk.EventControllerKey()
+key_controller.connect("key-pressed", handler)
+dialog.add_controller(key_controller)  # BREAKS TEXT INPUT!
+```
+
+**For window-level shortcuts**, use `Gtk.ShortcutController` with LOCAL scope:
+```python
+shortcut_controller = Gtk.ShortcutController()
+shortcut_controller.set_scope(Gtk.ShortcutScope.LOCAL)  # Won't interfere with dialogs
+shortcut_controller.add_shortcut(Gtk.Shortcut(
+    trigger=Gtk.ShortcutTrigger.parse_string("<Control>p"),
+    action=Gtk.CallbackAction.new(callback)
+))
+window.add_controller(shortcut_controller)
+```
+
+### Icons
+
+**Use `Gtk.Image.new_from_gicon()` for crisp SVG icons**:
+```python
+# Good - crisp at any size
+gicon = Gio.FileIcon.new(Gio.File.new_for_path(svg_path))
+image = Gtk.Image.new_from_gicon(gicon)
+image.set_pixel_size(16)
+
+# Bad - blurry because pre-rasterized
+texture = Gdk.Texture.new_from_file(file)
+image = Gtk.Image.new_from_paintable(texture)
+```
+
 ## Running the Application
 
 ```bash

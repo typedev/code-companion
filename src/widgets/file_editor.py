@@ -159,3 +159,42 @@ class FileEditor(Gtk.Box):
     def grab_focus(self):
         """Focus the editor."""
         self.source_view.grab_focus()
+
+    def go_to_line(self, line_number: int, search_term: str = None):
+        """Go to specific line number and optionally highlight search term."""
+        # Get iterator at the line (0-based internally)
+        # GTK4 returns (success, iter) tuple
+        success, line_iter = self.buffer.get_iter_at_line(line_number - 1)
+        if success:
+            if search_term:
+                # Find and select the search term on this line
+                line_end = line_iter.copy()
+                line_end.forward_to_line_end()
+                line_text = self.buffer.get_text(line_iter, line_end, False)
+
+                # Case-insensitive search
+                idx = line_text.lower().find(search_term.lower())
+                if idx >= 0:
+                    # Select the found text
+                    start = line_iter.copy()
+                    start.forward_chars(idx)
+                    end = start.copy()
+                    end.forward_chars(len(search_term))
+                    self.buffer.select_range(start, end)
+                else:
+                    self.buffer.place_cursor(line_iter)
+            else:
+                self.buffer.place_cursor(line_iter)
+            # Use idle_add to ensure UI is ready
+            GLib.idle_add(self._scroll_to_cursor)
+
+    def _scroll_to_cursor(self) -> bool:
+        """Scroll view to cursor position."""
+        self.source_view.scroll_to_mark(
+            self.buffer.get_insert(),
+            0.2,  # margin
+            True,  # use_align
+            0.5,   # xalign (center horizontally)
+            0.3    # yalign (1/3 from top)
+        )
+        return False  # Don't repeat

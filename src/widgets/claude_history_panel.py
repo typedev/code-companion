@@ -25,6 +25,8 @@ class ClaudeHistoryPanel(Gtk.Box):
         self.project_path = project_path
         self.history_service = history_service
         self._refresh_timer_id: int | None = None
+        self._all_sessions = []  # Cache sessions for filtering
+        self._filter_text = ""
 
         self._setup_css()
         self._build_ui()
@@ -83,6 +85,15 @@ class ClaudeHistoryPanel(Gtk.Box):
 
         self.append(header_box)
 
+        # Search entry
+        self.search_entry = Gtk.SearchEntry()
+        self.search_entry.set_placeholder_text("Filter sessions...")
+        self.search_entry.set_margin_start(12)
+        self.search_entry.set_margin_end(12)
+        self.search_entry.set_margin_bottom(6)
+        self.search_entry.connect("search-changed", self._on_search_changed)
+        self.append(self.search_entry)
+
         # Scrolled list
         scrolled = Gtk.ScrolledWindow()
         scrolled.set_vexpand(True)
@@ -102,25 +113,53 @@ class ClaudeHistoryPanel(Gtk.Box):
     def refresh(self):
         """Refresh the sessions list."""
         # Save current selection
-        selected_session_id = None
+        self._selected_session_id = None
         selected_row = self.sessions_list.get_selected_row()
         if selected_row and hasattr(selected_row, "session"):
-            selected_session_id = selected_row.session.id
+            self._selected_session_id = selected_row.session.id
 
         # Clear existing
         self.sessions_list.remove_all()
 
         # Get sessions
         try:
-            sessions = self.history_service.get_sessions_for_path(self.project_path)
+            self._all_sessions = self.history_service.get_sessions_for_path(self.project_path)
         except Exception as e:
             label = Gtk.Label(label=f"Error: {e}")
             label.add_css_class("dim-label")
             self.sessions_list.append(label)
             return
 
-        if not sessions:
+        self._display_sessions()
+
+    def _on_search_changed(self, entry):
+        """Handle search entry changes."""
+        self._filter_text = entry.get_text().strip().lower()
+        self._display_sessions()
+
+    def _display_sessions(self):
+        """Display sessions with current filter."""
+        self.sessions_list.remove_all()
+
+        if not self._all_sessions:
             label = Gtk.Label(label="No sessions yet")
+            label.add_css_class("dim-label")
+            label.set_margin_top(24)
+            self.sessions_list.append(label)
+            return
+
+        # Filter sessions
+        if self._filter_text:
+            filtered = [
+                s for s in self._all_sessions
+                if self._filter_text in (s.short_preview or "").lower()
+                or self._filter_text in s.display_date.lower()
+            ]
+        else:
+            filtered = self._all_sessions
+
+        if not filtered:
+            label = Gtk.Label(label="No matching sessions")
             label.add_css_class("dim-label")
             label.set_margin_top(24)
             self.sessions_list.append(label)
@@ -128,10 +167,11 @@ class ClaudeHistoryPanel(Gtk.Box):
 
         # Rebuild list and restore selection
         row_to_select = None
-        for session in sessions:
+        selected_id = getattr(self, "_selected_session_id", None)
+        for session in filtered:
             row = self._create_session_row(session)
             self.sessions_list.append(row)
-            if selected_session_id and session.id == selected_session_id:
+            if selected_id and session.id == selected_id:
                 row_to_select = row
 
         # Restore selection without emitting signal

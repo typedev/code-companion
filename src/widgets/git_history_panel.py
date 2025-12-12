@@ -25,6 +25,8 @@ class GitHistoryPanel(Gtk.Box):
         self._selected_commit = None
         self._file_monitors: list[Gio.FileMonitor] = []
         self._refresh_timeout_id: int | None = None
+        self._all_commits = []  # Cache all commits for filtering
+        self._filter_text = ""
 
         self._build_ui()
         self._setup_css()
@@ -161,6 +163,15 @@ class GitHistoryPanel(Gtk.Box):
 
         self.append(header_box)
 
+        # Search entry
+        self.search_entry = Gtk.SearchEntry()
+        self.search_entry.set_placeholder_text("Filter commits...")
+        self.search_entry.set_margin_start(12)
+        self.search_entry.set_margin_end(12)
+        self.search_entry.set_margin_bottom(6)
+        self.search_entry.connect("search-changed", self._on_search_changed)
+        self.append(self.search_entry)
+
         # Scrolled list
         scrolled = Gtk.ScrolledWindow()
         scrolled.set_vexpand(True)
@@ -234,21 +245,50 @@ class GitHistoryPanel(Gtk.Box):
 
         # Get commits
         try:
-            commits = self.service.get_commits(limit=50)
+            self._all_commits = self.service.get_commits(limit=50)
         except Exception as e:
             label = Gtk.Label(label=f"Error: {e}")
             label.add_css_class("dim-label")
             self.commits_list.append(label)
             return
 
-        if not commits:
+        self._display_commits()
+
+    def _on_search_changed(self, entry):
+        """Handle search entry changes."""
+        self._filter_text = entry.get_text().strip().lower()
+        self._display_commits()
+
+    def _display_commits(self):
+        """Display commits with current filter."""
+        self.commits_list.remove_all()
+
+        if not self._all_commits:
             label = Gtk.Label(label="No commits yet")
             label.add_css_class("dim-label")
             label.set_margin_top(24)
             self.commits_list.append(label)
             return
 
-        for commit in commits:
+        # Filter commits
+        if self._filter_text:
+            filtered = [
+                c for c in self._all_commits
+                if self._filter_text in c.message.lower()
+                or self._filter_text in c.author.lower()
+                or self._filter_text in c.short_hash.lower()
+            ]
+        else:
+            filtered = self._all_commits
+
+        if not filtered:
+            label = Gtk.Label(label="No matching commits")
+            label.add_css_class("dim-label")
+            label.set_margin_top(24)
+            self.commits_list.append(label)
+            return
+
+        for commit in filtered:
             row = self._create_commit_row(commit)
             self.commits_list.append(row)
 

@@ -24,6 +24,7 @@ class FileTree(Gtk.Box):
 
     __gsignals__ = {
         "file-activated": (GObject.SignalFlags.RUN_FIRST, None, (str,)),
+        "selection-changed": (GObject.SignalFlags.RUN_FIRST, None, (bool,)),  # has_selection
     }
 
     # Folders to always hide (not toggleable)
@@ -156,6 +157,7 @@ class FileTree(Gtk.Box):
         self.list_box.set_selection_mode(Gtk.SelectionMode.SINGLE)
         self.list_box.add_css_class("navigation-sidebar")
         self.list_box.connect("row-activated", self._on_row_activated)
+        self.list_box.connect("row-selected", self._on_row_selected)
 
         # Right-click context menu
         click_controller = Gtk.GestureClick()
@@ -247,7 +249,7 @@ class FileTree(Gtk.Box):
 
         return False
 
-    def _get_selected_paths(self) -> list[Path]:
+    def get_selected_paths(self) -> list[Path]:
         """Get list of selected paths."""
         paths = []
         for row in self.list_box.get_selected_rows():
@@ -265,7 +267,7 @@ class FileTree(Gtk.Box):
 
     def _copy_selected_paths(self, relative: bool):
         """Copy selected paths to clipboard."""
-        paths = self._get_selected_paths()
+        paths = self.get_selected_paths()
         if not paths:
             return
 
@@ -315,6 +317,7 @@ class FileTree(Gtk.Box):
         self.list_box.set_selection_mode(Gtk.SelectionMode.SINGLE)
         self.list_box.add_css_class("navigation-sidebar")
         self.list_box.connect("row-activated", self._on_row_activated)
+        self.list_box.connect("row-selected", self._on_row_selected)
 
         # Right-click context menu
         click_controller = Gtk.GestureClick()
@@ -407,15 +410,12 @@ class FileTree(Gtk.Box):
             spacer.set_size_request(16, -1)
             box.append(spacer)
 
-        # Icon (from cached Material Design icons)
-        if path.is_dir():
-            is_expanded = str(path) in self._expanded_paths
-            texture = self._icon_cache.get_folder_icon(path, is_open=is_expanded)
-        else:
-            texture = self._icon_cache.get_file_icon(path)
+        # Icon (from cached Material Design icons, using GIcon for crisp rendering)
+        is_expanded = str(path) in self._expanded_paths if path.is_dir() else False
+        gicon = self._icon_cache.get_gicon(path, is_open=is_expanded)
 
-        if texture:
-            icon = Gtk.Image.new_from_paintable(texture)
+        if gicon:
+            icon = Gtk.Image.new_from_gicon(gicon)
             icon.set_pixel_size(16)
         else:
             # Fallback to system icon
@@ -457,6 +457,11 @@ class FileTree(Gtk.Box):
             return str(path.relative_to(self.root_path))
         except ValueError:
             return str(path)
+
+    def _on_row_selected(self, list_box, row):
+        """Handle row selection change."""
+        has_selection = row is not None and hasattr(row, "path")
+        self.emit("selection-changed", has_selection)
 
     def _on_row_activated(self, list_box, row):
         """Handle row activation."""

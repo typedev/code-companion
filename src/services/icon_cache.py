@@ -721,6 +721,61 @@ class IconCache:
 
         return None
 
+    def get_folder_gicon(self, path: Path, is_open: bool = False) -> Gio.Icon | None:
+        """Get Gio.Icon for a folder (renders at correct size).
+
+        Args:
+            path: Path to the folder
+            is_open: Whether the folder is expanded
+
+        Returns:
+            Gio.FileIcon pointing to the SVG, or None if not found
+        """
+        folder_name = path.name.lower()
+
+        # Look up folder-specific icon
+        if folder_name in self.FOLDER_MAP:
+            icon_base = f"folder-{self.FOLDER_MAP[folder_name]}"
+        else:
+            icon_base = "folder"
+
+        # Add -open suffix for expanded folders
+        icon_name = f"{icon_base}-open" if is_open else icon_base
+
+        # Return specific icon or fall back to default folder
+        icon_path = self._icons_dir / f"{icon_name}.svg"
+        if icon_path.exists():
+            return Gio.FileIcon.new(Gio.File.new_for_path(str(icon_path)))
+
+        # Try without -open suffix
+        if is_open:
+            icon_path = self._icons_dir / f"{icon_base}.svg"
+            if icon_path.exists():
+                return Gio.FileIcon.new(Gio.File.new_for_path(str(icon_path)))
+
+        # Fall back to default folder
+        fallback = "folder-open" if is_open else "folder"
+        icon_path = self._icons_dir / f"{fallback}.svg"
+        if icon_path.exists():
+            return Gio.FileIcon.new(Gio.File.new_for_path(str(icon_path)))
+
+        return None
+
+    def get_gicon(self, path: Path, is_open: bool = False) -> Gio.Icon | None:
+        """Get Gio.Icon for any path (file or folder).
+
+        Args:
+            path: Path to the file or folder
+            is_open: Whether the folder is expanded (ignored for files)
+
+        Returns:
+            Gio.FileIcon pointing to the SVG, or None if not found
+        """
+        if path.is_dir():
+            return self.get_folder_gicon(path, is_open)
+        else:
+            return self.get_file_gicon(path)
+
     def get_claude_texture(self) -> Gdk.Texture | None:
         """Get Gdk.Texture for Claude icon."""
         return self._cache.get("claude")

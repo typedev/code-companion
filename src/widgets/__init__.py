@@ -13,6 +13,9 @@ from .git_history_panel import GitHistoryPanel
 from .branch_popover import BranchPopover
 from .commit_detail_view import CommitDetailView
 from .claude_history_panel import ClaudeHistoryPanel
+from .file_search_dialog import FileSearchDialog
+from .content_search_dialog import ContentSearchDialog
+from .search_panel import SearchPanel
 
 __all__ = [
     "MessageRow",
@@ -31,4 +34,7 @@ __all__ = [
     "BranchPopover",
     "CommitDetailView",
     "ClaudeHistoryPanel",
+    "FileSearchDialog",
+    "ContentSearchDialog",
+    "SearchPanel",
 ]
