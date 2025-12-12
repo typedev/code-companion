@@ -6,7 +6,7 @@ from gi.repository import Adw, Gtk, GLib, Gio, Gdk
 
 from .models import Session
 from .services import HistoryService, ProjectLock, ProjectRegistry, GitService, IconCache, ToastService
-from .widgets import SessionView, TerminalView, FileTree, FileEditor, TasksPanel, GitChangesPanel, GitHistoryPanel, DiffView, CommitDetailView
+from .widgets import SessionView, TerminalView, FileTree, FileEditor, TasksPanel, GitChangesPanel, GitHistoryPanel, DiffView, CommitDetailView, ClaudeHistoryPanel
 
 
 def escape_markup(text: str) -> str:
@@ -16,9 +16,6 @@ def escape_markup(text: str) -> str:
 
 class ProjectWindow(Adw.ApplicationWindow):
     """Project workspace window with file tree, tabs, and terminal."""
-
-    # Auto-refresh interval for history (5 seconds)
-    HISTORY_REFRESH_INTERVAL = 5000
 
     def __init__(self, project_path: str, **kwargs):
         super().__init__(**kwargs)
@@ -32,10 +29,10 @@ class ProjectWindow(Adw.ApplicationWindow):
 
         self.claude_tab_page: Adw.TabPage | None = None
         self.claude_terminal: TerminalView | None = None
-        self.history_tab_page: Adw.TabPage | None = None
         self.commit_detail_page: Adw.TabPage | None = None
         self.commit_detail_view: CommitDetailView | None = None
-        self._refresh_timer_id: int | None = None
+        self.session_detail_page: Adw.TabPage | None = None
+        self.session_detail_view: SessionView | None = None
 
         # Acquire lock
         if not self.lock.acquire():
@@ -148,7 +145,7 @@ class ProjectWindow(Adw.ApplicationWindow):
         return header
 
     def _build_sidebar(self) -> Gtk.Box:
-        """Build the sidebar with Files/Git tabs."""
+        """Build the sidebar with Files/Git/Claude tabs."""
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
 
         # Check if this is a git repo
@@ -157,34 +154,34 @@ class ProjectWindow(Adw.ApplicationWindow):
         if self._is_git_repo:
             self.git_service.open()
 
-        # Top-level stack: Files / Git
+        # Top-level stack: Files / Git / Claude
+        self.sidebar_stack = Gtk.Stack()
+        self.sidebar_stack.set_transition_type(Gtk.StackTransitionType.CROSSFADE)
+        self.sidebar_stack.set_vexpand(True)
+
+        # Top-level stack switcher
+        switcher = Gtk.StackSwitcher()
+        switcher.set_stack(self.sidebar_stack)
+        switcher.set_margin_start(12)
+        switcher.set_margin_end(12)
+        switcher.set_margin_top(8)
+        switcher.set_margin_bottom(4)
+        box.append(switcher)
+
+        # Files page
+        files_page = self._build_files_page()
+        self.sidebar_stack.add_titled(files_page, "files", "Files")
+
+        # Git page (with nested Changes/History tabs) - only if git repo
         if self._is_git_repo:
-            self.sidebar_stack = Gtk.Stack()
-            self.sidebar_stack.set_transition_type(Gtk.StackTransitionType.CROSSFADE)
-            self.sidebar_stack.set_vexpand(True)
-
-            # Top-level stack switcher
-            switcher = Gtk.StackSwitcher()
-            switcher.set_stack(self.sidebar_stack)
-            switcher.set_margin_start(12)
-            switcher.set_margin_end(12)
-            switcher.set_margin_top(8)
-            switcher.set_margin_bottom(4)
-            box.append(switcher)
-
-            # Files page
-            files_page = self._build_files_page()
-            self.sidebar_stack.add_titled(files_page, "files", "Files")
-
-            # Git page (with nested Changes/History tabs)
             git_page = self._build_git_page()
             self.sidebar_stack.add_titled(git_page, "git", "Git")
 
-            box.append(self.sidebar_stack)
-        else:
-            # No git - just show files
-            files_page = self._build_files_page()
-            box.append(files_page)
+        # Claude page (session history)
+        claude_page = self._build_claude_page()
+        self.sidebar_stack.add_titled(claude_page, "claude", "Claude")
+
+        box.append(self.sidebar_stack)
 
         return box
 
@@ -284,6 +281,21 @@ class ProjectWindow(Adw.ApplicationWindow):
 
         return box
 
+    def _build_claude_page(self) -> Gtk.Box:
+        """Build the Claude tab with session history."""
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        box.set_vexpand(True)
+
+        # Claude history panel
+        self.claude_history_panel = ClaudeHistoryPanel(
+            self.project_path,
+            self.history_service
+        )
+        self.claude_history_panel.connect("session-activated", self._on_session_activated)
+        box.append(self.claude_history_panel)
+
+        return box
+
     def _build_content(self) -> Gtk.Box:
         """Build the main content area with tab view."""
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
@@ -306,147 +318,29 @@ class ProjectWindow(Adw.ApplicationWindow):
 
     def _load_project(self):
         """Load project data and create initial tabs."""
-        # Create History tab (pinned)
-        self._create_history_tab()
+        # No pinned tabs needed - history is in sidebar now
+        pass
 
-    def _create_history_tab(self):
-        """Create the pinned History tab."""
-        history_view = self._build_history_view()
-        page = self.tab_view.append(history_view)
-        page.set_title("History")
-        page.set_icon(Gio.ThemedIcon.new("document-open-recent-symbolic"))
-        self.tab_view.set_page_pinned(page, True)
-        self.history_tab_page = page
-
-    def _build_history_view(self) -> Gtk.Box:
-        """Build the history view content."""
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-
-        # Navigation view for session list -> detail
-        self.history_nav = Adw.NavigationView()
-
-        # Sessions list page
-        sessions_page = self._build_sessions_page()
-        self.history_nav.add(sessions_page)
-
-        box.append(self.history_nav)
-        return box
-
-    def _build_sessions_page(self) -> Adw.NavigationPage:
-        """Build the sessions list page."""
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-
-        # Session list in scrolled window
-        scrolled = Gtk.ScrolledWindow()
-        scrolled.set_vexpand(True)
-        scrolled.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
-
-        self.session_list = Gtk.ListBox()
-        self.session_list.set_selection_mode(Gtk.SelectionMode.SINGLE)
-        self.session_list.add_css_class("boxed-list")
-        self.session_list.set_margin_start(12)
-        self.session_list.set_margin_end(12)
-        self.session_list.set_margin_top(12)
-        self.session_list.set_margin_bottom(12)
-        self.session_list.connect("row-activated", self._on_session_activated)
-
-        scrolled.set_child(self.session_list)
-        box.append(scrolled)
-
-        # Load sessions
-        self._load_sessions()
-
-        # Start auto-refresh
-        self._start_history_refresh()
-
-        page = Adw.NavigationPage()
-        page.set_title("Sessions")
-        page.set_tag("sessions")
-        page.set_child(box)
-
-        return page
-
-    def _load_sessions(self):
-        """Load sessions for the project."""
-        sessions = self.history_service.get_sessions_for_path(self.project_path)
-
-        # Clear existing
-        self.session_list.remove_all()
-
-        if not sessions:
-            label = Gtk.Label(label="No sessions yet")
-            label.add_css_class("dim-label")
-            label.set_margin_top(24)
-            self.session_list.append(label)
+    def _on_session_activated(self, panel, session: Session):
+        """Handle session activation - show in main area, reuse single tab."""
+        # Reuse existing session detail view if available
+        if self.session_detail_view is not None and self.session_detail_page is not None:
+            # Update existing view with new session
+            self.session_detail_view.load_session(session)
+            self.session_detail_page.set_title(f"Session: {session.display_date}")
+            self.tab_view.set_selected_page(self.session_detail_page)
             return
 
-        for session in sessions:
-            row = self._create_session_row(session)
-            self.session_list.append(row)
+        # Create new session detail view
+        self.session_detail_view = SessionView(self.history_service)
+        self.session_detail_view.load_session(session)
 
-    def _create_session_row(self, session: Session) -> Gtk.ListBoxRow:
-        """Create a list row for a session."""
-        row = Adw.ActionRow()
-        row.set_title(escape_markup(session.display_date))
-        row.set_subtitle(escape_markup(session.short_preview) if session.short_preview else "(empty session)")
-        row.set_activatable(True)
-        row.session = session
+        # Add tab
+        self.session_detail_page = self.tab_view.append(self.session_detail_view)
+        self.session_detail_page.set_title(f"Session: {session.display_date}")
+        self.session_detail_page.set_icon(Gio.ThemedIcon.new("document-open-recent-symbolic"))
 
-        # Message count badge
-        badge = Gtk.Label(label=str(session.message_count))
-        badge.add_css_class("dim-label")
-        row.add_suffix(badge)
-
-        # Chevron
-        chevron = Gtk.Image.new_from_icon_name("go-next-symbolic")
-        row.add_suffix(chevron)
-
-        return row
-
-    def _on_session_activated(self, listbox, row):
-        """Handle session selection."""
-        if not hasattr(row, "session"):
-            return
-
-        session = row.session
-
-        # Build session detail page
-        detail_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-
-        # Header
-        header = Adw.HeaderBar()
-        detail_box.append(header)
-
-        # Session view
-        session_view = SessionView(self.history_service)
-        session_view.load_session(session)
-        detail_box.append(session_view)
-
-        page = Adw.NavigationPage()
-        page.set_title(session.display_date)
-        page.set_tag("session-detail")
-        page.set_child(detail_box)
-
-        self.history_nav.push(page)
-
-    def _start_history_refresh(self):
-        """Start periodic history refresh."""
-        self._stop_history_refresh()
-        self._refresh_timer_id = GLib.timeout_add(
-            self.HISTORY_REFRESH_INTERVAL,
-            self._on_history_refresh_tick
-        )
-
-    def _stop_history_refresh(self):
-        """Stop history refresh timer."""
-        if self._refresh_timer_id is not None:
-            GLib.source_remove(self._refresh_timer_id)
-            self._refresh_timer_id = None
-
-    def _on_history_refresh_tick(self) -> bool:
-        """Periodically refresh history."""
-        self._load_sessions()
-        return True
+        self.tab_view.set_selected_page(self.session_detail_page)
 
     def _on_sidebar_toggled(self, button):
         """Toggle sidebar visibility."""
@@ -714,10 +608,6 @@ class ProjectWindow(Adw.ApplicationWindow):
 
     def _on_tab_close_requested(self, tab_view, page) -> bool:
         """Handle tab close request."""
-        # History tab cannot be closed
-        if page == self.history_tab_page:
-            return True  # Prevent close
-
         # Claude tab - show warning if active
         if page == self.claude_tab_page:
             dialog = Adw.AlertDialog()
@@ -736,6 +626,11 @@ class ProjectWindow(Adw.ApplicationWindow):
             self.commit_detail_page = None
             self.commit_detail_view = None
 
+        # Session detail tab - clear references when closed
+        if page == self.session_detail_page:
+            self.session_detail_page = None
+            self.session_detail_view = None
+
         return False  # Allow close
 
     def _on_claude_close_response(self, dialog, response, page):
@@ -748,5 +643,4 @@ class ProjectWindow(Adw.ApplicationWindow):
 
     def _on_destroy(self, window):
         """Clean up on window destroy."""
-        self._stop_history_refresh()
         self.lock.release()

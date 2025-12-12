@@ -12,6 +12,7 @@ from .git_changes_panel import GitChangesPanel
 from .git_history_panel import GitHistoryPanel
 from .branch_popover import BranchPopover
 from .commit_detail_view import CommitDetailView
+from .claude_history_panel import ClaudeHistoryPanel
 
 __all__ = [
     "MessageRow",
@@ -29,4 +30,5 @@ __all__ = [
     "GitHistoryPanel",
     "BranchPopover",
     "CommitDetailView",
+    "ClaudeHistoryPanel",
 ]

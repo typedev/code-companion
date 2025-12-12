@@ -52,12 +52,16 @@ src/
 ├── project_window.py    # Project workspace (file tree, tabs, terminal, git)
 ├── models/              # Data models (Project, Session, Message, ToolCall)
 ├── widgets/             # UI components
-│   ├── file_tree.py     # File browser sidebar with git status indicators
+│   ├── file_tree.py     # File browser with git status, file monitoring, gitignore filtering
 │   ├── file_editor.py   # Code editor with autosave
 │   ├── terminal_view.py # VTE terminal with Dracula theme
-│   ├── session_view.py  # History session viewer
+│   ├── session_view.py  # Claude session content viewer
+│   ├── claude_history_panel.py  # Claude sessions list (sidebar)
 │   ├── code_view.py     # Read-only code display + DiffView
-│   ├── git_panel.py     # Git changes panel (stage/commit/push/pull)
+│   ├── git_changes_panel.py  # Git changes (stage/commit/push/pull)
+│   ├── git_history_panel.py  # Git commit history list
+│   ├── commit_detail_view.py # Commit details (files + message + diff)
+│   ├── branch_popover.py     # Branch management popover
 │   ├── tasks_panel.py   # VSCode tasks.json runner
 │   └── ...
 ├── services/            # Business logic
@@ -66,22 +70,44 @@ src/
 │   ├── project_lock.py  # Lock files for single-instance per project
 │   ├── git_service.py   # Git operations via pygit2
 │   ├── tasks_service.py # VSCode tasks.json parser
+│   ├── toast_service.py # Toast notifications singleton
 │   └── icon_cache.py    # Material Design icons cache (O(1) lookup)
 ├── resources/
 │   └── icons/           # Material Design SVG icons (from vscode-material-icon-theme)
 └── utils/               # Helpers (path encoding)
 ```
 
+**UI Structure**:
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│ Header: [Sidebar] [Claude] [Terminal+]          Title        [Term] │
+├──────────────────────┬──────────────────────────────────────────────┤
+│ Sidebar              │  Main Area (Tabs)                            │
+│ [Files][Git][Claude] │  [Session] [Commit] [file.py] [Terminal]     │
+│                      │                                              │
+│ Files tab:           │  Content view:                               │
+│  - File tree         │  - Session details                           │
+│  - Tasks panel       │  - Commit details (files + message + diff)   │
+│                      │  - File editor                               │
+│ Git tab:             │  - Terminal                                  │
+│  [Changes][History]  │                                              │
+│  - Stage/commit/push │                                              │
+│  - Commit list       │                                              │
+│                      │                                              │
+│ Claude tab:          │                                              │
+│  - Sessions list     │                                              │
+└──────────────────────┴──────────────────────────────────────────────┘
+```
+
 Key patterns:
 - **Multi-process**: Each project runs in separate process (`Gio.ApplicationFlags.NON_UNIQUE`)
 - **Lock files**: `/tmp/claude-companion-locks/` prevents opening same project twice
 - **Project registry**: `~/.config/claude-companion/projects.json` stores user's projects
+- **Unified navigation**: Sidebar for browsing (Files/Git/Claude), main area for content only
+- **Single tab reuse**: Commit details and session details reuse single tab (no duplicates)
 - **Icon cache**: Pre-loaded Material Design SVG icons with O(1) lookup by extension/filename
-  - `get_file_icon(path)` → `Gdk.Texture` for file icons
-  - `get_folder_icon(path, is_open)` → `Gdk.Texture` for folder icons
-  - `get_file_gicon(path)` → `Gio.Icon` for tab icons
-  - `get_claude_texture()` → `Gdk.Texture` for Claude icon
-  - `get_claude_gicon()` → `Gio.Icon` for Claude tab icon
+- **File monitoring**: Auto-refresh file tree via `Gio.FileMonitor` with debounce
+- **Toast notifications**: `ToastService` singleton for app-wide feedback
 - Parse Claude Code JSONL session files from `~/.claude/projects/[encoded-path]/`
 - Project paths are encoded by replacing `/` with `-`
 
@@ -100,6 +126,14 @@ Session files are JSONL with event types: `user`, `assistant`, `tool_use`, `tool
 - [x] v0.5: Git integration (pygit2, Files/Changes tabs, stage/commit/push/pull, unified diff view)
 - [x] v0.5.1: Git history (commit list, checkout/reset/revert, Files/Git sidebar structure)
 - [x] v0.5.2: Material Design icons (vscode-material-icon-theme, cached SVG icons, Claude icon)
+- [x] v0.5.3: UX improvements:
+  - Toast notifications (ToastService)
+  - File tree auto-refresh (Gio.FileMonitor)
+  - Gitignore filtering (pathspec)
+  - Branch management (create/switch/delete)
+  - Commit detail view (files list + full message + per-file diff)
+  - Unified sidebar (Files/Git/Claude tabs)
+  - Single-tab reuse for sessions and commits
 - [ ] v0.6: TODO notes
 - [ ] v0.7: Polish (search, settings, packaging)
 - [ ] v1.0: Multi-agent orchestration with Git worktrees
