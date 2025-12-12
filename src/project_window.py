@@ -60,25 +60,30 @@ class ProjectWindow(Adw.ApplicationWindow):
 
     def _build_ui(self):
         """Build the UI layout."""
-        # Main horizontal split
-        self.split_view = Adw.OverlaySplitView()
-        self.split_view.set_collapsed(False)
-        self.split_view.set_min_sidebar_width(200)
-        self.split_view.set_max_sidebar_width(400)
+        # Main horizontal split with resizable pane
+        self.paned = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL)
+        self.paned.set_shrink_start_child(False)
+        self.paned.set_shrink_end_child(False)
+        self.paned.set_resize_start_child(False)  # Sidebar doesn't auto-resize
+        self.paned.set_resize_end_child(True)     # Content takes remaining space
 
         # Sidebar (file tree)
-        sidebar = self._build_sidebar()
-        self.split_view.set_sidebar(sidebar)
+        self.sidebar = self._build_sidebar()
+        self.sidebar.set_size_request(250, -1)  # Default width
+        self.paned.set_start_child(self.sidebar)
 
         # Main content with tabs
         content = self._build_content()
-        self.split_view.set_content(content)
+        self.paned.set_end_child(content)
+
+        # Set initial position
+        self.paned.set_position(280)
 
         # Wrap everything in a toolbar view
         toolbar_view = Adw.ToolbarView()
         header = self._build_header()
         toolbar_view.add_top_bar(header)
-        toolbar_view.set_content(self.split_view)
+        toolbar_view.set_content(self.paned)
 
         # Wrap in toast overlay for notifications
         self.toast_overlay = Adw.ToastOverlay()
@@ -384,7 +389,14 @@ class ProjectWindow(Adw.ApplicationWindow):
 
     def _on_sidebar_toggled(self, button):
         """Toggle sidebar visibility."""
-        self.split_view.set_show_sidebar(button.get_active())
+        if button.get_active():
+            # Restore sidebar
+            self.sidebar.set_visible(True)
+            self.paned.set_position(self._saved_pane_position if hasattr(self, '_saved_pane_position') else 280)
+        else:
+            # Hide sidebar
+            self._saved_pane_position = self.paned.get_position()
+            self.sidebar.set_visible(False)
 
     def _on_claude_clicked(self, button):
         """Start Claude terminal session."""

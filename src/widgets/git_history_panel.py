@@ -237,11 +237,14 @@ class GitHistoryPanel(Gtk.Box):
 
     def refresh(self):
         """Refresh the commits list."""
+        # Save current selection
+        selected_hash = None
+        if self._selected_commit:
+            selected_hash = self._selected_commit.hash
+
         # Clear existing
         self.commits_list.remove_all()
-
         self._selected_commit = None
-        self._update_buttons()
 
         # Get commits
         try:
@@ -250,17 +253,20 @@ class GitHistoryPanel(Gtk.Box):
             label = Gtk.Label(label=f"Error: {e}")
             label.add_css_class("dim-label")
             self.commits_list.append(label)
+            self._update_buttons()
             return
 
-        self._display_commits()
+        self._display_commits(selected_hash)
 
     def _on_search_changed(self, entry):
         """Handle search entry changes."""
         self._filter_text = entry.get_text().strip().lower()
-        self._display_commits()
+        # Preserve selection during filtering
+        selected_hash = self._selected_commit.hash if self._selected_commit else None
+        self._display_commits(selected_hash)
 
-    def _display_commits(self):
-        """Display commits with current filter."""
+    def _display_commits(self, selected_hash: str = None):
+        """Display commits with current filter, optionally restoring selection."""
         self.commits_list.remove_all()
 
         if not self._all_commits:
@@ -268,6 +274,7 @@ class GitHistoryPanel(Gtk.Box):
             label.add_css_class("dim-label")
             label.set_margin_top(24)
             self.commits_list.append(label)
+            self._update_buttons()
             return
 
         # Filter commits
@@ -286,11 +293,20 @@ class GitHistoryPanel(Gtk.Box):
             label.add_css_class("dim-label")
             label.set_margin_top(24)
             self.commits_list.append(label)
+            self._update_buttons()
             return
 
+        # Rebuild list and restore selection
+        row_to_select = None
         for commit in filtered:
             row = self._create_commit_row(commit)
             self.commits_list.append(row)
+            if selected_hash and commit.hash == selected_hash:
+                row_to_select = row
+
+        # Restore selection
+        if row_to_select:
+            self.commits_list.select_row(row_to_select)
 
     def _create_commit_row(self, commit) -> Gtk.ListBoxRow:
         """Create a row for a commit."""
