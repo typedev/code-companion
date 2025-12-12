@@ -304,9 +304,15 @@ class GitHistoryPanel(Gtk.Box):
             if selected_hash and commit.hash == selected_hash:
                 row_to_select = row
 
-        # Restore selection
+        # Restore selection or clear if not found
         if row_to_select:
             self.commits_list.select_row(row_to_select)
+        else:
+            # Selected commit no longer in filtered list
+            self._selected_commit = None
+
+        # Always update buttons to reflect current state
+        self._update_buttons()
 
     def _create_commit_row(self, commit) -> Gtk.ListBoxRow:
         """Create a row for a commit."""
