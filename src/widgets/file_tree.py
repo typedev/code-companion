@@ -60,12 +60,8 @@ class FileTree(Gtk.Box):
             return
 
         for entry in entries:
-            # Skip hidden folders
-            if entry.is_dir() and entry.name in self.HIDDEN_FOLDERS:
-                continue
-
-            # Skip hidden files (starting with .)
-            if entry.name.startswith("."):
+            # Skip only .git folder
+            if entry.name in self.HIDDEN_FOLDERS:
                 continue
 
             row = self._create_row(entry, depth)

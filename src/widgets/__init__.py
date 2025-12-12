@@ -7,6 +7,7 @@ from .markdown_view import MarkdownView
 from .terminal_view import TerminalView
 from .file_tree import FileTree
 from .file_editor import FileEditor
+from .tasks_panel import TasksPanel
 
 __all__ = [
     "MessageRow",
@@ -19,4 +20,5 @@ __all__ = [
     "TerminalView",
     "FileTree",
     "FileEditor",
+    "TasksPanel",
 ]

@@ -6,7 +6,7 @@ from gi.repository import Adw, Gtk, GLib, Gio
 
 from .models import Session
 from .services import HistoryService, ProjectLock, ProjectRegistry
-from .widgets import SessionView, TerminalView, FileTree, FileEditor
+from .widgets import SessionView, TerminalView, FileTree, FileEditor, TasksPanel
 
 
 def escape_markup(text: str) -> str:
@@ -161,6 +161,11 @@ class ProjectWindow(Adw.ApplicationWindow):
         self.file_tree = FileTree(str(self.project_path))
         self.file_tree.connect("file-activated", self._on_file_activated)
         box.append(self.file_tree)
+
+        # Tasks panel (below file tree)
+        self.tasks_panel = TasksPanel(str(self.project_path))
+        self.tasks_panel.connect("task-run", self._on_task_run)
+        box.append(self.tasks_panel)
 
         return box
 
@@ -395,6 +400,19 @@ class ProjectWindow(Adw.ApplicationWindow):
     def _on_refresh_files_clicked(self, button):
         """Refresh file tree."""
         self.file_tree.refresh()
+
+    def _on_task_run(self, tasks_panel, label: str, command: str):
+        """Handle task run - create terminal and execute command."""
+        terminal = TerminalView(
+            working_directory=str(self.project_path),
+            run_command=command
+        )
+
+        page = self.tab_view.append(terminal)
+        page.set_title(f"Task: {label}")
+        page.set_icon(Gio.ThemedIcon.new("media-playback-start-symbolic"))
+
+        self.tab_view.set_selected_page(page)
 
     def _on_file_activated(self, file_tree, file_path: str):
         """Handle file activation from tree - open in tab."""
