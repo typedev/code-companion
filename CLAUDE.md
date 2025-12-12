@@ -65,7 +65,10 @@ src/
 │   ├── project_registry.py  # Registered projects storage
 │   ├── project_lock.py  # Lock files for single-instance per project
 │   ├── git_service.py   # Git operations via pygit2
-│   └── tasks_service.py # VSCode tasks.json parser
+│   ├── tasks_service.py # VSCode tasks.json parser
+│   └── icon_cache.py    # Material Design icons cache (O(1) lookup)
+├── resources/
+│   └── icons/           # Material Design SVG icons (from vscode-material-icon-theme)
 └── utils/               # Helpers (path encoding)
 ```
 
@@ -73,6 +76,7 @@ Key patterns:
 - **Multi-process**: Each project runs in separate process (`Gio.ApplicationFlags.NON_UNIQUE`)
 - **Lock files**: `/tmp/claude-companion-locks/` prevents opening same project twice
 - **Project registry**: `~/.config/claude-companion/projects.json` stores user's projects
+- **Icon cache**: Pre-loaded Material Design SVG icons with O(1) lookup by extension/filename
 - Parse Claude Code JSONL session files from `~/.claude/projects/[encoded-path]/`
 - Project paths are encoded by replacing `/` with `-`
 
@@ -90,6 +94,7 @@ Session files are JSONL with event types: `user`, `assistant`, `tool_use`, `tool
 - [x] v0.4.1: VSCode tasks.json support (tasks panel in sidebar)
 - [x] v0.5: Git integration (pygit2, Files/Changes tabs, stage/commit/push/pull, unified diff view)
 - [x] v0.5.1: Git history (commit list, checkout/reset/revert, Files/Git sidebar structure)
+- [x] v0.5.2: Material Design icons (vscode-material-icon-theme, cached SVG icons, Claude icon)
 - [ ] v0.6: TODO notes
 - [ ] v0.7: Polish (search, settings, packaging)
 - [ ] v1.0: Multi-agent orchestration with Git worktrees

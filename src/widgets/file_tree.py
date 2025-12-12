@@ -4,7 +4,7 @@ from pathlib import Path
 
 from gi.repository import Gtk, Gio, GLib, GObject, Pango, Gdk
 
-from ..services import GitService, FileStatus
+from ..services import GitService, FileStatus, IconCache
 
 
 # CSS classes for git status colors
@@ -36,6 +36,9 @@ class FileTree(Gtk.Box):
         self._git_status: dict[str, FileStatus] = {}
         self.context_menu = None
 
+        # Initialize icon cache (singleton, loads icons once)
+        self._icon_cache = IconCache()
+
         # Initialize git service
         self._git_service = GitService(self.root_path)
         self._is_git_repo = self._git_service.is_git_repo()
@@ -55,7 +58,7 @@ class FileTree(Gtk.Box):
 
         # List box for tree items
         self.list_box = Gtk.ListBox()
-        self.list_box.set_selection_mode(Gtk.SelectionMode.MULTIPLE)
+        self.list_box.set_selection_mode(Gtk.SelectionMode.SINGLE)
         self.list_box.add_css_class("navigation-sidebar")
         self.list_box.connect("row-activated", self._on_row_activated)
 
@@ -208,7 +211,7 @@ class FileTree(Gtk.Box):
 
         old_list_box = self.list_box
         self.list_box = Gtk.ListBox()
-        self.list_box.set_selection_mode(Gtk.SelectionMode.MULTIPLE)
+        self.list_box.set_selection_mode(Gtk.SelectionMode.SINGLE)
         self.list_box.add_css_class("navigation-sidebar")
         self.list_box.connect("row-activated", self._on_row_activated)
 
@@ -283,12 +286,20 @@ class FileTree(Gtk.Box):
             spacer.set_size_request(16, -1)
             box.append(spacer)
 
-        # Icon
+        # Icon (from cached Material Design icons)
         if path.is_dir():
-            icon_name = "folder-symbolic"
+            is_expanded = str(path) in self._expanded_paths
+            texture = self._icon_cache.get_folder_icon(path, is_open=is_expanded)
         else:
-            icon_name = self._get_file_icon(path)
-        icon = Gtk.Image.new_from_icon_name(icon_name)
+            texture = self._icon_cache.get_file_icon(path)
+
+        if texture:
+            icon = Gtk.Image.new_from_paintable(texture)
+            icon.set_pixel_size(16)
+        else:
+            # Fallback to system icon
+            icon_name = "folder-symbolic" if path.is_dir() else "text-x-generic-symbolic"
+            icon = Gtk.Image.new_from_icon_name(icon_name)
         box.append(icon)
 
         # Name
@@ -325,35 +336,6 @@ class FileTree(Gtk.Box):
             return str(path.relative_to(self.root_path))
         except ValueError:
             return str(path)
-
-    def _get_file_icon(self, path: Path) -> str:
-        """Get appropriate icon for file type."""
-        suffix = path.suffix.lower()
-
-        icon_map = {
-            ".py": "text-x-python-symbolic",
-            ".js": "text-x-javascript-symbolic",
-            ".ts": "text-x-javascript-symbolic",
-            ".json": "text-x-generic-symbolic",
-            ".md": "text-x-generic-symbolic",
-            ".txt": "text-x-generic-symbolic",
-            ".yaml": "text-x-generic-symbolic",
-            ".yml": "text-x-generic-symbolic",
-            ".toml": "text-x-generic-symbolic",
-            ".sh": "text-x-script-symbolic",
-            ".bash": "text-x-script-symbolic",
-            ".html": "text-html-symbolic",
-            ".css": "text-css-symbolic",
-            ".xml": "text-xml-symbolic",
-            ".rs": "text-x-generic-symbolic",
-            ".go": "text-x-generic-symbolic",
-            ".java": "text-x-generic-symbolic",
-            ".c": "text-x-csrc-symbolic",
-            ".cpp": "text-x-c++src-symbolic",
-            ".h": "text-x-chdr-symbolic",
-        }
-
-        return icon_map.get(suffix, "text-x-generic-symbolic")
 
     def _on_row_activated(self, list_box, row):
         """Handle row activation."""

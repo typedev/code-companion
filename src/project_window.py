@@ -2,10 +2,10 @@
 
 from pathlib import Path
 
-from gi.repository import Adw, Gtk, GLib, Gio
+from gi.repository import Adw, Gtk, GLib, Gio, Gdk
 
 from .models import Session
-from .services import HistoryService, ProjectLock, ProjectRegistry, GitService
+from .services import HistoryService, ProjectLock, ProjectRegistry, GitService, IconCache
 from .widgets import SessionView, TerminalView, FileTree, FileEditor, TasksPanel, GitChangesPanel, GitHistoryPanel, DiffView
 
 
@@ -92,15 +92,23 @@ class ProjectWindow(Adw.ApplicationWindow):
         sidebar_btn.connect("toggled", self._on_sidebar_toggled)
         header.pack_start(sidebar_btn)
 
-        # Claude button
+        # Claude button with Material Design icon
         self.claude_btn = Gtk.Button()
-        self.claude_btn.set_icon_name("utilities-terminal-symbolic")
         self.claude_btn.set_tooltip_text("Start Claude session")
         self.claude_btn.add_css_class("suggested-action")
         self.claude_btn.connect("clicked", self._on_claude_clicked)
 
         claude_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-        claude_icon = Gtk.Image.new_from_icon_name("utilities-terminal-symbolic")
+
+        # Use Claude icon from cache
+        icon_cache = IconCache()
+        claude_texture = icon_cache._cache.get("claude")
+        if claude_texture:
+            claude_icon = Gtk.Image.new_from_paintable(claude_texture)
+            claude_icon.set_pixel_size(16)
+        else:
+            claude_icon = Gtk.Image.new_from_icon_name("utilities-terminal-symbolic")
+
         claude_label = Gtk.Label(label="Claude")
         claude_box.append(claude_icon)
         claude_box.append(claude_label)
@@ -427,10 +435,14 @@ class ProjectWindow(Adw.ApplicationWindow):
         # Connect to child-exited to know when claude exits
         terminal.connect("child-exited", self._on_claude_exited)
 
-        # Add tab
+        # Add tab with Claude icon
         page = self.tab_view.append(terminal)
         page.set_title("Claude")
-        page.set_icon(Gio.ThemedIcon.new("utilities-terminal-symbolic"))
+
+        # Use Claude icon from cache
+        icon_cache = IconCache()
+        claude_gicon = icon_cache.get_claude_gicon()
+        page.set_icon(claude_gicon or Gio.ThemedIcon.new("utilities-terminal-symbolic"))
 
         self.claude_tab_page = page
         self.claude_terminal = terminal
@@ -544,12 +556,16 @@ class ProjectWindow(Adw.ApplicationWindow):
         # Track modifications for tab title
         editor.connect("modified-changed", self._on_editor_modified_changed)
 
-        # Add tab
+        # Add tab with appropriate file icon
         page = self.tab_view.append(editor)
         file_name = Path(file_path).name
         page.set_title(file_name)
-        page.set_icon(Gio.ThemedIcon.new("text-x-generic-symbolic"))
         page.set_tooltip(file_path)
+
+        # Use Material Design icon for the file tab
+        icon_cache = IconCache()
+        gicon = icon_cache.get_file_gicon(Path(file_path))
+        page.set_icon(gicon or Gio.ThemedIcon.new("text-x-generic-symbolic"))
 
         # Store page reference in editor for later lookup
         editor._tab_page = page
