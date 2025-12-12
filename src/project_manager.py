@@ -1,0 +1,205 @@
+"""Project Manager window for selecting and opening projects."""
+
+import subprocess
+import sys
+from pathlib import Path
+
+from gi.repository import Adw, Gtk, GLib, Gio
+
+from .services.project_registry import ProjectRegistry
+
+
+def escape_markup(text: str) -> str:
+    """Escape text for safe use in GTK markup."""
+    return GLib.markup_escape_text(text)
+
+
+class ProjectManagerWindow(Adw.ApplicationWindow):
+    """Window for managing and selecting projects."""
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+
+        self.registry = ProjectRegistry()
+
+        self._setup_window()
+        self._build_ui()
+        self._load_projects()
+
+    def _setup_window(self):
+        """Configure window properties."""
+        self.set_title("Claude Companion")
+        self.set_default_size(500, 600)
+
+    def _build_ui(self):
+        """Build the UI layout."""
+        # Main box
+        main_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+
+        # Header bar
+        header = Adw.HeaderBar()
+        main_box.append(header)
+
+        # Content
+        content_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        content_box.set_margin_start(16)
+        content_box.set_margin_end(16)
+        content_box.set_margin_top(16)
+        content_box.set_margin_bottom(16)
+        content_box.set_spacing(16)
+
+        # Title
+        title_label = Gtk.Label(label="Projects")
+        title_label.add_css_class("title-1")
+        title_label.set_xalign(0)
+        content_box.append(title_label)
+
+        # Project list in scrolled window
+        scrolled = Gtk.ScrolledWindow()
+        scrolled.set_vexpand(True)
+        scrolled.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+
+        self.project_list = Gtk.ListBox()
+        self.project_list.set_selection_mode(Gtk.SelectionMode.SINGLE)
+        self.project_list.add_css_class("boxed-list")
+
+        scrolled.set_child(self.project_list)
+        content_box.append(scrolled)
+
+        # Double-click gesture for opening projects
+        click_gesture = Gtk.GestureClick()
+        click_gesture.set_button(1)  # Left mouse button
+        click_gesture.connect("released", self._on_list_double_click)
+        self.project_list.add_controller(click_gesture)
+
+        # Buttons row
+        buttons_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+
+        # Add project button
+        add_button = Gtk.Button(label="Add Project...")
+        add_button.add_css_class("suggested-action")
+        add_button.set_hexpand(True)
+        add_button.connect("clicked", self._on_add_project_clicked)
+        buttons_box.append(add_button)
+
+        # Remove project button
+        self.remove_button = Gtk.Button(label="Remove")
+        self.remove_button.add_css_class("destructive-action")
+        self.remove_button.set_sensitive(False)
+        self.remove_button.connect("clicked", self._on_remove_project_clicked)
+        buttons_box.append(self.remove_button)
+
+        content_box.append(buttons_box)
+
+        main_box.append(content_box)
+        self.set_content(main_box)
+
+        # Track selection for remove button
+        self.project_list.connect("row-selected", self._on_selection_changed)
+
+    def _load_projects(self):
+        """Load projects from registry."""
+        projects = self.registry.get_registered_projects()
+
+        # Clear existing
+        while row := self.project_list.get_first_child():
+            self.project_list.remove(row)
+
+        if not projects:
+            self._show_empty_state()
+            return
+
+        for project_path in projects:
+            path = Path(project_path)
+            if path.exists():
+                row = self._create_project_row(path)
+                self.project_list.append(row)
+
+    def _show_empty_state(self):
+        """Show empty state message."""
+        label = Gtk.Label(label="No projects yet.\nClick 'Add Project' to get started.")
+        label.add_css_class("dim-label")
+        label.set_margin_top(48)
+        label.set_margin_bottom(48)
+        self.project_list.append(label)
+
+    def _create_project_row(self, path: Path) -> Gtk.ListBoxRow:
+        """Create a list row for a project."""
+        row = Adw.ActionRow()
+        row.set_title(escape_markup(path.name))
+        row.set_subtitle(escape_markup(str(path)))
+        row.set_activatable(False)  # Single click selects, double click opens
+        row.project_path = str(path)
+
+        # Folder icon
+        icon = Gtk.Image.new_from_icon_name("folder-symbolic")
+        row.add_prefix(icon)
+
+        return row
+
+    def _on_selection_changed(self, listbox, row):
+        """Handle selection change - enable/disable remove button."""
+        self.remove_button.set_sensitive(row is not None and hasattr(row, "project_path"))
+
+    def _on_list_double_click(self, gesture, n_press, x, y):
+        """Handle double-click on project list."""
+        if n_press == 2:  # Double-click
+            row = self.project_list.get_selected_row()
+            if row and hasattr(row, "project_path"):
+                self._open_project(row.project_path)
+
+    def _on_add_project_clicked(self, button):
+        """Handle add project button click."""
+        dialog = Gtk.FileDialog()
+        dialog.set_title("Select Project Folder")
+
+        # Start in home directory
+        home = Gio.File.new_for_path(str(Path.home()))
+        dialog.set_initial_folder(home)
+
+        dialog.select_folder(self, None, self._on_folder_selected)
+
+    def _on_folder_selected(self, dialog, result):
+        """Handle folder selection from file dialog."""
+        try:
+            folder = dialog.select_folder_finish(result)
+            if folder:
+                path = folder.get_path()
+                # Register the project
+                self.registry.register_project(path)
+                # Refresh the list
+                self._load_projects()
+                # Open the project
+                self._open_project(path)
+        except GLib.Error:
+            # User cancelled
+            pass
+
+    def _on_remove_project_clicked(self, button):
+        """Handle remove project button click."""
+        row = self.project_list.get_selected_row()
+        if row and hasattr(row, "project_path"):
+            self.registry.unregister_project(row.project_path)
+            self._load_projects()
+            self.remove_button.set_sensitive(False)
+
+    def _open_project(self, project_path: str):
+        """Open a project in a new process."""
+        # Check if project is already open via lock file
+        from .services.project_lock import ProjectLock
+
+        lock = ProjectLock(project_path)
+        if lock.is_locked():
+            # Show error dialog
+            dialog = Adw.AlertDialog()
+            dialog.set_heading("Project Already Open")
+            dialog.set_body("The project is already open in another window.")
+            dialog.add_response("ok", "OK")
+            dialog.present(self)
+            return
+
+        # Spawn new process
+        subprocess.Popen(
+            [sys.executable, "-m", "src.main", "--project", project_path],
+            start_new_session=True,
+        )
