@@ -6,7 +6,7 @@ from gi.repository import Adw, Gtk, GLib, Gio
 
 from .models import Session
 from .services import HistoryService, ProjectLock, ProjectRegistry, GitService, IconCache, ToastService
-from .widgets import SessionView, TerminalView, FileTree, FileEditor, TasksPanel, GitChangesPanel, GitHistoryPanel, DiffView, CommitDetailView, ClaudeHistoryPanel, FileSearchDialog, SearchPanel
+from .widgets import SessionView, TerminalView, FileTree, FileEditor, TasksPanel, GitChangesPanel, GitHistoryPanel, DiffView, CommitDetailView, ClaudeHistoryPanel, FileSearchDialog, UnifiedSearch
 
 
 def escape_markup(text: str) -> str:
@@ -184,33 +184,19 @@ class ProjectWindow(Adw.ApplicationWindow):
         claude_page = self._build_claude_page()
         self.sidebar_stack.add_titled(claude_page, "claude", "Claude")
 
-        # Search page (content search) - use icon via page properties
-        search_page = self._build_search_page()
-        self.sidebar_stack.add_titled(search_page, "search", "")
-        # Set icon for search tab
-        stack_page = self.sidebar_stack.get_page(search_page)
-        stack_page.set_icon_name("system-search-symbolic")
-
         box.append(self.sidebar_stack)
 
         return box
 
-    def _build_search_page(self) -> Gtk.Box:
-        """Build the Search tab content."""
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        box.set_vexpand(True)
-
-        self.search_panel = SearchPanel(str(self.project_path))
-        self.search_panel.connect("open-file-at-line", self._on_search_open_file)
-        box.append(self.search_panel)
-
-        return box
-
-    def _on_search_open_file(self, panel, file_path: str, line_number: int, search_term: str):
-        """Handle search result click - open file at line."""
+    def _on_search_open_file_at_line(self, widget, file_path: str, line_number: int, search_term: str):
+        """Handle content search result click - open file at line."""
         self._on_file_activated(self.file_tree, file_path)
         # Go to line after file is opened
         GLib.idle_add(lambda: self._go_to_line_in_editor(file_path, line_number, search_term))
+
+    def _on_search_open_file(self, widget, file_path: str):
+        """Handle filename search result click - just open file."""
+        self._on_file_activated(self.file_tree, file_path)
 
     def _go_to_line_in_editor(self, file_path: str, line_number: int, search_term: str = None):
         """Go to specific line in already-open editor."""
@@ -265,14 +251,6 @@ class ProjectWindow(Adw.ApplicationWindow):
         spacer.set_hexpand(True)
         header_box.append(spacer)
 
-        # File search button
-        file_search_btn = Gtk.Button()
-        file_search_btn.set_icon_name("system-search-symbolic")
-        file_search_btn.add_css_class("flat")
-        file_search_btn.set_tooltip_text("Search files (Ctrl+P)")
-        file_search_btn.connect("clicked", lambda btn: self._show_file_search())
-        header_box.append(file_search_btn)
-
         # Show ignored files toggle
         self.show_ignored_btn = Gtk.ToggleButton()
         self.show_ignored_btn.set_icon_name("view-reveal-symbolic")
@@ -290,6 +268,12 @@ class ProjectWindow(Adw.ApplicationWindow):
         header_box.append(refresh_btn)
 
         box.append(header_box)
+
+        # Unified search (files + content)
+        self.unified_search = UnifiedSearch(str(self.project_path))
+        self.unified_search.connect("open-file-at-line", self._on_search_open_file_at_line)
+        self.unified_search.connect("open-file", self._on_search_open_file)
+        box.append(self.unified_search)
 
         # File tree
         self.file_tree = FileTree(str(self.project_path))
@@ -783,7 +767,7 @@ class ProjectWindow(Adw.ApplicationWindow):
         # Ctrl+Shift+F - Switch to search tab and focus
         shortcut_controller.add_shortcut(Gtk.Shortcut(
             trigger=Gtk.ShortcutTrigger.parse_string("<Control><Shift>f"),
-            action=Gtk.CallbackAction.new(lambda *args: self._focus_search_panel() or True)
+            action=Gtk.CallbackAction.new(lambda *args: self._focus_search() or True)
         ))
 
         self.add_controller(shortcut_controller)
@@ -827,7 +811,7 @@ class ProjectWindow(Adw.ApplicationWindow):
         """Handle file selection from search dialog."""
         self._on_file_activated(self.file_tree, file_path)
 
-    def _focus_search_panel(self):
-        """Switch to search tab and focus the search entry."""
-        self.sidebar_stack.set_visible_child_name("search")
-        GLib.idle_add(lambda: self.search_panel.search_entry.grab_focus() or False)
+    def _focus_search(self):
+        """Switch to Files tab and focus the unified search entry."""
+        self.sidebar_stack.set_visible_child_name("files")
+        GLib.idle_add(lambda: self.unified_search.grab_focus() or False)
