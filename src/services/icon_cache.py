@@ -721,6 +721,10 @@ class IconCache:
 
         return None
 
+    def get_claude_texture(self) -> Gdk.Texture | None:
+        """Get Gdk.Texture for Claude icon."""
+        return self._cache.get("claude")
+
     def get_claude_gicon(self) -> Gio.Icon | None:
         """Get Gio.Icon for Claude icon."""
         icon_path = self._icons_dir / "claude.svg"

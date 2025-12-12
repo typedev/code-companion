@@ -77,6 +77,11 @@ Key patterns:
 - **Lock files**: `/tmp/claude-companion-locks/` prevents opening same project twice
 - **Project registry**: `~/.config/claude-companion/projects.json` stores user's projects
 - **Icon cache**: Pre-loaded Material Design SVG icons with O(1) lookup by extension/filename
+  - `get_file_icon(path)` → `Gdk.Texture` for file icons
+  - `get_folder_icon(path, is_open)` → `Gdk.Texture` for folder icons
+  - `get_file_gicon(path)` → `Gio.Icon` for tab icons
+  - `get_claude_texture()` → `Gdk.Texture` for Claude icon
+  - `get_claude_gicon()` → `Gio.Icon` for Claude tab icon
 - Parse Claude Code JSONL session files from `~/.claude/projects/[encoded-path]/`
 - Project paths are encoded by replacing `/` with `-`
 

@@ -102,7 +102,7 @@ class ProjectWindow(Adw.ApplicationWindow):
 
         # Use Claude icon from cache
         icon_cache = IconCache()
-        claude_texture = icon_cache._cache.get("claude")
+        claude_texture = icon_cache.get_claude_texture()
         if claude_texture:
             claude_icon = Gtk.Image.new_from_paintable(claude_texture)
             claude_icon.set_pixel_size(16)
