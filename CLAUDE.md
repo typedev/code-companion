@@ -41,26 +41,34 @@ uv run main.py
 python main.py
 ```
 
-## Architecture (Planned)
-
-The spec defines this target structure:
+## Architecture
 
 ```
 src/
-├── main.py              # Entry point
-├── application.py       # Adw.Application subclass
-├── window.py            # Main window (Adw.NavigationSplitView)
+├── main.py              # Entry point, argument parsing, NON_UNIQUE application
+├── project_manager.py   # Project Manager window (select/add/remove projects)
+├── project_window.py    # Project workspace (file tree, tabs, terminal)
 ├── models/              # Data models (Project, Session, Message, ToolCall)
-├── widgets/             # UI components (sidebar, message rows, diff view, etc.)
-├── services/            # Business logic (history reading, claude runner, git ops)
+├── widgets/             # UI components
+│   ├── file_tree.py     # File browser sidebar
+│   ├── file_editor.py   # Code editor with autosave
+│   ├── terminal_view.py # VTE terminal with Dracula theme
+│   ├── session_view.py  # History session viewer
+│   ├── code_view.py     # Read-only code display
+│   └── ...
+├── services/            # Business logic
+│   ├── history.py       # Claude session history reader
+│   ├── project_registry.py  # Registered projects storage
+│   └── project_lock.py  # Lock files for single-instance per project
 └── utils/               # Helpers (path encoding)
 ```
 
-Key patterns from the spec:
-- Use `Gio.Subprocess` and `GLib.io_add_watch()` for async Claude CLI interaction
+Key patterns:
+- **Multi-process**: Each project runs in separate process (`Gio.ApplicationFlags.NON_UNIQUE`)
+- **Lock files**: `/tmp/claude-companion-locks/` prevents opening same project twice
+- **Project registry**: `~/.config/claude-companion/projects.json` stores user's projects
 - Parse Claude Code JSONL session files from `~/.claude/projects/[encoded-path]/`
 - Project paths are encoded by replacing `/` with `-`
-- Stream JSON output from `claude --output-format stream-json`
 
 ## Claude Code Data Format
 
@@ -68,10 +76,22 @@ Session files are JSONL with event types: `user`, `assistant`, `tool_use`, `tool
 
 ## MVP Milestones
 
-v0.1: History viewer (JSONL parsing, project/session lists, message display)
-v0.2: Tool calls and details (cards, thinking blocks, diffs)
-v0.3: Active sessions (launch/stream Claude CLI)
-v0.4: Git integration
-v0.5: TODO notes
-v0.6: Polish (search, settings, packaging)
-v1.0: Multi-agent orchestration with Git worktrees
+- [x] v0.1: History viewer (JSONL parsing, project/session lists, message display)
+- [x] v0.2: Session content viewer (tool calls, thinking blocks, code/diff display)
+- [x] v0.2.1: Markdown support, improved code blocks
+- [x] v0.3: Embedded VTE terminal with tabs (Terminal/History)
+- [x] v0.4: Project workspace (file tree, file editor, multi-process architecture)
+- [ ] v0.5: Git integration
+- [ ] v0.6: TODO notes
+- [ ] v0.7: Polish (search, settings, packaging)
+- [ ] v1.0: Multi-agent orchestration with Git worktrees
+
+## Running the Application
+
+```bash
+# Open Project Manager (select/add projects)
+uv run python -m src.main
+
+# Open specific project directly
+uv run python -m src.main --project /path/to/project
+```
