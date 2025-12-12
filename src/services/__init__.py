@@ -4,6 +4,7 @@ from .project_lock import ProjectLock
 from .tasks_service import TasksService, Task, TaskInput
 from .git_service import GitService, GitFileStatus, FileStatus, GitCommit
 from .icon_cache import IconCache
+from .toast_service import ToastService
 
 __all__ = [
     "HistoryService",
@@ -17,4 +18,5 @@ __all__ = [
     "FileStatus",
     "GitCommit",
     "IconCache",
+    "ToastService",
 ]

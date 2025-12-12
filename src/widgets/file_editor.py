@@ -9,6 +9,7 @@ gi.require_version("GtkSource", "5")
 from gi.repository import Gtk, GtkSource, GLib, GObject
 
 from .code_view import get_language_for_file
+from ..services import ToastService
 
 
 class FileEditor(Gtk.Box):
@@ -137,7 +138,7 @@ class FileEditor(Gtk.Box):
             return True
 
         except OSError as e:
-            print(f"Error saving file: {e}")
+            ToastService.show_error(f"Error saving file: {e}")
             return False
 
     def undo(self):

@@ -2,9 +2,10 @@
 
 from pathlib import Path
 
+import pathspec
 from gi.repository import Gtk, Gio, GLib, GObject, Pango, Gdk
 
-from ..services import GitService, FileStatus, IconCache
+from ..services import GitService, FileStatus, IconCache, ToastService
 
 
 # CSS classes for git status colors
@@ -25,8 +26,38 @@ class FileTree(Gtk.Box):
         "file-activated": (GObject.SignalFlags.RUN_FIRST, None, (str,)),
     }
 
-    # Folders to hide
-    HIDDEN_FOLDERS = {".git"}
+    # Folders to always hide (not toggleable)
+    ALWAYS_HIDDEN = {".git"}
+
+    # Default ignore patterns (common build/dependency folders)
+    DEFAULT_IGNORE_PATTERNS = [
+        "node_modules/",
+        "__pycache__/",
+        "*.pyc",
+        ".venv/",
+        "venv/",
+        ".env/",
+        "env/",
+        ".mypy_cache/",
+        ".pytest_cache/",
+        ".ruff_cache/",
+        "dist/",
+        "build/",
+        "*.egg-info/",
+        ".tox/",
+        ".nox/",
+        "coverage/",
+        ".coverage",
+        "htmlcov/",
+        ".DS_Store",
+        "Thumbs.db",
+        "*.swp",
+        "*.swo",
+        "*~",
+    ]
+
+    # Debounce delay for file system events (ms)
+    FS_DEBOUNCE_DELAY = 300
 
     def __init__(self, root_path: str):
         super().__init__(orientation=Gtk.Orientation.VERTICAL)
@@ -35,6 +66,16 @@ class FileTree(Gtk.Box):
         self._expanded_paths: set[str] = set()
         self._git_status: dict[str, FileStatus] = {}
         self.context_menu = None
+
+        # File filtering
+        self._show_ignored = False
+        self._ignore_spec: pathspec.PathSpec | None = None
+        self._load_ignore_patterns()
+
+        # File monitoring
+        self._file_monitors: dict[str, Gio.FileMonitor] = {}
+        self._refresh_scheduled = False
+        self._refresh_timeout_id: int | None = None
 
         # Initialize icon cache (singleton, loads icons once)
         self._icon_cache = IconCache()
@@ -48,6 +89,60 @@ class FileTree(Gtk.Box):
         self._build_ui()
         self._setup_css()
         self._populate_tree()
+
+        # Start file system monitoring
+        self._setup_file_monitoring()
+
+        # Cleanup on destroy
+        self.connect("destroy", self._on_destroy)
+
+    def _load_ignore_patterns(self):
+        """Load ignore patterns from .gitignore and defaults."""
+        patterns = list(self.DEFAULT_IGNORE_PATTERNS)
+
+        # Load .gitignore if exists
+        gitignore_path = self.root_path / ".gitignore"
+        if gitignore_path.exists():
+            try:
+                with open(gitignore_path, "r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        # Skip comments and empty lines
+                        if line and not line.startswith("#"):
+                            patterns.append(line)
+            except OSError:
+                pass
+
+        # Create pathspec matcher
+        self._ignore_spec = pathspec.PathSpec.from_lines(
+            pathspec.patterns.GitWildMatchPattern,
+            patterns
+        )
+
+    def _is_ignored(self, path: Path) -> bool:
+        """Check if a path should be ignored."""
+        if self._ignore_spec is None:
+            return False
+
+        try:
+            relative = path.relative_to(self.root_path)
+            # Add trailing slash for directories to match directory patterns
+            match_path = str(relative) + "/" if path.is_dir() else str(relative)
+            return self._ignore_spec.match_file(match_path)
+        except ValueError:
+            return False
+
+    @property
+    def show_ignored(self) -> bool:
+        """Get whether ignored files are shown."""
+        return self._show_ignored
+
+    @show_ignored.setter
+    def show_ignored(self, value: bool):
+        """Set whether ignored files are shown."""
+        if self._show_ignored != value:
+            self._show_ignored = value
+            self.refresh()
 
     def _build_ui(self):
         """Build the file tree UI."""
@@ -199,6 +294,12 @@ class FileTree(Gtk.Box):
         vadj = self.scrolled.get_vadjustment()
         scroll_pos = vadj.get_value()
 
+        # Save selected path
+        selected_path: str | None = None
+        selected_rows = self.list_box.get_selected_rows()
+        if selected_rows and hasattr(selected_rows[0], "path"):
+            selected_path = str(selected_rows[0].path)
+
         # Update git status
         if self._is_git_repo:
             self._git_status = self._git_service.get_file_status_map()
@@ -235,8 +336,24 @@ class FileTree(Gtk.Box):
         # Build tree from root
         self._add_directory_contents(self.root_path, 0)
 
-        # Restore scroll position after UI updates
-        GLib.idle_add(lambda: vadj.set_value(scroll_pos) or False)
+        # Restore selection and scroll position after UI updates
+        def restore_state():
+            # Restore selection
+            if selected_path:
+                i = 0
+                while True:
+                    row = self.list_box.get_row_at_index(i)
+                    if row is None:
+                        break
+                    if hasattr(row, "path") and str(row.path) == selected_path:
+                        self.list_box.select_row(row)
+                        break
+                    i += 1
+            # Restore scroll
+            vadj.set_value(scroll_pos)
+            return False
+
+        GLib.idle_add(restore_state)
 
     def _add_directory_contents(self, directory: Path, depth: int):
         """Add contents of a directory to the tree."""
@@ -249,8 +366,12 @@ class FileTree(Gtk.Box):
             return
 
         for entry in entries:
-            # Skip only .git folder
-            if entry.name in self.HIDDEN_FOLDERS:
+            # Always skip .git folder
+            if entry.name in self.ALWAYS_HIDDEN:
+                continue
+
+            # Skip ignored files unless show_ignored is True
+            if not self._show_ignored and self._is_ignored(entry):
                 continue
 
             row = self._create_row(entry, depth)
@@ -349,8 +470,12 @@ class FileTree(Gtk.Box):
             path_str = str(path)
             if path_str in self._expanded_paths:
                 self._expanded_paths.discard(path_str)
+                # Remove monitor when collapsing
+                self._remove_monitor(path)
             else:
                 self._expanded_paths.add(path_str)
+                # Add monitor when expanding
+                self._add_monitor(path)
             self.refresh()
         else:
             # Emit file activated signal
@@ -368,3 +493,114 @@ class FileTree(Gtk.Box):
             self.refresh()
         except ValueError:
             pass  # Path not under root
+
+    # --- File System Monitoring ---
+
+    def _setup_file_monitoring(self):
+        """Set up file system monitoring for the project."""
+        # Monitor root directory
+        self._add_monitor(self.root_path)
+
+        # Monitor all expanded directories
+        for path_str in self._expanded_paths:
+            self._add_monitor(Path(path_str))
+
+    def _add_monitor(self, directory: Path):
+        """Add a file monitor for a directory."""
+        path_str = str(directory)
+
+        # Skip if already monitoring or hidden
+        if path_str in self._file_monitors:
+            return
+        if directory.name in self.ALWAYS_HIDDEN:
+            return
+
+        try:
+            gfile = Gio.File.new_for_path(path_str)
+            monitor = gfile.monitor_directory(
+                Gio.FileMonitorFlags.WATCH_MOVES,
+                None
+            )
+            monitor.connect("changed", self._on_file_changed)
+            self._file_monitors[path_str] = monitor
+        except GLib.Error:
+            pass  # Directory may not exist or be accessible
+
+    def _remove_monitor(self, directory: Path):
+        """Remove a file monitor for a directory."""
+        path_str = str(directory)
+        if path_str in self._file_monitors:
+            monitor = self._file_monitors.pop(path_str)
+            monitor.cancel()
+
+    def _update_monitors(self):
+        """Update monitors to match currently expanded directories."""
+        # Directories that should be monitored
+        should_monitor = {str(self.root_path)}
+        for path_str in self._expanded_paths:
+            should_monitor.add(path_str)
+
+        # Add new monitors
+        for path_str in should_monitor:
+            if path_str not in self._file_monitors:
+                self._add_monitor(Path(path_str))
+
+        # Remove stale monitors (except root)
+        for path_str in list(self._file_monitors.keys()):
+            if path_str not in should_monitor and path_str != str(self.root_path):
+                self._remove_monitor(Path(path_str))
+
+    def _on_file_changed(self, monitor, file, other_file, event_type):
+        """Handle file system changes."""
+        # Only react to relevant events
+        if event_type not in (
+            Gio.FileMonitorEvent.CHANGED,
+            Gio.FileMonitorEvent.CREATED,
+            Gio.FileMonitorEvent.DELETED,
+            Gio.FileMonitorEvent.MOVED_IN,
+            Gio.FileMonitorEvent.MOVED_OUT,
+            Gio.FileMonitorEvent.RENAMED,
+        ):
+            return
+
+        # Ignore hidden files and .git changes
+        filename = file.get_basename()
+        if filename.startswith("."):
+            # Still allow refresh for non-.git hidden files if they affect tree
+            if filename == ".git" or file.get_path().startswith(str(self.root_path / ".git")):
+                return
+
+        # Schedule debounced refresh
+        self._schedule_refresh()
+
+    def _schedule_refresh(self):
+        """Schedule a debounced refresh."""
+        # Cancel any pending refresh
+        if self._refresh_timeout_id is not None:
+            GLib.source_remove(self._refresh_timeout_id)
+
+        # Schedule new refresh
+        self._refresh_timeout_id = GLib.timeout_add(
+            self.FS_DEBOUNCE_DELAY,
+            self._do_scheduled_refresh
+        )
+
+    def _do_scheduled_refresh(self) -> bool:
+        """Perform the scheduled refresh."""
+        self._refresh_timeout_id = None
+        self.refresh()
+        # Update monitors for newly expanded/collapsed directories
+        self._update_monitors()
+        return False  # Don't repeat
+
+    def _on_destroy(self, widget):
+        """Clean up monitors on widget destruction."""
+        # Cancel pending refresh
+        if self._refresh_timeout_id is not None:
+            GLib.source_remove(self._refresh_timeout_id)
+            self._refresh_timeout_id = None
+
+        # Cancel all monitors
+        for monitor in self._file_monitors.values():
+            monitor.cancel()
+        self._file_monitors.clear()

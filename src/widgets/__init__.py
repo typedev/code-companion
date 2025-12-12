@@ -10,6 +10,8 @@ from .file_editor import FileEditor
 from .tasks_panel import TasksPanel
 from .git_changes_panel import GitChangesPanel
 from .git_history_panel import GitHistoryPanel
+from .branch_popover import BranchPopover
+from .commit_detail_view import CommitDetailView
 
 __all__ = [
     "MessageRow",
@@ -25,4 +27,6 @@ __all__ = [
     "TasksPanel",
     "GitChangesPanel",
     "GitHistoryPanel",
+    "BranchPopover",
+    "CommitDetailView",
 ]

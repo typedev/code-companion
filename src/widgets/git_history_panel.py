@@ -5,7 +5,7 @@ from pathlib import Path
 
 from gi.repository import Gtk, Gio, GLib, GObject, Adw
 
-from ..services import GitService
+from ..services import GitService, ToastService
 
 
 class GitHistoryPanel(Gtk.Box):
@@ -15,15 +15,99 @@ class GitHistoryPanel(Gtk.Box):
         "commit-view-diff": (GObject.SignalFlags.RUN_FIRST, None, (str,)),  # commit hash
     }
 
+    # Debounce delay for file monitor events (ms)
+    REFRESH_DEBOUNCE = 300
+
     def __init__(self, git_service: GitService):
         super().__init__(orientation=Gtk.Orientation.VERTICAL)
 
         self.service = git_service
         self._selected_commit = None
+        self._file_monitors: list[Gio.FileMonitor] = []
+        self._refresh_timeout_id: int | None = None
 
         self._build_ui()
         self._setup_css()
+        self._setup_file_monitoring()
         self.refresh()
+
+        self.connect("destroy", self._on_destroy)
+
+    def _setup_file_monitoring(self):
+        """Set up file monitoring for git refs changes."""
+        if not self.service.repo:
+            return
+
+        git_dir = Path(self.service.repo.path).parent / ".git"
+        if not git_dir.exists():
+            git_dir = Path(self.service.repo.path)
+
+        # Monitor refs/heads for new commits and branch changes
+        refs_heads = git_dir / "refs" / "heads"
+        if refs_heads.exists():
+            self._add_monitor(refs_heads)
+
+        # Monitor HEAD for checkout/branch switch
+        head_file = git_dir / "HEAD"
+        if head_file.exists():
+            self._add_monitor(head_file.parent, watch_file=head_file.name)
+
+        # Monitor logs/HEAD for commit history
+        logs_head = git_dir / "logs" / "HEAD"
+        if logs_head.exists():
+            self._add_monitor(logs_head.parent, watch_file="HEAD")
+
+    def _add_monitor(self, path: Path, watch_file: str | None = None):
+        """Add a file monitor."""
+        try:
+            gfile = Gio.File.new_for_path(str(path))
+            monitor = gfile.monitor_directory(
+                Gio.FileMonitorFlags.NONE,
+                None
+            )
+            monitor.connect("changed", self._on_git_changed, watch_file)
+            self._file_monitors.append(monitor)
+        except GLib.Error:
+            pass
+
+    def _on_git_changed(self, monitor, file, other_file, event_type, watch_file):
+        """Handle git directory changes."""
+        # Filter by specific file if specified
+        if watch_file and file.get_basename() != watch_file:
+            return
+
+        if event_type in (
+            Gio.FileMonitorEvent.CHANGED,
+            Gio.FileMonitorEvent.CREATED,
+            Gio.FileMonitorEvent.DELETED,
+        ):
+            self._schedule_refresh()
+
+    def _schedule_refresh(self):
+        """Schedule a debounced refresh."""
+        if self._refresh_timeout_id is not None:
+            GLib.source_remove(self._refresh_timeout_id)
+
+        self._refresh_timeout_id = GLib.timeout_add(
+            self.REFRESH_DEBOUNCE,
+            self._do_scheduled_refresh
+        )
+
+    def _do_scheduled_refresh(self) -> bool:
+        """Perform scheduled refresh."""
+        self._refresh_timeout_id = None
+        self.refresh()
+        return False
+
+    def _on_destroy(self, widget):
+        """Clean up on destroy."""
+        if self._refresh_timeout_id is not None:
+            GLib.source_remove(self._refresh_timeout_id)
+            self._refresh_timeout_id = None
+
+        for monitor in self._file_monitors:
+            monitor.cancel()
+        self._file_monitors.clear()
 
     def _setup_css(self):
         """Set up CSS for history panel."""
@@ -89,6 +173,7 @@ class GitHistoryPanel(Gtk.Box):
         self.commits_list.set_margin_end(12)
         self.commits_list.set_margin_bottom(6)
         self.commits_list.connect("row-selected", self._on_row_selected)
+        self.commits_list.connect("row-activated", self._on_row_activated)
 
         scrolled.set_child(self.commits_list)
         self.append(scrolled)
@@ -99,11 +184,6 @@ class GitHistoryPanel(Gtk.Box):
         actions_box.set_margin_end(12)
         actions_box.set_margin_bottom(12)
         actions_box.set_homogeneous(True)
-
-        self.view_btn = Gtk.Button(label="View Diff")
-        self.view_btn.set_sensitive(False)
-        self.view_btn.connect("clicked", self._on_view_clicked)
-        actions_box.append(self.view_btn)
 
         self.checkout_btn = Gtk.Button(label="Checkout")
         self.checkout_btn.set_sensitive(False)
@@ -270,15 +350,14 @@ class GitHistoryPanel(Gtk.Box):
         has_selection = self._selected_commit is not None
         is_head = has_selection and self._selected_commit.is_head
 
-        self.view_btn.set_sensitive(has_selection)
         self.checkout_btn.set_sensitive(has_selection and not is_head)
         self.reset_btn.set_sensitive(has_selection and not is_head)
         self.revert_btn.set_sensitive(has_selection and not is_head)
 
-    def _on_view_clicked(self, button):
-        """Handle view diff button click."""
-        if self._selected_commit:
-            self.emit("commit-view-diff", self._selected_commit.hash)
+    def _on_row_activated(self, list_box, row):
+        """Handle row activation (double-click or Enter) - open commit details."""
+        if row and hasattr(row, "commit"):
+            self.emit("commit-view-diff", row.commit.hash)
 
     def _on_checkout_clicked(self, button):
         """Handle checkout button click."""
@@ -380,12 +459,8 @@ class GitHistoryPanel(Gtk.Box):
 
     def _show_toast(self, message: str):
         """Show a toast notification."""
-        print(f"Toast: {message}")  # TODO: proper toast
+        ToastService.show(message)
 
     def _show_error(self, message: str):
-        """Show error dialog."""
-        dialog = Adw.AlertDialog()
-        dialog.set_heading("Error")
-        dialog.set_body(message)
-        dialog.add_response("ok", "OK")
-        dialog.present(self.get_root())
+        """Show error toast."""
+        ToastService.show_error(message)

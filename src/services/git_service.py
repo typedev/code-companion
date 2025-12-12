@@ -372,6 +372,27 @@ class GitService:
 
         return commits
 
+    def get_commit(self, commit_hash: str) -> GitCommit | None:
+        """Get a single commit by hash."""
+        try:
+            commit = self.repo.get(commit_hash)
+            if not commit:
+                return None
+
+            head_oid = self.repo.head.target
+
+            return GitCommit(
+                hash=str(commit.id),
+                short_hash=str(commit.id)[:7],
+                message=commit.message.strip(),
+                author=commit.author.name,
+                author_email=commit.author.email,
+                timestamp=datetime.fromtimestamp(commit.commit_time),
+                is_head=(commit.id == head_oid),
+            )
+        except pygit2.GitError:
+            return None
+
     def get_commit_diff(self, commit_hash: str) -> tuple[str, str]:
         """
         Get diff for a commit (compared to its parent).
@@ -502,3 +523,248 @@ class GitService:
         except pygit2.GitError as e:
             self.repo.state_cleanup()
             raise RuntimeError(f"Revert failed: {e}")
+
+    # --- Branch Management ---
+
+    def list_branches(self) -> dict[str, list[str]]:
+        """List all branches.
+
+        Returns dict with 'local' and 'remote' keys containing branch names.
+        """
+        result = {"local": [], "remote": []}
+
+        try:
+            for branch_name in self.repo.branches.local:
+                result["local"].append(branch_name)
+
+            for branch_name in self.repo.branches.remote:
+                result["remote"].append(branch_name)
+
+        except pygit2.GitError:
+            pass
+
+        return result
+
+    def create_branch(self, name: str, from_ref: str | None = None) -> str:
+        """Create a new branch.
+
+        Args:
+            name: Name of the new branch
+            from_ref: Reference to create from (branch name or commit hash). Defaults to HEAD.
+
+        Returns:
+            The name of the created branch
+        """
+        try:
+            # Get the commit to branch from
+            if from_ref:
+                # Try as branch name first
+                if from_ref in self.repo.branches:
+                    commit = self.repo.branches[from_ref].peel(pygit2.Commit)
+                else:
+                    # Try as commit hash
+                    commit = self.repo.get(from_ref)
+                    if commit is None:
+                        raise RuntimeError(f"Reference '{from_ref}' not found")
+            else:
+                commit = self.repo.head.peel(pygit2.Commit)
+
+            # Create the branch
+            self.repo.branches.local.create(name, commit)
+            return name
+
+        except pygit2.GitError as e:
+            raise RuntimeError(f"Failed to create branch: {e}")
+
+    def switch_branch(self, name: str) -> None:
+        """Switch to a branch.
+
+        Args:
+            name: Name of the branch to switch to
+        """
+        try:
+            # Check for uncommitted changes
+            if self.repo.status():
+                # Check if there are actual modifications (not just untracked)
+                for path, flags in self.repo.status().items():
+                    if flags & (pygit2.GIT_STATUS_INDEX_MODIFIED |
+                               pygit2.GIT_STATUS_INDEX_NEW |
+                               pygit2.GIT_STATUS_INDEX_DELETED |
+                               pygit2.GIT_STATUS_WT_MODIFIED |
+                               pygit2.GIT_STATUS_WT_DELETED):
+                        raise RuntimeError("You have uncommitted changes. Commit or stash them first.")
+
+            # Get the branch
+            branch = self.repo.branches.get(name)
+            if branch is None:
+                raise RuntimeError(f"Branch '{name}' not found")
+
+            # Get the commit
+            commit = branch.peel(pygit2.Commit)
+
+            # Checkout the tree
+            self.repo.checkout_tree(commit)
+
+            # Update HEAD to point to the branch
+            self.repo.set_head(branch.name)
+
+        except pygit2.GitError as e:
+            raise RuntimeError(f"Failed to switch branch: {e}")
+
+    def delete_branch(self, name: str, force: bool = False) -> None:
+        """Delete a branch.
+
+        Args:
+            name: Name of the branch to delete
+            force: If True, delete even if not fully merged
+        """
+        try:
+            branch = self.repo.branches.get(name)
+            if branch is None:
+                raise RuntimeError(f"Branch '{name}' not found")
+
+            # Don't allow deleting current branch
+            if not self.repo.head_is_detached:
+                current = self.repo.head.shorthand
+                if name == current:
+                    raise RuntimeError("Cannot delete the currently checked out branch")
+
+            # Check if branch is merged (unless force)
+            if not force:
+                # Get branch commit
+                branch_commit = branch.peel(pygit2.Commit)
+                head_commit = self.repo.head.peel(pygit2.Commit)
+
+                # Check if branch commit is ancestor of HEAD
+                if not self.repo.descendant_of(head_commit.id, branch_commit.id):
+                    raise RuntimeError(f"Branch '{name}' is not fully merged. Use force=True to delete anyway.")
+
+            branch.delete()
+
+        except pygit2.GitError as e:
+            raise RuntimeError(f"Failed to delete branch: {e}")
+
+    def get_branch_info(self, name: str) -> dict:
+        """Get information about a branch.
+
+        Returns dict with: name, is_current, is_remote, ahead, behind, last_commit
+        """
+        try:
+            branch = self.repo.branches.get(name)
+            if branch is None:
+                return {}
+
+            is_remote = name in self.repo.branches.remote
+            is_current = False
+            if not self.repo.head_is_detached:
+                is_current = (self.repo.head.shorthand == name)
+
+            commit = branch.peel(pygit2.Commit)
+
+            info = {
+                "name": name,
+                "is_current": is_current,
+                "is_remote": is_remote,
+                "last_commit": commit.short_id,
+                "last_message": commit.message.split("\n")[0][:50],
+                "ahead": 0,
+                "behind": 0,
+            }
+
+            # Calculate ahead/behind for local branches with upstream
+            if not is_remote and branch.upstream:
+                upstream_commit = branch.upstream.peel(pygit2.Commit)
+                ahead, behind = self.repo.ahead_behind(commit.id, upstream_commit.id)
+                info["ahead"] = ahead
+                info["behind"] = behind
+
+            return info
+
+        except pygit2.GitError:
+            return {}
+
+    # --- Commit Details ---
+
+    def get_commit_files(self, commit_hash: str) -> list[dict]:
+        """Get list of files changed in a commit with stats.
+
+        Returns list of dicts with: path, status, additions, deletions
+        """
+        result = []
+
+        try:
+            commit = self.repo.get(commit_hash)
+            if commit is None:
+                return result
+
+            # Get parent commit (or empty tree for initial commit)
+            if commit.parents:
+                parent = commit.parents[0]
+                parent_tree = parent.tree
+            else:
+                parent_tree = None
+
+            # Get diff
+            if parent_tree:
+                diff = self.repo.diff(parent_tree, commit.tree)
+            else:
+                diff = commit.tree.diff_to_tree()
+
+            # Collect file stats
+            for patch in diff:
+                delta = patch.delta
+                status_map = {
+                    pygit2.GIT_DELTA_ADDED: "A",
+                    pygit2.GIT_DELTA_DELETED: "D",
+                    pygit2.GIT_DELTA_MODIFIED: "M",
+                    pygit2.GIT_DELTA_RENAMED: "R",
+                    pygit2.GIT_DELTA_COPIED: "C",
+                    pygit2.GIT_DELTA_TYPECHANGE: "T",
+                }
+
+                result.append({
+                    "path": delta.new_file.path or delta.old_file.path,
+                    "old_path": delta.old_file.path if delta.status == pygit2.GIT_DELTA_RENAMED else None,
+                    "status": status_map.get(delta.status, "M"),
+                    "additions": patch.line_stats[1],
+                    "deletions": patch.line_stats[2],
+                })
+
+        except pygit2.GitError:
+            pass
+
+        return result
+
+    def get_commit_file_diff(self, commit_hash: str, file_path: str) -> str:
+        """Get diff for a specific file in a commit.
+
+        Returns unified diff string.
+        """
+        try:
+            commit = self.repo.get(commit_hash)
+            if commit is None:
+                return ""
+
+            # Get parent commit
+            if commit.parents:
+                parent = commit.parents[0]
+                parent_tree = parent.tree
+            else:
+                parent_tree = None
+
+            # Get diff
+            if parent_tree:
+                diff = self.repo.diff(parent_tree, commit.tree)
+            else:
+                diff = commit.tree.diff_to_tree()
+
+            # Find the specific file
+            for patch in diff:
+                delta = patch.delta
+                if delta.new_file.path == file_path or delta.old_file.path == file_path:
+                    return patch.text or ""
+
+            return ""
+
+        except pygit2.GitError:
+            return ""

@@ -5,8 +5,8 @@ from pathlib import Path
 from gi.repository import Adw, Gtk, GLib, Gio, Gdk
 
 from .models import Session
-from .services import HistoryService, ProjectLock, ProjectRegistry, GitService, IconCache
-from .widgets import SessionView, TerminalView, FileTree, FileEditor, TasksPanel, GitChangesPanel, GitHistoryPanel, DiffView
+from .services import HistoryService, ProjectLock, ProjectRegistry, GitService, IconCache, ToastService
+from .widgets import SessionView, TerminalView, FileTree, FileEditor, TasksPanel, GitChangesPanel, GitHistoryPanel, DiffView, CommitDetailView
 
 
 def escape_markup(text: str) -> str:
@@ -33,6 +33,8 @@ class ProjectWindow(Adw.ApplicationWindow):
         self.claude_tab_page: Adw.TabPage | None = None
         self.claude_terminal: TerminalView | None = None
         self.history_tab_page: Adw.TabPage | None = None
+        self.commit_detail_page: Adw.TabPage | None = None
+        self.commit_detail_view: CommitDetailView | None = None
         self._refresh_timer_id: int | None = None
 
         # Acquire lock
@@ -78,7 +80,14 @@ class ProjectWindow(Adw.ApplicationWindow):
         toolbar_view.add_top_bar(header)
         toolbar_view.set_content(self.split_view)
 
-        self.set_content(toolbar_view)
+        # Wrap in toast overlay for notifications
+        self.toast_overlay = Adw.ToastOverlay()
+        self.toast_overlay.set_child(toolbar_view)
+
+        # Initialize toast service
+        ToastService.init(self.toast_overlay)
+
+        self.set_content(self.toast_overlay)
 
     def _build_header(self) -> Adw.HeaderBar:
         """Build the header bar with buttons."""
@@ -184,17 +193,41 @@ class ProjectWindow(Adw.ApplicationWindow):
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         box.set_vexpand(True)
 
-        # Header with refresh button
+        # Header with action buttons
         header_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
         header_box.set_margin_start(12)
         header_box.set_margin_end(12)
         header_box.set_margin_top(6)
         header_box.set_margin_bottom(6)
 
+        # New file button
+        new_file_btn = Gtk.Button()
+        new_file_btn.set_icon_name("document-new-symbolic")
+        new_file_btn.add_css_class("flat")
+        new_file_btn.set_tooltip_text("New file")
+        new_file_btn.connect("clicked", self._on_new_file_clicked)
+        header_box.append(new_file_btn)
+
+        # New folder button
+        new_folder_btn = Gtk.Button()
+        new_folder_btn.set_icon_name("folder-new-symbolic")
+        new_folder_btn.add_css_class("flat")
+        new_folder_btn.set_tooltip_text("New folder")
+        new_folder_btn.connect("clicked", self._on_new_folder_clicked)
+        header_box.append(new_folder_btn)
+
         # Spacer for alignment
         spacer = Gtk.Box()
         spacer.set_hexpand(True)
         header_box.append(spacer)
+
+        # Show ignored files toggle
+        self.show_ignored_btn = Gtk.ToggleButton()
+        self.show_ignored_btn.set_icon_name("view-reveal-symbolic")
+        self.show_ignored_btn.add_css_class("flat")
+        self.show_ignored_btn.set_tooltip_text("Show ignored files")
+        self.show_ignored_btn.connect("toggled", self._on_show_ignored_toggled)
+        header_box.append(self.show_ignored_btn)
 
         # Refresh button
         refresh_btn = Gtk.Button()
@@ -486,6 +519,96 @@ class ProjectWindow(Adw.ApplicationWindow):
         """Refresh file tree."""
         self.file_tree.refresh()
 
+    def _on_show_ignored_toggled(self, button):
+        """Toggle showing ignored files in file tree."""
+        self.file_tree.show_ignored = button.get_active()
+        if button.get_active():
+            ToastService.show("Showing ignored files")
+        else:
+            ToastService.show("Hiding ignored files")
+
+    def _on_new_file_clicked(self, button):
+        """Create a new file."""
+        self._show_create_dialog("file")
+
+    def _on_new_folder_clicked(self, button):
+        """Create a new folder."""
+        self._show_create_dialog("folder")
+
+    def _show_create_dialog(self, item_type: str):
+        """Show dialog to create a new file or folder."""
+        # Get selected directory or use project root
+        selected_dir = self._get_selected_directory()
+
+        dialog = Adw.AlertDialog()
+        dialog.set_heading(f"New {item_type.title()}")
+        dialog.set_body(f"Create in: {selected_dir.relative_to(self.project_path) if selected_dir != self.project_path else '.'}")
+
+        # Add entry for name in a box
+        entry = Gtk.Entry()
+        entry.set_placeholder_text(f"Enter {item_type} name")
+        entry.set_hexpand(True)
+
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        box.set_margin_start(12)
+        box.set_margin_end(12)
+        box.append(entry)
+
+        dialog.set_extra_child(box)
+
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("create", "Create")
+        dialog.set_response_appearance("create", Adw.ResponseAppearance.SUGGESTED)
+        dialog.set_default_response("create")
+
+        dialog.connect("response", self._on_create_dialog_response, entry, selected_dir, item_type)
+        dialog.present(self)
+
+    def _get_selected_directory(self) -> Path:
+        """Get the selected directory in file tree, or project root."""
+        selected_paths = self.file_tree._get_selected_paths()
+        if selected_paths:
+            path = selected_paths[0]
+            if path.is_dir():
+                return path
+            else:
+                return path.parent
+        return self.project_path
+
+    def _on_create_dialog_response(self, dialog, response, entry, parent_dir, item_type):
+        """Handle create dialog response."""
+        if response != "create":
+            return
+
+        name = entry.get_text().strip()
+        if not name:
+            ToastService.show_error("Name cannot be empty")
+            return
+
+        # Validate name
+        if "/" in name or "\\" in name:
+            ToastService.show_error("Name cannot contain slashes")
+            return
+
+        new_path = parent_dir / name
+
+        if new_path.exists():
+            ToastService.show_error(f"{item_type.title()} already exists")
+            return
+
+        try:
+            if item_type == "folder":
+                new_path.mkdir(parents=True)
+                ToastService.show(f"Created folder: {name}")
+            else:
+                new_path.parent.mkdir(parents=True, exist_ok=True)
+                new_path.touch()
+                ToastService.show(f"Created file: {name}")
+                # Open the new file
+                self._on_file_activated(self.file_tree, str(new_path))
+        except OSError as e:
+            ToastService.show_error(f"Failed to create {item_type}: {e}")
+
     def _on_git_file_clicked(self, git_panel, path: str, staged: bool):
         """Handle git file click - open diff view."""
         # Get diff content
@@ -504,23 +627,30 @@ class ProjectWindow(Adw.ApplicationWindow):
         self.tab_view.set_selected_page(page)
 
     def _on_commit_view_diff(self, history_panel, commit_hash: str):
-        """Handle commit diff view request."""
-        # Get full diff for commit
-        diff_text = self.git_service.get_commit_full_diff(commit_hash)
-
-        if not diff_text:
+        """Handle commit diff view request - reuse single commit tab."""
+        # Get commit info
+        commit = self.git_service.get_commit(commit_hash)
+        if not commit:
+            ToastService.show_error("Commit not found")
             return
 
-        # Create a simple text view for full diff
-        # Parse the diff into old/new for DiffView
-        diff_view = DiffView("", diff_text, file_path=f"commit {commit_hash[:7]}")
+        # Reuse existing commit detail view if available
+        if self.commit_detail_view is not None and self.commit_detail_page is not None:
+            # Update existing view with new commit
+            self.commit_detail_view.update_commit(commit)
+            self.commit_detail_page.set_title(f"Commit {commit.short_hash}")
+            self.tab_view.set_selected_page(self.commit_detail_page)
+            return
+
+        # Create new commit detail view
+        self.commit_detail_view = CommitDetailView(self.git_service, commit)
 
         # Add tab
-        page = self.tab_view.append(diff_view)
-        page.set_title(f"Commit {commit_hash[:7]}")
-        page.set_icon(Gio.ThemedIcon.new("emblem-documents-symbolic"))
+        self.commit_detail_page = self.tab_view.append(self.commit_detail_view)
+        self.commit_detail_page.set_title(f"Commit {commit.short_hash}")
+        self.commit_detail_page.set_icon(Gio.ThemedIcon.new("emblem-documents-symbolic"))
 
-        self.tab_view.set_selected_page(page)
+        self.tab_view.set_selected_page(self.commit_detail_page)
 
     def _on_task_run(self, tasks_panel, label: str, command: str):
         """Handle task run - create terminal and execute command."""
@@ -549,8 +679,7 @@ class ProjectWindow(Adw.ApplicationWindow):
         try:
             editor = FileEditor(file_path)
         except Exception as e:
-            # TODO: Show error toast
-            print(f"Error opening file: {e}")
+            ToastService.show_error(f"Error opening file: {e}")
             return
 
         # Track modifications for tab title
@@ -601,6 +730,11 @@ class ProjectWindow(Adw.ApplicationWindow):
             dialog.connect("response", self._on_claude_close_response, page)
             dialog.present(self)
             return True  # Prevent immediate close, dialog will handle it
+
+        # Commit detail tab - clear references when closed
+        if page == self.commit_detail_page:
+            self.commit_detail_page = None
+            self.commit_detail_view = None
 
         return False  # Allow close
 

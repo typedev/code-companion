@@ -9,6 +9,8 @@ gi.require_version("Vte", "3.91")
 
 from gi.repository import Vte, Gtk, GLib, Gdk, Gio, Pango, GObject
 
+from ..services import ToastService
+
 
 # Dracula palette - matches ptyxis dracula theme
 DRACULA_PALETTE = {
@@ -140,7 +142,7 @@ class TerminalView(Gtk.Box):
                 # Feed text directly to terminal as input
                 self.terminal.feed_child(text.encode("utf-8"))
         except Exception as e:
-            print(f"Clipboard paste error: {e}")
+            ToastService.show_error(f"Clipboard paste error: {e}")
 
     def _spawn_shell(self, working_directory: str | None = None):
         """Spawn a shell in the terminal."""
@@ -168,7 +170,7 @@ class TerminalView(Gtk.Box):
     def _on_spawn_complete(self, terminal, pid, error):
         """Called when shell spawn completes."""
         if error:
-            print(f"Terminal spawn error: {error}")
+            ToastService.show_error(f"Terminal spawn error: {error}")
         else:
             self.child_pid = pid
 

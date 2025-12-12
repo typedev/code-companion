@@ -4,7 +4,8 @@ from pathlib import Path
 
 from gi.repository import Gtk, Gio, GLib, GObject, Adw
 
-from ..services import GitService, GitFileStatus, FileStatus
+from ..services import GitService, GitFileStatus, FileStatus, ToastService
+from .branch_popover import BranchPopover
 
 
 # CSS classes for git status colors
@@ -72,17 +73,33 @@ class GitChangesPanel(Gtk.Box):
         header_box.set_margin_top(12)
         header_box.set_margin_bottom(6)
 
-        # Branch indicator
+        # Branch button with popover
+        self.branch_btn = Gtk.MenuButton()
+        self.branch_btn.add_css_class("flat")
+        self.branch_btn.set_hexpand(True)
+
+        # Branch button content
+        branch_content = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         branch_icon = Gtk.Image.new_from_icon_name("git-branch-symbolic")
-        branch_icon.add_css_class("dim-label")
-        header_box.append(branch_icon)
+        branch_content.append(branch_icon)
 
         self.branch_label = Gtk.Label()
         self.branch_label.set_xalign(0)
-        self.branch_label.set_hexpand(True)
-        self.branch_label.set_margin_start(6)
         self.branch_label.add_css_class("heading")
-        header_box.append(self.branch_label)
+        branch_content.append(self.branch_label)
+
+        dropdown_icon = Gtk.Image.new_from_icon_name("pan-down-symbolic")
+        dropdown_icon.add_css_class("dim-label")
+        branch_content.append(dropdown_icon)
+
+        self.branch_btn.set_child(branch_content)
+
+        # Branch popover
+        self.branch_popover = BranchPopover(self.service)
+        self.branch_popover.connect("branch-switched", self._on_branch_switched)
+        self.branch_btn.set_popover(self.branch_popover)
+
+        header_box.append(self.branch_btn)
 
         # Refresh button
         refresh_btn = Gtk.Button()
@@ -364,25 +381,14 @@ class GitChangesPanel(Gtk.Box):
         except Exception as e:
             self._show_error(f"Push failed: {e}")
 
+    def _on_branch_switched(self, popover):
+        """Handle branch switch - refresh everything."""
+        self.refresh()
+
     def _show_toast(self, message: str):
         """Show a toast notification."""
-        window = self.get_root()
-        if isinstance(window, Adw.ApplicationWindow):
-            toast = Adw.Toast.new(message)
-            toast.set_timeout(3)
-            # Find toast overlay - need to add one to the window
-            self._ensure_toast_overlay(window, toast)
+        ToastService.show(message)
 
     def _show_error(self, message: str):
-        """Show error in a dialog."""
-        dialog = Adw.AlertDialog()
-        dialog.set_heading("Error")
-        dialog.set_body(message)
-        dialog.add_response("ok", "OK")
-        dialog.present(self.get_root())
-
-    def _ensure_toast_overlay(self, window, toast):
-        """Ensure window has toast overlay and show toast."""
-        # For now just print - toast overlay needs to be in window
-        print(f"Toast: {toast.get_title()}")
-        # TODO: Add proper toast overlay to ProjectWindow
+        """Show error toast."""
+        ToastService.show_error(message)
