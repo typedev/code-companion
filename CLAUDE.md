@@ -27,6 +27,8 @@ Claude Companion is a native GTK4/libadwaita desktop application for working wit
 - Python 3.12+
 - GTK4 + libadwaita (via PyGObject)
 - GtkSourceView 5 for code highlighting
+- VTE 3.91 for terminal emulation
+- pygit2 for git operations
 - Build system: Meson (planned)
 
 ## Development Commands
@@ -47,19 +49,23 @@ python main.py
 src/
 ├── main.py              # Entry point, argument parsing, NON_UNIQUE application
 ├── project_manager.py   # Project Manager window (select/add/remove projects)
-├── project_window.py    # Project workspace (file tree, tabs, terminal)
+├── project_window.py    # Project workspace (file tree, tabs, terminal, git)
 ├── models/              # Data models (Project, Session, Message, ToolCall)
 ├── widgets/             # UI components
-│   ├── file_tree.py     # File browser sidebar
+│   ├── file_tree.py     # File browser sidebar with git status indicators
 │   ├── file_editor.py   # Code editor with autosave
 │   ├── terminal_view.py # VTE terminal with Dracula theme
 │   ├── session_view.py  # History session viewer
-│   ├── code_view.py     # Read-only code display
+│   ├── code_view.py     # Read-only code display + DiffView
+│   ├── git_panel.py     # Git changes panel (stage/commit/push/pull)
+│   ├── tasks_panel.py   # VSCode tasks.json runner
 │   └── ...
 ├── services/            # Business logic
 │   ├── history.py       # Claude session history reader
 │   ├── project_registry.py  # Registered projects storage
-│   └── project_lock.py  # Lock files for single-instance per project
+│   ├── project_lock.py  # Lock files for single-instance per project
+│   ├── git_service.py   # Git operations via pygit2
+│   └── tasks_service.py # VSCode tasks.json parser
 └── utils/               # Helpers (path encoding)
 ```
 
@@ -81,7 +87,8 @@ Session files are JSONL with event types: `user`, `assistant`, `tool_use`, `tool
 - [x] v0.2.1: Markdown support, improved code blocks
 - [x] v0.3: Embedded VTE terminal with tabs (Terminal/History)
 - [x] v0.4: Project workspace (file tree, file editor, multi-process architecture)
-- [ ] v0.5: Git integration
+- [x] v0.4.1: VSCode tasks.json support (tasks panel in sidebar)
+- [x] v0.5: Git integration (pygit2, Files/Changes tabs, stage/commit/push/pull, unified diff view)
 - [ ] v0.6: TODO notes
 - [ ] v0.7: Polish (search, settings, packaging)
 - [ ] v1.0: Multi-agent orchestration with Git worktrees

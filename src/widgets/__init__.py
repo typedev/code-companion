@@ -8,6 +8,7 @@ from .terminal_view import TerminalView
 from .file_tree import FileTree
 from .file_editor import FileEditor
 from .tasks_panel import TasksPanel
+from .git_panel import GitPanel
 
 __all__ = [
     "MessageRow",
@@ -21,4 +22,5 @@ __all__ = [
     "FileTree",
     "FileEditor",
     "TasksPanel",
+    "GitPanel",
 ]

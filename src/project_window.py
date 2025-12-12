@@ -5,8 +5,8 @@ from pathlib import Path
 from gi.repository import Adw, Gtk, GLib, Gio
 
 from .models import Session
-from .services import HistoryService, ProjectLock, ProjectRegistry
-from .widgets import SessionView, TerminalView, FileTree, FileEditor, TasksPanel
+from .services import HistoryService, ProjectLock, ProjectRegistry, GitService
+from .widgets import SessionView, TerminalView, FileTree, FileEditor, TasksPanel, GitPanel, DiffView
 
 
 def escape_markup(text: str) -> str:
@@ -131,21 +131,59 @@ class ProjectWindow(Adw.ApplicationWindow):
         return header
 
     def _build_sidebar(self) -> Gtk.Box:
-        """Build the file tree sidebar."""
+        """Build the sidebar with Files/Changes tabs."""
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
 
-        # Sidebar header
-        sidebar_header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
-        sidebar_header.set_margin_start(12)
-        sidebar_header.set_margin_end(12)
-        sidebar_header.set_margin_top(12)
-        sidebar_header.set_margin_bottom(6)
+        # Check if this is a git repo
+        self.git_service = GitService(self.project_path)
+        is_git_repo = self.git_service.is_git_repo()
 
-        files_label = Gtk.Label(label="Files")
-        files_label.add_css_class("heading")
-        files_label.set_xalign(0)
-        files_label.set_hexpand(True)
-        sidebar_header.append(files_label)
+        # Tab switcher (only if git repo)
+        if is_git_repo:
+            self.sidebar_stack = Gtk.Stack()
+            self.sidebar_stack.set_transition_type(Gtk.StackTransitionType.CROSSFADE)
+            self.sidebar_stack.set_vexpand(True)
+
+            # Stack switcher
+            switcher = Gtk.StackSwitcher()
+            switcher.set_stack(self.sidebar_stack)
+            switcher.set_margin_start(12)
+            switcher.set_margin_end(12)
+            switcher.set_margin_top(8)
+            switcher.set_margin_bottom(4)
+            box.append(switcher)
+
+            # Files page
+            files_page = self._build_files_page()
+            self.sidebar_stack.add_titled(files_page, "files", "Files")
+
+            # Changes page
+            changes_page = self._build_changes_page()
+            self.sidebar_stack.add_titled(changes_page, "changes", "Changes")
+
+            box.append(self.sidebar_stack)
+        else:
+            # No git - just show files
+            files_page = self._build_files_page()
+            box.append(files_page)
+
+        return box
+
+    def _build_files_page(self) -> Gtk.Box:
+        """Build the Files tab content."""
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+
+        # Header with refresh button
+        header_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+        header_box.set_margin_start(12)
+        header_box.set_margin_end(12)
+        header_box.set_margin_top(6)
+        header_box.set_margin_bottom(6)
+
+        # Spacer for alignment
+        spacer = Gtk.Box()
+        spacer.set_hexpand(True)
+        header_box.append(spacer)
 
         # Refresh button
         refresh_btn = Gtk.Button()
@@ -153,9 +191,9 @@ class ProjectWindow(Adw.ApplicationWindow):
         refresh_btn.add_css_class("flat")
         refresh_btn.set_tooltip_text("Refresh files")
         refresh_btn.connect("clicked", self._on_refresh_files_clicked)
-        sidebar_header.append(refresh_btn)
+        header_box.append(refresh_btn)
 
-        box.append(sidebar_header)
+        box.append(header_box)
 
         # File tree
         self.file_tree = FileTree(str(self.project_path))
@@ -168,6 +206,12 @@ class ProjectWindow(Adw.ApplicationWindow):
         box.append(self.tasks_panel)
 
         return box
+
+    def _build_changes_page(self) -> Gtk.Box:
+        """Build the Changes tab content (git panel)."""
+        self.git_panel = GitPanel(str(self.project_path))
+        self.git_panel.connect("file-clicked", self._on_git_file_clicked)
+        return self.git_panel
 
     def _build_content(self) -> Gtk.Box:
         """Build the main content area with tab view."""
@@ -400,6 +444,23 @@ class ProjectWindow(Adw.ApplicationWindow):
     def _on_refresh_files_clicked(self, button):
         """Refresh file tree."""
         self.file_tree.refresh()
+
+    def _on_git_file_clicked(self, git_panel, path: str, staged: bool):
+        """Handle git file click - open diff view."""
+        # Get diff content
+        old_content, new_content = self.git_service.get_diff(path, staged)
+
+        # Create diff view
+        diff_view = DiffView(old_content, new_content, file_path=path)
+
+        # Add tab
+        page = self.tab_view.append(diff_view)
+        status_prefix = "[staged] " if staged else ""
+        page.set_title(f"{status_prefix}{Path(path).name}")
+        page.set_icon(Gio.ThemedIcon.new("document-edit-symbolic"))
+        page.set_tooltip(f"Diff: {path}")
+
+        self.tab_view.set_selected_page(page)
 
     def _on_task_run(self, tasks_panel, label: str, command: str):
         """Handle task run - create terminal and execute command."""

@@ -161,45 +161,129 @@ class CodeView(Gtk.Frame):
 
 
 class DiffView(Gtk.Box):
-    """A widget for displaying diff between old and new text."""
+    """A widget for displaying unified diff with +/- and color highlighting."""
 
     def __init__(self, old_text: str, new_text: str, file_path: str | None = None):
-        super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        super().__init__(orientation=Gtk.Orientation.VERTICAL)
 
         self.old_text = old_text
         self.new_text = new_text
         self.file_path = file_path
 
+        self._setup_css()
         self._build_ui()
+
+    def _setup_css(self):
+        """Set up CSS for diff colors."""
+        css = b"""
+        .diff-view {
+            font-family: monospace;
+            font-size: 10pt;
+        }
+        .diff-added {
+            background-color: rgba(46, 204, 113, 0.2);
+            color: #2ecc71;
+        }
+        .diff-removed {
+            background-color: rgba(231, 76, 60, 0.2);
+            color: #e74c3c;
+        }
+        .diff-hunk {
+            background-color: rgba(52, 152, 219, 0.15);
+            color: #3498db;
+        }
+        .diff-context {
+            color: @theme_fg_color;
+        }
+        """
+        provider = Gtk.CssProvider()
+        provider.load_from_data(css)
+        Gtk.StyleContext.add_provider_for_display(
+            self.get_display(),
+            provider,
+            Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
+        )
 
     def _build_ui(self):
         """Build the diff view UI."""
-        # Old text (removed)
-        if self.old_text:
-            old_label = Gtk.Label(label="Removed:")
-            old_label.set_xalign(0)
-            old_label.add_css_class("dim-label")
-            self.append(old_label)
+        import difflib
 
-            old_code = CodeView(
-                self.old_text,
-                file_path=self.file_path,
-                show_line_numbers=False,
-                max_lines=15,
-            )
-            self.append(old_code)
+        # Generate unified diff
+        old_lines = self.old_text.splitlines(keepends=True) if self.old_text else []
+        new_lines = self.new_text.splitlines(keepends=True) if self.new_text else []
 
-        # New text (added)
-        if self.new_text:
-            new_label = Gtk.Label(label="Added:")
-            new_label.set_xalign(0)
-            new_label.add_css_class("dim-label")
-            self.append(new_label)
+        diff = list(difflib.unified_diff(
+            old_lines,
+            new_lines,
+            fromfile=f"a/{self.file_path}" if self.file_path else "a/old",
+            tofile=f"b/{self.file_path}" if self.file_path else "b/new",
+            lineterm=""
+        ))
 
-            new_code = CodeView(
-                self.new_text,
-                file_path=self.file_path,
-                show_line_numbers=False,
-                max_lines=15,
-            )
-            self.append(new_code)
+        # Scrolled window
+        scrolled = Gtk.ScrolledWindow()
+        scrolled.set_vexpand(True)
+        scrolled.set_hexpand(True)
+        scrolled.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
+
+        if not diff:
+            # No changes
+            label = Gtk.Label(label="No differences")
+            label.add_css_class("dim-label")
+            label.set_margin_top(24)
+            scrolled.set_child(label)
+        else:
+            # Create text view for diff
+            text_view = Gtk.TextView()
+            text_view.set_editable(False)
+            text_view.set_cursor_visible(False)
+            text_view.set_monospace(True)
+            text_view.add_css_class("diff-view")
+            text_view.set_left_margin(12)
+            text_view.set_right_margin(12)
+            text_view.set_top_margin(8)
+            text_view.set_bottom_margin(8)
+
+            buffer = text_view.get_buffer()
+
+            # Create tags for highlighting
+            tag_added = buffer.create_tag("added", background="rgba(46, 204, 113, 0.2)", foreground="#2ecc71")
+            tag_removed = buffer.create_tag("removed", background="rgba(231, 76, 60, 0.2)", foreground="#e74c3c")
+            tag_hunk = buffer.create_tag("hunk", background="rgba(52, 152, 219, 0.15)", foreground="#3498db")
+
+            # Insert diff lines with tags
+            for line in diff:
+                line_clean = line.rstrip('\n')
+                iter_end = buffer.get_end_iter()
+
+                if line.startswith('+++') or line.startswith('---'):
+                    # File headers
+                    buffer.insert(iter_end, line_clean + "\n")
+                elif line.startswith('@@'):
+                    # Hunk header
+                    start_offset = buffer.get_char_count()
+                    buffer.insert(iter_end, line_clean + "\n")
+                    start_iter = buffer.get_iter_at_offset(start_offset)
+                    end_iter = buffer.get_end_iter()
+                    buffer.apply_tag(tag_hunk, start_iter, end_iter)
+                elif line.startswith('+'):
+                    # Added line
+                    start_offset = buffer.get_char_count()
+                    buffer.insert(iter_end, line_clean + "\n")
+                    start_iter = buffer.get_iter_at_offset(start_offset)
+                    end_iter = buffer.get_end_iter()
+                    buffer.apply_tag(tag_added, start_iter, end_iter)
+                elif line.startswith('-'):
+                    # Removed line
+                    start_offset = buffer.get_char_count()
+                    buffer.insert(iter_end, line_clean + "\n")
+                    start_iter = buffer.get_iter_at_offset(start_offset)
+                    end_iter = buffer.get_end_iter()
+                    buffer.apply_tag(tag_removed, start_iter, end_iter)
+                else:
+                    # Context line
+                    buffer.insert(iter_end, line_clean + "\n")
+
+            scrolled.set_child(text_view)
+
+        self.append(scrolled)

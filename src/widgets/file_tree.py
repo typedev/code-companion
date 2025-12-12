@@ -4,6 +4,19 @@ from pathlib import Path
 
 from gi.repository import Gtk, Gio, GLib, GObject, Pango
 
+from ..services import GitService, FileStatus
+
+
+# CSS classes for git status colors
+STATUS_CSS_CLASSES = {
+    FileStatus.MODIFIED: "git-modified",
+    FileStatus.ADDED: "git-added",
+    FileStatus.DELETED: "git-deleted",
+    FileStatus.RENAMED: "git-renamed",
+    FileStatus.UNTRACKED: "git-added",
+    FileStatus.TYPECHANGE: "git-modified",
+}
+
 
 class FileTree(Gtk.Box):
     """A widget for browsing project files as a tree."""
@@ -20,8 +33,16 @@ class FileTree(Gtk.Box):
 
         self.root_path = Path(root_path)
         self._expanded_paths: set[str] = set()
+        self._git_status: dict[str, FileStatus] = {}
+
+        # Initialize git service
+        self._git_service = GitService(self.root_path)
+        self._is_git_repo = self._git_service.is_git_repo()
+        if self._is_git_repo:
+            self._git_service.open()
 
         self._build_ui()
+        self._setup_css()
         self.refresh()
 
     def _build_ui(self):
@@ -40,8 +61,34 @@ class FileTree(Gtk.Box):
         scrolled.set_child(self.list_box)
         self.append(scrolled)
 
+    def _setup_css(self):
+        """Set up CSS for git status colors."""
+        css = b"""
+        .git-modified { color: #f1c40f; }
+        .git-added { color: #2ecc71; }
+        .git-deleted { color: #e74c3c; }
+        .git-renamed { color: #3498db; }
+        .git-indicator {
+            font-size: 8px;
+            margin-left: 4px;
+        }
+        """
+        provider = Gtk.CssProvider()
+        provider.load_from_data(css)
+        Gtk.StyleContext.add_provider_for_display(
+            self.get_display(),
+            provider,
+            Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
+        )
+
     def refresh(self):
         """Refresh the file tree."""
+        # Update git status
+        if self._is_git_repo:
+            self._git_status = self._git_service.get_file_status_map()
+        else:
+            self._git_status = {}
+
         # Clear existing
         while row := self.list_box.get_first_child():
             self.list_box.remove(row)
@@ -110,10 +157,35 @@ class FileTree(Gtk.Box):
         label.set_xalign(0)
         label.set_ellipsize(Pango.EllipsizeMode.MIDDLE)
         label.set_hexpand(True)
+
+        # Apply git status color to label
+        relative_path = self._get_relative_path(path)
+        git_status = self._git_status.get(relative_path)
+        if git_status:
+            css_class = STATUS_CSS_CLASSES.get(git_status)
+            if css_class:
+                label.add_css_class(css_class)
+
         box.append(label)
+
+        # Git status indicator (colored dot)
+        if git_status:
+            indicator = Gtk.Label(label="●")
+            indicator.add_css_class("git-indicator")
+            css_class = STATUS_CSS_CLASSES.get(git_status)
+            if css_class:
+                indicator.add_css_class(css_class)
+            box.append(indicator)
 
         row.set_child(box)
         return row
+
+    def _get_relative_path(self, path: Path) -> str:
+        """Get path relative to repository root."""
+        try:
+            return str(path.relative_to(self.root_path))
+        except ValueError:
+            return str(path)
 
     def _get_file_icon(self, path: Path) -> str:
         """Get appropriate icon for file type."""
