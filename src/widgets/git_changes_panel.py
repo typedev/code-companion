@@ -24,6 +24,7 @@ class GitChangesPanel(Gtk.Box):
 
     __gsignals__ = {
         "file-clicked": (GObject.SignalFlags.RUN_FIRST, None, (str, bool)),  # path, staged
+        "branch-changed": (GObject.SignalFlags.RUN_FIRST, None, ()),  # emitted when branch switches
     }
 
     def __init__(self, project_path: str):
@@ -236,6 +237,9 @@ class GitChangesPanel(Gtk.Box):
         branch = self.service.get_branch_name()
         self.branch_label.set_label(branch)
 
+        # Update Push/Pull buttons with ahead/behind counts
+        self._update_sync_buttons()
+
         # Clear content - collect children first to avoid modification during iteration
         children = []
         child = self.content_box.get_first_child()
@@ -267,6 +271,26 @@ class GitChangesPanel(Gtk.Box):
             self._add_section("Changes", unstaged, is_staged=False)
 
         self._update_commit_button()
+
+    def _update_sync_buttons(self):
+        """Update Push/Pull button labels with ahead/behind counts."""
+        ahead, behind = self.service.get_ahead_behind()
+
+        # Update Push button
+        if ahead > 0:
+            self.push_btn.set_label(f"Push ({ahead})")
+            self.push_btn.add_css_class("suggested-action")
+        else:
+            self.push_btn.set_label("Push")
+            self.push_btn.remove_css_class("suggested-action")
+
+        # Update Pull button
+        if behind > 0:
+            self.pull_btn.set_label(f"Pull ({behind})")
+            self.pull_btn.add_css_class("suggested-action")
+        else:
+            self.pull_btn.set_label("Pull")
+            self.pull_btn.remove_css_class("suggested-action")
 
     def _add_section(self, title: str, files: list[GitFileStatus], is_staged: bool):
         """Add a section (Staged or Changes) to the panel."""
@@ -388,24 +412,56 @@ class GitChangesPanel(Gtk.Box):
 
     def _on_pull_clicked(self, button):
         """Handle pull button click."""
+        # Check for uncommitted changes first
+        if self.service.has_uncommitted_changes():
+            self._show_uncommitted_warning()
+            return
+
+        self._do_pull()
+
+    def _show_uncommitted_warning(self):
+        """Show warning about uncommitted changes before pull."""
+        dialog = Adw.AlertDialog()
+        dialog.set_heading("Uncommitted Changes")
+        dialog.set_body(
+            "You have uncommitted changes. "
+            "Please commit or stash them before pulling."
+        )
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("pull", "Pull Anyway")
+        dialog.set_response_appearance("pull", Adw.ResponseAppearance.DESTRUCTIVE)
+        dialog.set_default_response("cancel")
+        dialog.set_close_response("cancel")
+        dialog.connect("response", self._on_uncommitted_warning_response)
+        dialog.present(self.get_root())
+
+    def _on_uncommitted_warning_response(self, dialog, response: str):
+        """Handle uncommitted warning dialog response."""
+        if response == "pull":
+            self._do_pull()
+
+    def _do_pull(self):
+        """Execute pull operation."""
         try:
             result = self.service.pull()
             self._show_toast(result)
             self.refresh()
         except Exception as e:
-            self._show_error(f"Pull failed: {e}")
+            self._show_error_dialog("Pull Failed", str(e))
 
     def _on_push_clicked(self, button):
         """Handle push button click."""
         try:
             result = self.service.push()
             self._show_toast(result)
+            self.refresh()  # Update counts
         except Exception as e:
-            self._show_error(f"Push failed: {e}")
+            self._show_error_dialog("Push Failed", str(e))
 
     def _on_branch_switched(self, popover):
-        """Handle branch switch - refresh everything."""
+        """Handle branch switch - refresh and notify."""
         self.refresh()
+        self.emit("branch-changed")
 
     def _show_toast(self, message: str):
         """Show a toast notification."""
@@ -414,3 +470,50 @@ class GitChangesPanel(Gtk.Box):
     def _show_error(self, message: str):
         """Show error toast."""
         ToastService.show_error(message)
+
+    def _show_error_dialog(self, title: str, message: str):
+        """Show error dialog with copy button."""
+        dialog = Adw.AlertDialog()
+        dialog.set_heading(title)
+
+        # Create scrollable text view for error message
+        text_view = Gtk.TextView()
+        text_view.set_editable(False)
+        text_view.set_cursor_visible(False)
+        text_view.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
+        text_view.set_monospace(True)
+        text_view.get_buffer().set_text(message)
+        text_view.set_margin_top(8)
+        text_view.set_margin_bottom(8)
+        text_view.set_margin_start(8)
+        text_view.set_margin_end(8)
+
+        scrolled = Gtk.ScrolledWindow()
+        scrolled.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
+        scrolled.set_min_content_height(100)
+        scrolled.set_max_content_height(300)
+        scrolled.set_min_content_width(400)
+        scrolled.set_child(text_view)
+
+        frame = Gtk.Frame()
+        frame.set_child(scrolled)
+
+        dialog.set_extra_child(frame)
+
+        dialog.add_response("copy", "Copy")
+        dialog.add_response("close", "Close")
+        dialog.set_default_response("close")
+        dialog.set_close_response("close")
+
+        dialog.connect("response", self._on_error_dialog_response, message)
+
+        # Find parent window
+        parent = self.get_root()
+        dialog.present(parent)
+
+    def _on_error_dialog_response(self, dialog, response: str, message: str):
+        """Handle error dialog response."""
+        if response == "copy":
+            clipboard = self.get_clipboard()
+            clipboard.set(message)
+            ToastService.show("Error copied to clipboard")

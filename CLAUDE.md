@@ -66,15 +66,17 @@ src/
 │   ├── tasks_panel.py   # VSCode tasks.json runner
 │   ├── notes_panel.py   # Notes panel (My Notes + Docs + TODOs)
 │   ├── preferences_dialog.py  # Settings dialog (Adw.PreferencesDialog)
+│   ├── snippets_bar.py  # Snippets buttons bar (right-click to delete)
 │   └── ...
 ├── services/            # Business logic
 │   ├── history.py       # Claude session history reader
 │   ├── project_registry.py  # Registered projects storage
 │   ├── project_lock.py  # Lock files for single-instance per project
-│   ├── git_service.py   # Git operations via pygit2
+│   ├── git_service.py   # Git operations via pygit2 (push/pull via git CLI)
 │   ├── tasks_service.py # VSCode tasks.json parser
 │   ├── toast_service.py # Toast notifications singleton
 │   ├── settings_service.py  # App settings singleton (JSON storage)
+│   ├── snippets_service.py  # Text snippets management (files in ~/.config/claude-companion/snippets/)
 │   └── icon_cache.py    # Material Design icons cache (O(1) lookup)
 ├── resources/
 │   └── icons/           # Material Design SVG icons (from vscode-material-icon-theme)
@@ -266,6 +268,7 @@ def on_setting_changed(settings, key, value):
 | `editor.line_height` | `1.4` | Line height multiplier |
 | `editor.tab_size` | `4` | Tab width |
 | `editor.insert_spaces` | `true` | Use spaces for indentation |
+| `editor.word_wrap` | `true` | Wrap long lines at word boundaries |
 | `file_tree.show_hidden` | `false` | Show dotfiles |
 | `window.width/height` | `1200/800` | Window size |
 | `window.maximized` | `false` | Maximized state |

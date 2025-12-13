@@ -113,10 +113,10 @@ class SnippetsBar(Gtk.Box):
 ### Default Snippets
 ```python
 DEFAULT_SNIPPETS = {
-    "Plan": "создай детальный план с чекпоинтами в docs/",
-    "Commit": "сделай саммари изменений и коммит",
-    "Fix": "исправь ошибку",
-    "Summary": "сделай краткое саммари что было сделано",
+    "Plan": "create a detailed plan with checkpoints in /docs",
+    "Commit": "make a summary of the changes and commit",
+    "Fix": "fix a bug",
+    "Summary": "make a short summary of what was done",
 }
 ```
 

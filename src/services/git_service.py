@@ -1,5 +1,6 @@
 """Git service using pygit2 for repository operations."""
 
+import subprocess
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
@@ -262,78 +263,114 @@ class GitService:
                 return self.repo.remotes[0]
         return None
 
-    def _get_credentials_callback(self):
-        """Create credentials callback for remote operations."""
-        def credentials(url, username_from_url, allowed_types):
-            if allowed_types & pygit2.GIT_CREDENTIAL_SSH_KEY:
-                # Try SSH key
-                ssh_dir = Path.home() / ".ssh"
-                for key_name in ["id_ed25519", "id_rsa", "id_ecdsa"]:
-                    private_key = ssh_dir / key_name
-                    public_key = ssh_dir / f"{key_name}.pub"
-                    if private_key.exists() and public_key.exists():
-                        return pygit2.Keypair(
-                            username_from_url or "git",
-                            str(public_key),
-                            str(private_key),
-                            ""
-                        )
-            if allowed_types & pygit2.GIT_CREDENTIAL_USERPASS_PLAINTEXT:
-                # Rely on system credential helper - this won't work directly
-                # User needs to have credentials cached
-                pass
-            return None
-        return credentials
+    def get_ahead_behind(self) -> tuple[int, int]:
+        """Get count of commits ahead and behind remote.
+
+        Returns:
+            Tuple of (ahead, behind) counts. Returns (0, 0) if no upstream.
+        """
+        if not self.repo:
+            return (0, 0)
+
+        try:
+            result = subprocess.run(
+                ["git", "rev-list", "--left-right", "--count", "HEAD...@{upstream}"],
+                cwd=str(self.repo_path),
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if result.returncode == 0:
+                parts = result.stdout.strip().split()
+                if len(parts) == 2:
+                    return (int(parts[0]), int(parts[1]))
+        except (subprocess.TimeoutExpired, FileNotFoundError, ValueError):
+            pass
+
+        return (0, 0)
+
+    def has_uncommitted_changes(self) -> bool:
+        """Check if there are uncommitted changes (staged or unstaged)."""
+        if not self.repo:
+            return False
+
+        status = self.repo.status()
+        return len(status) > 0
 
     def pull(self) -> str:
-        """Pull from remote. Returns status message."""
+        """Pull from remote using git CLI. Returns status message."""
         remote = self.get_remote()
         if not remote:
             raise RuntimeError("No remote configured")
 
-        # Fetch
-        callbacks = pygit2.RemoteCallbacks(credentials=self._get_credentials_callback())
-        remote.fetch(callbacks=callbacks)
-
-        # Get remote branch
-        branch_name = self.get_branch_name()
-        remote_ref = f"refs/remotes/{remote.name}/{branch_name}"
-
         try:
-            remote_id = self.repo.references[remote_ref].target
-        except KeyError:
-            return "No remote branch to pull from"
+            result = subprocess.run(
+                ["git", "pull"],
+                cwd=str(self.repo_path),
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+            if result.returncode != 0:
+                error = result.stderr.strip() or result.stdout.strip()
+                raise RuntimeError(error or "Pull failed")
 
-        # Merge
-        merge_result, _ = self.repo.merge_analysis(remote_id)
+            output = result.stdout.strip()
+            if "Already up to date" in output:
+                return "Already up to date"
+            return "Pull successful"
 
-        if merge_result & pygit2.GIT_MERGE_ANALYSIS_UP_TO_DATE:
-            return "Already up to date"
-        elif merge_result & pygit2.GIT_MERGE_ANALYSIS_FASTFORWARD:
-            # Fast-forward
-            self.repo.checkout_tree(self.repo.get(remote_id))
-            self.repo.head.set_target(remote_id)
-            return "Fast-forward merge"
-        elif merge_result & pygit2.GIT_MERGE_ANALYSIS_NORMAL:
-            # Need real merge - for now just report
-            return "Merge required (not implemented)"
-
-        return "Pull completed"
+        except subprocess.TimeoutExpired:
+            raise RuntimeError("Pull timed out")
+        except FileNotFoundError:
+            raise RuntimeError("git command not found")
 
     def push(self) -> str:
-        """Push to remote. Returns status message."""
+        """Push to remote using git CLI. Returns status message.
+
+        Automatically sets upstream for new branches.
+        """
         remote = self.get_remote()
         if not remote:
             raise RuntimeError("No remote configured")
 
         branch_name = self.get_branch_name()
-        callbacks = pygit2.RemoteCallbacks(credentials=self._get_credentials_callback())
 
         try:
-            remote.push([f"refs/heads/{branch_name}"], callbacks=callbacks)
+            # First try normal push
+            result = subprocess.run(
+                ["git", "push"],
+                cwd=str(self.repo_path),
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+
+            if result.returncode != 0:
+                error = result.stderr.strip() or result.stdout.strip()
+
+                # Check if it's "no upstream branch" error
+                if "has no upstream branch" in error or "no upstream branch" in error:
+                    # Retry with --set-upstream
+                    result = subprocess.run(
+                        ["git", "push", "--set-upstream", remote.name, branch_name],
+                        cwd=str(self.repo_path),
+                        capture_output=True,
+                        text=True,
+                        timeout=60,
+                    )
+                    if result.returncode == 0:
+                        return f"Push successful (upstream set to {remote.name}/{branch_name})"
+                    error = result.stderr.strip() or result.stdout.strip()
+
+                raise RuntimeError(error or "Push failed")
+
             return "Push successful"
-        except pygit2.GitError as e:
-            raise RuntimeError(f"Push failed: {e}")
+
+        except subprocess.TimeoutExpired:
+            raise RuntimeError("Push timed out")
+        except FileNotFoundError:
+            raise RuntimeError("git command not found")
 
     def get_file_status_map(self) -> dict[str, FileStatus]:
         """Get a map of path -> status for FileTree indicators."""

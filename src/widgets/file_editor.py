@@ -45,7 +45,6 @@ class FileEditor(Gtk.Box):
         self.source_view.set_cursor_visible(True)
         self.source_view.set_show_line_numbers(True)
         self.source_view.set_monospace(True)
-        self.source_view.set_wrap_mode(Gtk.WrapMode.NONE)
         self.source_view.set_auto_indent(True)
         self.source_view.set_indent_on_tab(True)
         self.source_view.set_highlight_current_line(True)
@@ -125,6 +124,11 @@ class FileEditor(Gtk.Box):
         insert_spaces = self.settings.get("editor.insert_spaces", True)
         self.source_view.set_tab_width(tab_size)
         self.source_view.set_insert_spaces_instead_of_tabs(insert_spaces)
+
+        # Word wrap
+        word_wrap = self.settings.get("editor.word_wrap", True)
+        wrap_mode = Gtk.WrapMode.WORD_CHAR if word_wrap else Gtk.WrapMode.NONE
+        self.source_view.set_wrap_mode(wrap_mode)
 
     def _on_setting_changed(self, settings, key, value):
         """Handle settings changes."""

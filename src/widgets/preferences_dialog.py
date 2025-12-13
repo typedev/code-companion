@@ -141,6 +141,20 @@ class PreferencesDialog(Adw.PreferencesDialog):
         tabs_group.add(spaces_row)
 
         page.add(tabs_group)
+
+        # Display group
+        display_group = Adw.PreferencesGroup()
+        display_group.set_title("Display")
+
+        # Word wrap
+        wrap_row = Adw.SwitchRow()
+        wrap_row.set_title("Word Wrap")
+        wrap_row.set_subtitle("Wrap long lines at word boundaries")
+        wrap_row.set_active(self.settings.get("editor.word_wrap", True))
+        wrap_row.connect("notify::active", self._on_word_wrap_changed)
+        display_group.add(wrap_row)
+
+        page.add(display_group)
         self.add(page)
 
     def _build_files_page(self):
@@ -201,3 +215,7 @@ class PreferencesDialog(Adw.PreferencesDialog):
     def _on_show_hidden_changed(self, row, pspec):
         """Handle show hidden files toggle."""
         self.settings.set("file_tree.show_hidden", row.get_active())
+
+    def _on_word_wrap_changed(self, row, pspec):
+        """Handle word wrap toggle."""
+        self.settings.set("editor.word_wrap", row.get_active())

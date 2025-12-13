@@ -55,7 +55,26 @@ class ProjectWindow(Adw.ApplicationWindow):
 
     def _setup_window(self):
         """Configure window properties."""
+        # Initial title without branch (git service not ready yet)
         self.set_title(f"{self.project_name} - Claude Companion")
+
+    def _update_window_title(self):
+        """Update window title with project name and branch."""
+        # Get branch name if git repo
+        branch = ""
+        if hasattr(self, "git_service") and hasattr(self, "_is_git_repo") and self._is_git_repo:
+            branch = self.git_service.get_branch_name()
+
+        if branch:
+            title = f"{self.project_name} / git:{branch}"
+        else:
+            title = self.project_name
+
+        self.set_title(f"{title} - Claude Companion")
+
+        # Also update header title widget if available
+        if hasattr(self, "window_title"):
+            self.window_title.set_title(title)
 
         # Get settings service
         self.settings = SettingsService.get_instance()
@@ -134,6 +153,9 @@ class ProjectWindow(Adw.ApplicationWindow):
 
         self.set_content(self.toast_overlay)
 
+        # Update window title with branch name (now that all widgets exist)
+        self._update_window_title()
+
     def _build_header(self) -> Adw.HeaderBar:
         """Build the header bar with buttons."""
         header = Adw.HeaderBar()
@@ -177,11 +199,11 @@ class ProjectWindow(Adw.ApplicationWindow):
         terminal_btn.connect("clicked", self._on_new_terminal_clicked)
         header.pack_start(terminal_btn)
 
-        # Title
-        title = Adw.WindowTitle()
-        title.set_title(self.project_name)
-        title.set_subtitle(str(self.project_path))
-        header.set_title_widget(title)
+        # Title (will be updated with branch name after git service init)
+        self.window_title = Adw.WindowTitle()
+        self.window_title.set_title(self.project_name)
+        self.window_title.set_subtitle(str(self.project_path))
+        header.set_title_widget(self.window_title)
 
         # Open external terminal button
         ext_terminal_btn = Gtk.Button()
@@ -431,6 +453,7 @@ class ProjectWindow(Adw.ApplicationWindow):
         # Changes panel
         self.git_changes_panel = GitChangesPanel(str(self.project_path))
         self.git_changes_panel.connect("file-clicked", self._on_git_file_clicked)
+        self.git_changes_panel.connect("branch-changed", self._on_branch_changed)
         self.git_stack.add_titled(self.git_changes_panel, "changes", "Changes")
 
         # History panel
@@ -775,6 +798,10 @@ class ProjectWindow(Adw.ApplicationWindow):
         page.set_tooltip(f"Diff: {path}")
 
         self.tab_view.set_selected_page(page)
+
+    def _on_branch_changed(self, git_panel):
+        """Handle branch change - update window title."""
+        self._update_window_title()
 
     def _on_commit_view_diff(self, history_panel, commit_hash: str):
         """Handle commit diff view request - reuse single commit tab."""

@@ -242,11 +242,15 @@ class DiffView(Gtk.Box):
             text_view.set_editable(False)
             text_view.set_cursor_visible(False)
             text_view.set_monospace(True)
+            text_view.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
             text_view.add_css_class("diff-view")
             text_view.set_left_margin(12)
             text_view.set_right_margin(12)
             text_view.set_top_margin(8)
             text_view.set_bottom_margin(8)
+
+            # Apply font settings
+            self._apply_font_settings(text_view)
 
             buffer = text_view.get_buffer()
 
@@ -291,3 +295,29 @@ class DiffView(Gtk.Box):
             scrolled.set_child(text_view)
 
         self.append(scrolled)
+
+    def _apply_font_settings(self, text_view: Gtk.TextView):
+        """Apply font settings from preferences to text view."""
+        settings = SettingsService.get_instance()
+
+        font_family = settings.get("editor.font_family", "Monospace")
+        font_size = settings.get("editor.font_size", 12)
+        line_height = settings.get("editor.line_height", 1.4)
+
+        # Apply font via Pango
+        font_desc = Pango.FontDescription.from_string(f"{font_family} {font_size}")
+        text_view.modify_font(font_desc) if hasattr(text_view, 'modify_font') else None
+
+        # Apply via CSS for better control
+        css = f"""
+        .diff-view {{
+            font-family: "{font_family}";
+            font-size: {font_size}pt;
+            line-height: {line_height};
+        }}
+        """
+        css_provider = Gtk.CssProvider()
+        css_provider.load_from_data(css.encode())
+        text_view.get_style_context().add_provider(
+            css_provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
+        )

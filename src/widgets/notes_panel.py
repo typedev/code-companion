@@ -1,17 +1,22 @@
-"""Notes panel widget for sidebar - user notes, docs, and code TODOs."""
+"""Notes panel widget for sidebar - user notes, docs, snippets, and code TODOs."""
 
 import subprocess
 import shutil
 import threading
 from pathlib import Path
 
-from gi.repository import Gtk, Gio, GLib, GObject, Adw
+from gi.repository import Gtk, Gdk, Gio, GLib, GObject, Adw
 
-from ..services import SnippetsService
+from ..services import SnippetsService, ToastService
 
 
 class NotesPanel(Gtk.Box):
-    """Panel displaying user notes, docs, and code TODOs."""
+    """Panel displaying user notes, docs, snippets, and code TODOs.
+
+    Notes, docs, and snippets share unified interface:
+    - Header with title, count, and add button
+    - File rows with name and delete button
+    """
 
     __gsignals__ = {
         "open-file": (GObject.SignalFlags.RUN_FIRST, None, (str,)),
@@ -71,27 +76,17 @@ class NotesPanel(Gtk.Box):
 
     def _build_ui(self):
         """Build the panel UI."""
-        # Header
+        # Header with refresh button
         header_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
         header_box.set_margin_start(12)
         header_box.set_margin_end(12)
         header_box.set_margin_top(12)
         header_box.set_margin_bottom(6)
 
-        # New note button
-        new_note_btn = Gtk.Button()
-        new_note_btn.set_icon_name("document-new-symbolic")
-        new_note_btn.add_css_class("flat")
-        new_note_btn.set_tooltip_text("New note")
-        new_note_btn.connect("clicked", self._on_new_note_clicked)
-        header_box.append(new_note_btn)
-
-        # Spacer
         spacer = Gtk.Box()
         spacer.set_hexpand(True)
         header_box.append(spacer)
 
-        # Refresh button
         refresh_btn = Gtk.Button()
         refresh_btn.set_icon_name("view-refresh-symbolic")
         refresh_btn.add_css_class("flat")
@@ -111,28 +106,27 @@ class NotesPanel(Gtk.Box):
         self.content_box.set_margin_end(12)
         self.content_box.set_margin_bottom(12)
 
-        # My Notes section
-        self.notes_expander = Gtk.Expander()
-        self.notes_expander.set_expanded(True)
-        self.notes_header = Gtk.Label(label="My Notes")
-        self.notes_header.add_css_class("heading")
-        self.notes_expander.set_label_widget(self.notes_header)
-        self.notes_list = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        self.notes_expander.set_child(self.notes_list)
+        # My Notes section (notes/*.md)
+        self.notes_expander, self.notes_header, self.notes_list = self._create_file_section(
+            "My Notes", self._on_add_note_clicked
+        )
         self.content_box.append(self.notes_expander)
 
-        # Docs section
-        self.docs_expander = Gtk.Expander()
-        self.docs_expander.set_expanded(True)
+        # Docs section (docs/*.md + CLAUDE.md)
+        self.docs_expander, self.docs_header, self.docs_list = self._create_file_section(
+            "Docs", self._on_add_doc_clicked
+        )
         self.docs_expander.set_margin_top(8)
-        self.docs_header = Gtk.Label(label="Docs")
-        self.docs_header.add_css_class("heading")
-        self.docs_expander.set_label_widget(self.docs_header)
-        self.docs_list = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        self.docs_expander.set_child(self.docs_list)
         self.content_box.append(self.docs_expander)
 
-        # TODOs section
+        # Snippets section (~/.config/claude-companion/snippets/*.md)
+        self.snippets_expander, self.snippets_header, self.snippets_list = self._create_file_section(
+            "Snippets", self._on_add_snippet_clicked
+        )
+        self.snippets_expander.set_margin_top(8)
+        self.content_box.append(self.snippets_expander)
+
+        # TODOs section (code search)
         self.todos_expander = Gtk.Expander()
         self.todos_expander.set_expanded(True)
         self.todos_expander.set_margin_top(8)
@@ -143,37 +137,40 @@ class NotesPanel(Gtk.Box):
         self.todos_expander.set_child(self.todos_list)
         self.content_box.append(self.todos_expander)
 
-        # Snippets section
-        self.snippets_expander = Gtk.Expander()
-        self.snippets_expander.set_expanded(True)
-        self.snippets_expander.set_margin_top(8)
-
-        # Snippets header with add button
-        snippets_header_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        self.snippets_header = Gtk.Label(label="Snippets")
-        self.snippets_header.add_css_class("heading")
-        snippets_header_box.append(self.snippets_header)
-
-        add_snippet_btn = Gtk.Button()
-        add_snippet_btn.set_icon_name("list-add-symbolic")
-        add_snippet_btn.add_css_class("flat")
-        add_snippet_btn.add_css_class("circular")
-        add_snippet_btn.set_valign(Gtk.Align.CENTER)
-        add_snippet_btn.set_tooltip_text("Add snippet")
-        add_snippet_btn.connect("clicked", self._on_add_snippet_clicked)
-        snippets_header_box.append(add_snippet_btn)
-
-        self.snippets_expander.set_label_widget(snippets_header_box)
-        self.snippets_list = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        self.snippets_expander.set_child(self.snippets_list)
-        self.content_box.append(self.snippets_expander)
-
         # Get snippets service
         self.snippets_service = SnippetsService.get_instance()
         self.snippets_service.connect("changed", lambda s: self._refresh_snippets())
 
         scrolled.set_child(self.content_box)
         self.append(scrolled)
+
+    def _create_file_section(self, title: str, add_callback) -> tuple[Gtk.Expander, Gtk.Label, Gtk.Box]:
+        """Create a file section with header (title + add button) and list."""
+        expander = Gtk.Expander()
+        expander.set_expanded(True)
+
+        # Header with title and add button
+        header_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+
+        title_label = Gtk.Label(label=title)
+        title_label.add_css_class("heading")
+        header_box.append(title_label)
+
+        add_btn = Gtk.Button()
+        add_btn.set_icon_name("list-add-symbolic")
+        add_btn.add_css_class("flat")
+        add_btn.add_css_class("circular")
+        add_btn.set_valign(Gtk.Align.CENTER)
+        add_btn.set_tooltip_text(f"Add {title.lower().rstrip('s')}")
+        add_btn.connect("clicked", add_callback)
+        header_box.append(add_btn)
+
+        expander.set_label_widget(header_box)
+
+        file_list = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        expander.set_child(file_list)
+
+        return expander, title_label, file_list
 
     def _setup_file_monitors(self):
         """Set up file monitors for notes and docs folders."""
@@ -228,7 +225,6 @@ class NotesPanel(Gtk.Box):
 
         notes_dir = self.project_path / "notes"
         if not notes_dir.exists():
-            # Create notes folder
             try:
                 notes_dir.mkdir(parents=True, exist_ok=True)
             except OSError:
@@ -246,7 +242,7 @@ class NotesPanel(Gtk.Box):
         else:
             self.notes_header.set_label(f"My Notes ({len(md_files)})")
             for file_path in md_files:
-                self._add_file_row(self.notes_list, file_path)
+                self._add_file_row(self.notes_list, file_path, "notes")
 
     def _refresh_docs(self):
         """Refresh Docs section."""
@@ -274,7 +270,7 @@ class NotesPanel(Gtk.Box):
         else:
             self.docs_header.set_label(f"Docs ({len(doc_files)})")
             for file_path in doc_files:
-                self._add_file_row(self.docs_list, file_path)
+                self._add_file_row(self.docs_list, file_path, "docs")
 
     def _refresh_todos(self):
         """Refresh TODOs section - search in background."""
@@ -403,20 +399,38 @@ class NotesPanel(Gtk.Box):
 
             self.todos_list.append(file_box)
 
-    def _add_file_row(self, container: Gtk.Box, file_path: Path):
-        """Add a file row to container."""
+    def _add_file_row(self, container: Gtk.Box, file_path: Path, section: str = "notes"):
+        """Add a file row with rename/delete buttons to container.
+
+        Args:
+            container: The box to add the row to
+            file_path: Path to the file
+            section: One of "notes", "docs", "snippets" - determines behavior
+        """
+        # Check if this is the protected CLAUDE.md file
+        is_protected = file_path.name == "CLAUDE.md"
+
+        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+        row.add_css_class("notes-file-btn")
+
+        # File button (clickable to open)
         btn = Gtk.Button()
         btn.add_css_class("flat")
-        btn.add_css_class("notes-file-btn")
+        btn.set_hexpand(True)
         btn.file_path = str(file_path)
 
-        box = Gtk.Box(spacing=6)
+        btn_box = Gtk.Box(spacing=6)
 
-        icon = Gtk.Image.new_from_icon_name("text-x-generic-symbolic")
+        # Icon - lock for protected files, document for others
+        if is_protected:
+            icon = Gtk.Image.new_from_icon_name("changes-prevent-symbolic")
+            icon.set_tooltip_text("Protected file")
+        else:
+            icon = Gtk.Image.new_from_icon_name("text-x-generic-symbolic")
         icon.add_css_class("dim-label")
-        box.append(icon)
+        btn_box.append(icon)
 
-        # Show relative path for docs, just filename for notes
+        # Show relative path for docs, just filename for notes/snippets
         try:
             rel = file_path.relative_to(self.project_path)
             display_name = str(rel) if "docs" in str(rel) or file_path.name == "CLAUDE.md" else file_path.name
@@ -426,11 +440,132 @@ class NotesPanel(Gtk.Box):
         label = Gtk.Label(label=display_name)
         label.set_xalign(0)
         label.set_ellipsize(2)
-        box.append(label)
+        label.set_hexpand(True)
+        btn_box.append(label)
 
-        btn.set_child(box)
+        btn.set_child(btn_box)
         btn.connect("clicked", self._on_file_clicked)
-        container.append(btn)
+        row.append(btn)
+
+        # Only show rename/delete buttons for non-protected files
+        if not is_protected:
+            # Rename button
+            rename_btn = Gtk.Button()
+            rename_btn.set_icon_name("document-edit-symbolic")
+            rename_btn.add_css_class("flat")
+            rename_btn.add_css_class("circular")
+            rename_btn.add_css_class("dim-label")
+            rename_btn.set_valign(Gtk.Align.CENTER)
+            rename_btn.set_tooltip_text("Rename")
+            rename_btn.connect("clicked", self._on_rename_file_clicked, file_path, section)
+            row.append(rename_btn)
+
+            # Delete button
+            del_btn = Gtk.Button()
+            del_btn.set_icon_name("edit-delete-symbolic")
+            del_btn.add_css_class("flat")
+            del_btn.add_css_class("circular")
+            del_btn.add_css_class("dim-label")
+            del_btn.set_valign(Gtk.Align.CENTER)
+            del_btn.set_tooltip_text("Delete")
+            del_btn.connect("clicked", self._on_delete_file_clicked, file_path, section)
+            row.append(del_btn)
+
+        container.append(row)
+
+    def _on_rename_file_clicked(self, button, file_path: Path, section: str):
+        """Handle rename button click - show rename dialog."""
+        dialog = Adw.AlertDialog()
+        dialog.set_heading("Rename")
+
+        # Get current name without extension
+        current_name = file_path.stem
+
+        entry = Gtk.Entry()
+        entry.set_text(current_name)
+        entry.set_margin_top(12)
+        dialog.set_extra_child(entry)
+
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("rename", "Rename")
+        dialog.set_response_appearance("rename", Adw.ResponseAppearance.SUGGESTED)
+        dialog.set_default_response("rename")
+        dialog.set_close_response("cancel")
+
+        dialog.connect("response", self._on_rename_file_response, entry, file_path, section)
+        dialog.present(self.get_root())
+
+    def _on_rename_file_response(self, dialog, response: str, entry, file_path: Path, section: str):
+        """Handle rename dialog response."""
+        if response != "rename":
+            return
+
+        new_name = entry.get_text().strip()
+        if not new_name:
+            return
+
+        # Ensure .md extension
+        if not new_name.endswith(".md"):
+            new_name += ".md"
+
+        # Check if name actually changed
+        if new_name == file_path.name:
+            return
+
+        try:
+            if section == "snippets":
+                # Use snippets service to rename
+                old_label = file_path.stem
+                new_label = new_name[:-3]  # Remove .md
+                if self.snippets_service.rename(old_label, new_label):
+                    ToastService.show(f"Renamed to: {new_label}")
+                else:
+                    ToastService.show_error("Failed to rename snippet")
+            else:
+                # Rename regular file
+                new_path = file_path.parent / new_name
+                if new_path.exists():
+                    ToastService.show_error(f"File already exists: {new_name}")
+                    return
+                file_path.rename(new_path)
+                ToastService.show(f"Renamed to: {new_name}")
+                self.refresh()
+        except OSError as e:
+            ToastService.show_error(f"Failed to rename: {e}")
+
+    def _on_delete_file_clicked(self, button, file_path: Path, section: str):
+        """Handle delete button click - show confirmation dialog."""
+        dialog = Adw.AlertDialog()
+        dialog.set_heading("Delete File?")
+        dialog.set_body(f"Delete \"{file_path.name}\"?")
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("delete", "Delete")
+        dialog.set_response_appearance("delete", Adw.ResponseAppearance.DESTRUCTIVE)
+        dialog.set_default_response("cancel")
+        dialog.set_close_response("cancel")
+        dialog.connect("response", self._on_delete_file_response, file_path, section)
+        dialog.present(self.get_root())
+
+    def _on_delete_file_response(self, dialog, response: str, file_path: Path, section: str):
+        """Handle delete confirmation response."""
+        if response != "delete":
+            return
+
+        try:
+            if section == "snippets":
+                # Use snippets service to delete
+                label = file_path.stem
+                if self.snippets_service.delete(label):
+                    ToastService.show(f"Deleted: {file_path.name}")
+                else:
+                    ToastService.show_error(f"Failed to delete: {file_path.name}")
+            else:
+                # Delete regular file
+                file_path.unlink()
+                ToastService.show(f"Deleted: {file_path.name}")
+                self.refresh()
+        except OSError as e:
+            ToastService.show_error(f"Failed to delete: {e}")
 
     def _add_todo_row(self, container: Gtk.Box, file_path: str, line_num: int, tag: str, content: str):
         """Add a TODO row."""
@@ -485,51 +620,6 @@ class NotesPanel(Gtk.Box):
         """Handle TODO click."""
         self.emit("open-file-at-line", button.file_path, button.line_num, button.tag)
 
-    def _on_new_note_clicked(self, button):
-        """Handle new note button click."""
-        dialog = Adw.AlertDialog()
-        dialog.set_heading("New Note")
-        dialog.set_body("Enter filename for the new note:")
-
-        # Entry for filename
-        entry = Gtk.Entry()
-        entry.set_placeholder_text("my-note")
-        entry.set_margin_top(12)
-        dialog.set_extra_child(entry)
-
-        dialog.add_response("cancel", "Cancel")
-        dialog.add_response("create", "Create")
-        dialog.set_response_appearance("create", Adw.ResponseAppearance.SUGGESTED)
-        dialog.set_default_response("create")
-
-        dialog.connect("response", self._on_new_note_response, entry)
-        dialog.present(self.get_root())
-
-    def _on_new_note_response(self, dialog, response, entry):
-        """Handle new note dialog response."""
-        if response != "create":
-            return
-
-        filename = entry.get_text().strip()
-        if not filename:
-            return
-
-        # Ensure .md extension
-        if not filename.endswith(".md"):
-            filename += ".md"
-
-        # Create file
-        notes_dir = self.project_path / "notes"
-        notes_dir.mkdir(parents=True, exist_ok=True)
-
-        file_path = notes_dir / filename
-        if not file_path.exists():
-            file_path.write_text(f"# {filename[:-3]}\n\n")
-
-        # Refresh and open
-        self.refresh()
-        self.emit("open-file", str(file_path))
-
     def _clear_box(self, box: Gtk.Box):
         """Clear all children from a box."""
         while True:
@@ -554,39 +644,26 @@ class NotesPanel(Gtk.Box):
         else:
             self.snippets_header.set_label(f"Snippets ({len(snippets)})")
             for snippet in snippets:
-                self._add_snippet_row(snippet)
+                self._add_file_row(self.snippets_list, Path(snippet["path"]), "snippets")
 
-    def _add_snippet_row(self, snippet: dict):
-        """Add a snippet row as a clickable file button."""
-        btn = Gtk.Button()
-        btn.add_css_class("flat")
-        btn.add_css_class("notes-file-btn")
-        btn.file_path = snippet["path"]
+    # === Add callbacks ===
 
-        box = Gtk.Box(spacing=6)
+    def _on_add_note_clicked(self, button):
+        """Handle add note button click."""
+        self._show_new_file_dialog("Note", self.project_path / "notes")
 
-        icon = Gtk.Image.new_from_icon_name("text-x-generic-symbolic")
-        icon.add_css_class("dim-label")
-        box.append(icon)
-
-        label = Gtk.Label(label=snippet["label"])
-        label.set_xalign(0)
-        label.set_ellipsize(2)
-        label.set_tooltip_text(snippet["text"][:100] + "..." if len(snippet["text"]) > 100 else snippet["text"])
-        box.append(label)
-
-        btn.set_child(box)
-        btn.connect("clicked", self._on_file_clicked)
-        self.snippets_list.append(btn)
+    def _on_add_doc_clicked(self, button):
+        """Handle add doc button click."""
+        self._show_new_file_dialog("Doc", self.project_path / "docs")
 
     def _on_add_snippet_clicked(self, button):
-        """Handle add snippet button - create new file and open it."""
+        """Handle add snippet button click."""
         dialog = Adw.AlertDialog()
         dialog.set_heading("New Snippet")
         dialog.set_body("Enter name for the new snippet:")
 
         entry = Gtk.Entry()
-        entry.set_placeholder_text("My Snippet")
+        entry.set_placeholder_text("my-snippet")
         entry.set_margin_top(12)
         dialog.set_extra_child(entry)
 
@@ -598,6 +675,48 @@ class NotesPanel(Gtk.Box):
         dialog.connect("response", self._on_new_snippet_response, entry)
         dialog.present(self.get_root())
 
+    def _show_new_file_dialog(self, file_type: str, folder: Path):
+        """Show dialog for creating a new file."""
+        dialog = Adw.AlertDialog()
+        dialog.set_heading(f"New {file_type}")
+        dialog.set_body(f"Enter filename for the new {file_type.lower()}:")
+
+        entry = Gtk.Entry()
+        entry.set_placeholder_text(f"my-{file_type.lower()}")
+        entry.set_margin_top(12)
+        dialog.set_extra_child(entry)
+
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("create", "Create")
+        dialog.set_response_appearance("create", Adw.ResponseAppearance.SUGGESTED)
+        dialog.set_default_response("create")
+
+        dialog.connect("response", self._on_new_file_response, entry, folder)
+        dialog.present(self.get_root())
+
+    def _on_new_file_response(self, dialog, response, entry, folder: Path):
+        """Handle new file dialog response."""
+        if response != "create":
+            return
+
+        filename = entry.get_text().strip()
+        if not filename:
+            return
+
+        # Ensure .md extension
+        if not filename.endswith(".md"):
+            filename += ".md"
+
+        # Create folder if needed
+        folder.mkdir(parents=True, exist_ok=True)
+
+        file_path = folder / filename
+        if not file_path.exists():
+            file_path.write_text(f"# {filename[:-3]}\n\n")
+
+        self.refresh()
+        self.emit("open-file", str(file_path))
+
     def _on_new_snippet_response(self, dialog, response, entry):
         """Handle new snippet dialog response."""
         if response != "create":
@@ -607,8 +726,5 @@ class NotesPanel(Gtk.Box):
         if not name:
             return
 
-        # Create snippet file with placeholder text
-        file_path = self.snippets_service.add(name, "Enter snippet text here...")
-
-        # Open in editor
+        file_path = self.snippets_service.add(name, f"# {name}\n\n")
         self.emit("open-file", file_path)
