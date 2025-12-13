@@ -53,16 +53,18 @@ src/
 ├── models/              # Data models (Project, Session, Message, ToolCall)
 ├── widgets/             # UI components
 │   ├── file_tree.py     # File browser with git status, file monitoring, gitignore filtering
-│   ├── file_editor.py   # Code editor with autosave
+│   ├── file_editor.py   # Code editor with autosave, go-to-line with highlighting
+│   ├── unified_search.py    # Unified search (files + content) with replace
 │   ├── terminal_view.py # VTE terminal with Dracula theme
 │   ├── session_view.py  # Claude session content viewer
-│   ├── claude_history_panel.py  # Claude sessions list (sidebar)
+│   ├── claude_history_panel.py  # Claude sessions list with filtering
 │   ├── code_view.py     # Read-only code display + DiffView
-│   ├── git_changes_panel.py  # Git changes (stage/commit/push/pull)
-│   ├── git_history_panel.py  # Git commit history list
+│   ├── git_changes_panel.py  # Git changes (stage/commit/push/pull) with auto-refresh
+│   ├── git_history_panel.py  # Git commit history with filtering
 │   ├── commit_detail_view.py # Commit details (files + message + diff)
 │   ├── branch_popover.py     # Branch management popover
 │   ├── tasks_panel.py   # VSCode tasks.json runner
+│   ├── notes_panel.py   # Notes panel (My Notes + Docs + TODOs)
 │   └── ...
 ├── services/            # Business logic
 │   ├── history.py       # Claude session history reader
@@ -82,20 +84,26 @@ src/
 ┌─────────────────────────────────────────────────────────────────────┐
 │ Header: [Sidebar] [Claude] [Terminal+]          Title        [Term] │
 ├──────────────────────┬──────────────────────────────────────────────┤
-│ Sidebar              │  Main Area (Tabs)                            │
-│ [Files][Git][Claude] │  [Session] [Commit] [file.py] [Terminal]     │
+│ Sidebar (resizable)  │  Main Area (Tabs)                            │
+│ [Files][Git][Claude][Notes]  [Session] [Commit] [file.py] [Terminal]│
 │                      │                                              │
 │ Files tab:           │  Content view:                               │
-│  - File tree         │  - Session details                           │
-│  - Tasks panel       │  - Commit details (files + message + diff)   │
-│                      │  - File editor                               │
-│ Git tab:             │  - Terminal                                  │
+│  - Unified search    │  - Session details                           │
+│  - File tree         │  - Commit details (files + message + diff)   │
+│  - Tasks panel       │  - File editor                               │
+│                      │  - Terminal                                  │
+│ Git tab:             │                                              │
 │  [Changes][History]  │                                              │
 │  - Stage/commit/push │                                              │
 │  - Commit list       │                                              │
 │                      │                                              │
 │ Claude tab:          │                                              │
 │  - Sessions list     │                                              │
+│                      │                                              │
+│ Notes tab:           │                                              │
+│  - My Notes (notes/) │                                              │
+│  - Docs (docs/)      │                                              │
+│  - TODOs from code   │                                              │
 └──────────────────────┴──────────────────────────────────────────────┘
 ```
 
@@ -103,11 +111,14 @@ Key patterns:
 - **Multi-process**: Each project runs in separate process (`Gio.ApplicationFlags.NON_UNIQUE`)
 - **Lock files**: `/tmp/claude-companion-locks/` prevents opening same project twice
 - **Project registry**: `~/.config/claude-companion/projects.json` stores user's projects
-- **Unified navigation**: Sidebar for browsing (Files/Git/Claude), main area for content only
+- **Resizable pane**: `Gtk.Paned` for sidebar/content split (min 370px sidebar)
+- **Custom tab switcher**: Linked toggle buttons for Files/Git/Claude/Notes tabs
+- **Unified search**: Single search box for both filenames and content (ripgrep/grep)
 - **Single tab reuse**: Commit details and session details reuse single tab (no duplicates)
 - **Icon cache**: Pre-loaded Material Design SVG icons with O(1) lookup by extension/filename
-- **File monitoring**: Auto-refresh file tree via `Gio.FileMonitor` with debounce
+- **File monitoring**: Auto-refresh via `Gio.FileMonitor` with debounce (file tree, git changes)
 - **Toast notifications**: `ToastService` singleton for app-wide feedback
+- **Selection preservation**: Lists preserve selection across refresh (git history, claude sessions)
 - Parse Claude Code JSONL session files from `~/.claude/projects/[encoded-path]/`
 - Project paths are encoded by replacing `/` with `-`
 
@@ -134,8 +145,19 @@ Session files are JSONL with event types: `user`, `assistant`, `tool_use`, `tool
   - Commit detail view (files list + full message + per-file diff)
   - Unified sidebar (Files/Git/Claude tabs)
   - Single-tab reuse for sessions and commits
-- [ ] v0.6: TODO notes
-- [ ] v0.7: Polish (search, settings, packaging)
+- [x] v0.6: Search & Notes:
+  - Unified search in Files tab (files + content + replace)
+  - Git history filtering (by message/author/hash)
+  - Claude sessions filtering (by preview/date)
+  - Notes panel with 3 sections:
+    - My Notes (`notes/*.md`) with New Note button
+    - Docs (`docs/*.md` + `CLAUDE.md`)
+    - TODOs from code (`TODO:`, `FIXME:`, `HACK:`, `XXX:`, `NOTE:`)
+  - Resizable sidebar pane (`Gtk.Paned`)
+  - Custom tab switcher (linked toggle buttons)
+  - Git changes auto-refresh
+  - Selection preservation across refresh
+- [ ] v0.7: Polish (settings, packaging)
 - [ ] v1.0: Multi-agent orchestration with Git worktrees
 
 ## GTK4/libadwaita Gotchas
