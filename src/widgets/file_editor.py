@@ -21,6 +21,8 @@ class FileEditor(Gtk.Box):
 
     def __init__(self, file_path: str):
         super().__init__(orientation=Gtk.Orientation.VERTICAL)
+        self.set_vexpand(True)
+        self.set_hexpand(True)
 
         self.file_path = file_path
         self._modified = False
