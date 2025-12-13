@@ -1,0 +1,12 @@
+[Desktop Entry]
+Name=Claude Companion
+GenericName=Claude Code Companion
+Comment=Native GTK4 companion app for Claude Code
+Exec=claude-companion %F
+Icon=claude-companion
+Terminal=false
+Type=Application
+Categories=Development;IDE;Utility;
+Keywords=claude;ai;code;assistant;terminal;git;
+StartupNotify=true
+StartupWMClass=claude-companion

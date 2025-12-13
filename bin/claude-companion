@@ -1,0 +1,9 @@
+#!/bin/bash
+# Claude Companion launcher script
+# This script launches Claude Companion from any location
+
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+APP_DIR="$(dirname "$SCRIPT_DIR")"
+
+cd "$APP_DIR"
+exec uv run python main.py "$@"
