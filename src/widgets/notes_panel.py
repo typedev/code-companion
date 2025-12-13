@@ -7,6 +7,8 @@ from pathlib import Path
 
 from gi.repository import Gtk, Gio, GLib, GObject, Adw
 
+from ..services import SnippetsService
+
 
 class NotesPanel(Gtk.Box):
     """Panel displaying user notes, docs, and code TODOs."""
@@ -141,6 +143,35 @@ class NotesPanel(Gtk.Box):
         self.todos_expander.set_child(self.todos_list)
         self.content_box.append(self.todos_expander)
 
+        # Snippets section
+        self.snippets_expander = Gtk.Expander()
+        self.snippets_expander.set_expanded(True)
+        self.snippets_expander.set_margin_top(8)
+
+        # Snippets header with add button
+        snippets_header_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        self.snippets_header = Gtk.Label(label="Snippets")
+        self.snippets_header.add_css_class("heading")
+        snippets_header_box.append(self.snippets_header)
+
+        add_snippet_btn = Gtk.Button()
+        add_snippet_btn.set_icon_name("list-add-symbolic")
+        add_snippet_btn.add_css_class("flat")
+        add_snippet_btn.add_css_class("circular")
+        add_snippet_btn.set_valign(Gtk.Align.CENTER)
+        add_snippet_btn.set_tooltip_text("Add snippet")
+        add_snippet_btn.connect("clicked", self._on_add_snippet_clicked)
+        snippets_header_box.append(add_snippet_btn)
+
+        self.snippets_expander.set_label_widget(snippets_header_box)
+        self.snippets_list = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        self.snippets_expander.set_child(self.snippets_list)
+        self.content_box.append(self.snippets_expander)
+
+        # Get snippets service
+        self.snippets_service = SnippetsService.get_instance()
+        self.snippets_service.connect("changed", lambda s: self._refresh_snippets())
+
         scrolled.set_child(self.content_box)
         self.append(scrolled)
 
@@ -189,6 +220,7 @@ class NotesPanel(Gtk.Box):
         self._refresh_notes()
         self._refresh_docs()
         self._refresh_todos()
+        self._refresh_snippets()
 
     def _refresh_notes(self):
         """Refresh My Notes section."""
@@ -505,3 +537,78 @@ class NotesPanel(Gtk.Box):
             if not child:
                 break
             box.remove(child)
+
+    def _refresh_snippets(self):
+        """Refresh Snippets section."""
+        self._clear_box(self.snippets_list)
+
+        snippets = self.snippets_service.get_all()
+
+        if not snippets:
+            label = Gtk.Label(label="No snippets")
+            label.add_css_class("dim-label")
+            label.set_margin_start(8)
+            label.set_margin_top(4)
+            self.snippets_list.append(label)
+            self.snippets_header.set_label("Snippets")
+        else:
+            self.snippets_header.set_label(f"Snippets ({len(snippets)})")
+            for snippet in snippets:
+                self._add_snippet_row(snippet)
+
+    def _add_snippet_row(self, snippet: dict):
+        """Add a snippet row as a clickable file button."""
+        btn = Gtk.Button()
+        btn.add_css_class("flat")
+        btn.add_css_class("notes-file-btn")
+        btn.file_path = snippet["path"]
+
+        box = Gtk.Box(spacing=6)
+
+        icon = Gtk.Image.new_from_icon_name("text-x-generic-symbolic")
+        icon.add_css_class("dim-label")
+        box.append(icon)
+
+        label = Gtk.Label(label=snippet["label"])
+        label.set_xalign(0)
+        label.set_ellipsize(2)
+        label.set_tooltip_text(snippet["text"][:100] + "..." if len(snippet["text"]) > 100 else snippet["text"])
+        box.append(label)
+
+        btn.set_child(box)
+        btn.connect("clicked", self._on_file_clicked)
+        self.snippets_list.append(btn)
+
+    def _on_add_snippet_clicked(self, button):
+        """Handle add snippet button - create new file and open it."""
+        dialog = Adw.AlertDialog()
+        dialog.set_heading("New Snippet")
+        dialog.set_body("Enter name for the new snippet:")
+
+        entry = Gtk.Entry()
+        entry.set_placeholder_text("My Snippet")
+        entry.set_margin_top(12)
+        dialog.set_extra_child(entry)
+
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("create", "Create")
+        dialog.set_response_appearance("create", Adw.ResponseAppearance.SUGGESTED)
+        dialog.set_default_response("create")
+
+        dialog.connect("response", self._on_new_snippet_response, entry)
+        dialog.present(self.get_root())
+
+    def _on_new_snippet_response(self, dialog, response, entry):
+        """Handle new snippet dialog response."""
+        if response != "create":
+            return
+
+        name = entry.get_text().strip()
+        if not name:
+            return
+
+        # Create snippet file with placeholder text
+        file_path = self.snippets_service.add(name, "Enter snippet text here...")
+
+        # Open in editor
+        self.emit("open-file", file_path)

@@ -17,6 +17,7 @@ from .file_search_dialog import FileSearchDialog
 from .unified_search import UnifiedSearch
 from .notes_panel import NotesPanel
 from .preferences_dialog import PreferencesDialog
+from .snippets_bar import SnippetsBar
 
 __all__ = [
     "MessageRow",
@@ -39,4 +40,5 @@ __all__ = [
     "UnifiedSearch",
     "NotesPanel",
     "PreferencesDialog",
+    "SnippetsBar",
 ]

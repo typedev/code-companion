@@ -6,6 +6,7 @@ from .git_service import GitService, GitFileStatus, FileStatus, GitCommit
 from .icon_cache import IconCache
 from .toast_service import ToastService
 from .settings_service import SettingsService
+from .snippets_service import SnippetsService
 
 __all__ = [
     "HistoryService",
@@ -21,4 +22,5 @@ __all__ = [
     "IconCache",
     "ToastService",
     "SettingsService",
+    "SnippetsService",
 ]
