@@ -6,7 +6,7 @@ from gi.repository import Adw, Gtk, GLib, Gio
 
 from .models import Session
 from .services import HistoryService, ProjectLock, ProjectRegistry, GitService, IconCache, ToastService
-from .widgets import SessionView, TerminalView, FileTree, FileEditor, TasksPanel, GitChangesPanel, GitHistoryPanel, DiffView, CommitDetailView, ClaudeHistoryPanel, FileSearchDialog, UnifiedSearch
+from .widgets import SessionView, TerminalView, FileTree, FileEditor, TasksPanel, GitChangesPanel, GitHistoryPanel, DiffView, CommitDetailView, ClaudeHistoryPanel, FileSearchDialog, UnifiedSearch, NotesPanel
 
 
 def escape_markup(text: str) -> str:
@@ -62,22 +62,21 @@ class ProjectWindow(Adw.ApplicationWindow):
         """Build the UI layout."""
         # Main horizontal split with resizable pane
         self.paned = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL)
-        self.paned.set_shrink_start_child(False)
+        self.paned.set_shrink_start_child(False)  # Don't shrink below min size
         self.paned.set_shrink_end_child(False)
-        self.paned.set_resize_start_child(False)  # Sidebar doesn't auto-resize
-        self.paned.set_resize_end_child(True)     # Content takes remaining space
+        self.paned.set_resize_start_child(False)
+        self.paned.set_resize_end_child(True)
 
-        # Sidebar (file tree)
+        # Sidebar
         self.sidebar = self._build_sidebar()
-        self.sidebar.set_size_request(250, -1)  # Default width
         self.paned.set_start_child(self.sidebar)
 
         # Main content with tabs
         content = self._build_content()
         self.paned.set_end_child(content)
 
-        # Set initial position
-        self.paned.set_position(280)
+        # Set initial sidebar width
+        self.paned.set_position(240)
 
         # Wrap everything in a toolbar view
         toolbar_view = Adw.ToolbarView()
@@ -155,6 +154,8 @@ class ProjectWindow(Adw.ApplicationWindow):
     def _build_sidebar(self) -> Gtk.Box:
         """Build the sidebar with Files/Git/Claude tabs."""
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        box.set_hexpand(False)
+        box.set_size_request(370, -1)  # Minimum width
 
         # Check if this is a git repo
         self.git_service = GitService(self.project_path)
@@ -162,36 +163,103 @@ class ProjectWindow(Adw.ApplicationWindow):
         if self._is_git_repo:
             self.git_service.open()
 
-        # Top-level stack: Files / Git / Claude
+        # Top-level stack: Files / Git / Claude / Notes
         self.sidebar_stack = Gtk.Stack()
         self.sidebar_stack.set_transition_type(Gtk.StackTransitionType.CROSSFADE)
         self.sidebar_stack.set_vexpand(True)
+        self.sidebar_stack.set_hexpand(False)
 
-        # Top-level stack switcher
-        switcher = Gtk.StackSwitcher()
-        switcher.set_stack(self.sidebar_stack)
-        switcher.set_margin_start(12)
-        switcher.set_margin_end(12)
-        switcher.set_margin_top(8)
-        switcher.set_margin_bottom(4)
-        box.append(switcher)
+        # Custom switcher with toggle buttons
+        switcher_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
+        switcher_box.set_margin_start(8)
+        switcher_box.set_margin_end(8)
+        switcher_box.set_margin_top(8)
+        switcher_box.set_margin_bottom(4)
+        switcher_box.add_css_class("linked")  # Connected buttons style
+        switcher_box.set_homogeneous(True)
+        box.append(switcher_box)
+
+        self._tab_buttons = {}
 
         # Files page
         files_page = self._build_files_page()
-        self.sidebar_stack.add_titled(files_page, "files", "Files")
+        self.sidebar_stack.add_named(files_page, "files")
+        files_btn = Gtk.ToggleButton(label="Files")
+        files_btn.set_active(True)
+        files_btn.connect("toggled", self._on_tab_toggled, "files")
+        switcher_box.append(files_btn)
+        self._tab_buttons["files"] = files_btn
 
-        # Git page (with nested Changes/History tabs) - only if git repo
+        # Git page
         if self._is_git_repo:
             git_page = self._build_git_page()
-            self.sidebar_stack.add_titled(git_page, "git", "Git")
+            self.sidebar_stack.add_named(git_page, "git")
+            git_btn = Gtk.ToggleButton(label="Git")
+            git_btn.connect("toggled", self._on_tab_toggled, "git")
+            switcher_box.append(git_btn)
+            self._tab_buttons["git"] = git_btn
 
-        # Claude page (session history)
+        # Claude page
         claude_page = self._build_claude_page()
-        self.sidebar_stack.add_titled(claude_page, "claude", "Claude")
+        self.sidebar_stack.add_named(claude_page, "claude")
+        claude_btn = Gtk.ToggleButton(label="Claude")
+        claude_btn.connect("toggled", self._on_tab_toggled, "claude")
+        switcher_box.append(claude_btn)
+        self._tab_buttons["claude"] = claude_btn
 
-        box.append(self.sidebar_stack)
+        # Notes page
+        notes_page = self._build_notes_page()
+        self.sidebar_stack.add_named(notes_page, "notes")
+        notes_btn = Gtk.ToggleButton(label="Notes")
+        notes_btn.connect("toggled", self._on_tab_toggled, "notes")
+        switcher_box.append(notes_btn)
+        self._tab_buttons["notes"] = notes_btn
+
+        # Wrap stack in scrolled window to allow shrinking
+        scrolled = Gtk.ScrolledWindow()
+        scrolled.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
+        scrolled.set_vexpand(True)
+        scrolled.set_child(self.sidebar_stack)
+        box.append(scrolled)
 
         return box
+
+    def _on_tab_toggled(self, button, tab_name):
+        """Handle tab button toggle."""
+        if button.get_active():
+            # Switch to this tab
+            self.sidebar_stack.set_visible_child_name(tab_name)
+            # Deactivate other buttons
+            for name, btn in self._tab_buttons.items():
+                if name != tab_name:
+                    btn.set_active(False)
+        else:
+            # Don't allow deactivating without activating another
+            # Check if any other button is active
+            any_active = any(btn.get_active() for btn in self._tab_buttons.values())
+            if not any_active:
+                button.set_active(True)
+
+    def _build_notes_page(self) -> Gtk.Box:
+        """Build the Notes tab content."""
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        box.set_vexpand(True)
+
+        self.notes_panel = NotesPanel(str(self.project_path))
+        self.notes_panel.connect("open-file", self._on_notes_open_file)
+        self.notes_panel.connect("open-file-at-line", self._on_notes_open_file_at_line)
+        box.append(self.notes_panel)
+
+        return box
+
+    def _on_notes_open_file(self, panel, file_path: str):
+        """Handle notes panel file open."""
+        self._on_file_activated(self.file_tree, file_path)
+
+    def _on_notes_open_file_at_line(self, panel, file_path: str, line_number: int, tag: str):
+        """Handle notes panel TODO click."""
+        self._on_file_activated(self.file_tree, file_path)
+        GLib.idle_add(lambda: self._go_to_line_in_editor(file_path, line_number, tag))
 
     def _on_search_open_file_at_line(self, widget, file_path: str, line_number: int, search_term: str):
         """Handle content search result click - open file at line."""
@@ -825,5 +893,5 @@ class ProjectWindow(Adw.ApplicationWindow):
 
     def _focus_search(self):
         """Switch to Files tab and focus the unified search entry."""
-        self.sidebar_stack.set_visible_child_name("files")
+        self._tab_buttons["files"].set_active(True)
         GLib.idle_add(lambda: self.unified_search.grab_focus() or False)

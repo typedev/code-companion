@@ -15,6 +15,7 @@ from .commit_detail_view import CommitDetailView
 from .claude_history_panel import ClaudeHistoryPanel
 from .file_search_dialog import FileSearchDialog
 from .unified_search import UnifiedSearch
+from .notes_panel import NotesPanel
 
 __all__ = [
     "MessageRow",
@@ -35,4 +36,5 @@ __all__ = [
     "ClaudeHistoryPanel",
     "FileSearchDialog",
     "UnifiedSearch",
+    "NotesPanel",
 ]
