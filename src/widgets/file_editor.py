@@ -6,10 +6,10 @@ import gi
 
 gi.require_version("GtkSource", "5")
 
-from gi.repository import Gtk, GtkSource, GLib, GObject
+from gi.repository import Gtk, GtkSource, GLib, GObject, Pango
 
 from .code_view import get_language_for_file
-from ..services import ToastService
+from ..services import ToastService, SettingsService
 
 
 class FileEditor(Gtk.Box):
@@ -31,6 +31,9 @@ class FileEditor(Gtk.Box):
 
     def _build_ui(self):
         """Build the editor UI."""
+        # Get settings
+        self.settings = SettingsService.get_instance()
+
         # Create source buffer and view
         self.buffer = GtkSource.Buffer()
         self.source_view = GtkSource.View(buffer=self.buffer)
@@ -43,9 +46,10 @@ class FileEditor(Gtk.Box):
         self.source_view.set_wrap_mode(Gtk.WrapMode.NONE)
         self.source_view.set_auto_indent(True)
         self.source_view.set_indent_on_tab(True)
-        self.source_view.set_tab_width(4)
-        self.source_view.set_insert_spaces_instead_of_tabs(True)
         self.source_view.set_highlight_current_line(True)
+
+        # Apply settings
+        self._apply_settings()
 
         # Enable undo/redo (large but not unlimited to avoid the -1 range error)
         self.buffer.set_max_undo_levels(10000)
@@ -58,15 +62,8 @@ class FileEditor(Gtk.Box):
             if language:
                 self.buffer.set_language(language)
 
-        # Set up style scheme (Dracula to match terminal)
-        style_manager = GtkSource.StyleSchemeManager.get_default()
-        scheme = style_manager.get_scheme("dracula")
-        if not scheme:
-            scheme = style_manager.get_scheme("Adwaita-dark")
-        if not scheme:
-            scheme = style_manager.get_scheme("classic")
-        if scheme:
-            self.buffer.set_style_scheme(scheme)
+        # Listen for settings changes
+        self.settings.connect("changed", self._on_setting_changed)
 
         # Connect signals
         self.buffer.connect("changed", self._on_buffer_changed)
@@ -84,6 +81,53 @@ class FileEditor(Gtk.Box):
         scrolled.set_child(self.source_view)
 
         self.append(scrolled)
+
+    def _apply_settings(self):
+        """Apply all settings to the editor."""
+        # Syntax scheme
+        scheme_id = self.settings.get("appearance.syntax_scheme", "Adwaita-dark")
+        style_manager = GtkSource.StyleSchemeManager.get_default()
+        scheme = style_manager.get_scheme(scheme_id)
+        if not scheme:
+            # Fallback to Adwaita-dark or classic
+            scheme = style_manager.get_scheme("Adwaita-dark")
+        if not scheme:
+            scheme = style_manager.get_scheme("classic")
+        if scheme:
+            self.buffer.set_style_scheme(scheme)
+
+        # Font
+        font_family = self.settings.get("editor.font_family", "Monospace")
+        font_size = self.settings.get("editor.font_size", 12)
+        font_desc = Pango.FontDescription.from_string(f"{font_family} {font_size}")
+        self.source_view.set_monospace(True)
+
+        # Apply font via CSS (more reliable for GtkSourceView)
+        css_provider = Gtk.CssProvider()
+        line_height = self.settings.get("editor.line_height", 1.4)
+        css = f"""
+            textview {{
+                font-family: "{font_family}";
+                font-size: {font_size}pt;
+                line-height: {line_height};
+            }}
+        """
+        css_provider.load_from_string(css)
+        self.source_view.get_style_context().add_provider(
+            css_provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
+        )
+        self._css_provider = css_provider  # Keep reference
+
+        # Tab settings
+        tab_size = self.settings.get("editor.tab_size", 4)
+        insert_spaces = self.settings.get("editor.insert_spaces", True)
+        self.source_view.set_tab_width(tab_size)
+        self.source_view.set_insert_spaces_instead_of_tabs(insert_spaces)
+
+    def _on_setting_changed(self, settings, key, value):
+        """Handle settings changes."""
+        if key.startswith("appearance.") or key.startswith("editor."):
+            self._apply_settings()
 
     def _load_file(self):
         """Load file content into buffer."""

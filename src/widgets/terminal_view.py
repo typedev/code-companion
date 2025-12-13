@@ -9,7 +9,7 @@ gi.require_version("Vte", "3.91")
 
 from gi.repository import Vte, Gtk, GLib, Gdk, Gio, Pango, GObject
 
-from ..services import ToastService
+from ..services import ToastService, SettingsService
 
 
 # Dracula palette - matches ptyxis dracula theme
@@ -208,36 +208,28 @@ class TerminalView(Gtk.Box):
         self.terminal.feed_child(b"clear\n")
 
     def _apply_terminal_settings(self):
-        """Apply terminal font and colors from system settings."""
+        """Apply terminal font and colors from app settings."""
+        self.settings = SettingsService.get_instance()
         self._apply_font()
         self._apply_colors()
 
+        # Listen for settings changes
+        self.settings.connect("changed", self._on_setting_changed)
+
+    def _on_setting_changed(self, settings, key, value):
+        """Handle settings changes."""
+        if key.startswith("editor."):
+            self._apply_font()
+
     def _apply_font(self):
-        """Apply system monospace font and line height to terminal."""
-        try:
-            settings = Gio.Settings.new("org.gnome.desktop.interface")
-            font_name = settings.get_string("monospace-font-name")
-            if font_name:
-                font_desc = Pango.FontDescription.from_string(font_name)
-                self.terminal.set_font(font_desc)
+        """Apply font settings from app settings (same as editor)."""
+        font_family = self.settings.get("editor.font_family", "Monospace")
+        font_size = self.settings.get("editor.font_size", 12)
+        line_height = self.settings.get("editor.line_height", 1.4)
 
-            # Apply cell height scale (line height) from ptyxis if available
-            try:
-                # Read from dconf directly since ptyxis uses relocatable schema
-                import subprocess
-                result = subprocess.run(
-                    ["dconf", "read", "/org/gnome/Ptyxis/Profiles/eba807f5e94ca4ff724f46e16915178b/cell-height-scale"],
-                    capture_output=True, text=True
-                )
-                if result.returncode == 0 and result.stdout.strip():
-                    cell_height = float(result.stdout.strip())
-                    self.terminal.set_cell_height_scale(cell_height)
-            except Exception:
-                # Default to 1.3 if can't read from ptyxis
-                self.terminal.set_cell_height_scale(1.3)
-
-        except Exception:
-            pass  # Use default font if settings unavailable
+        font_desc = Pango.FontDescription.from_string(f"{font_family} {font_size}")
+        self.terminal.set_font(font_desc)
+        self.terminal.set_cell_height_scale(line_height)
 
     def _apply_colors(self):
         """Apply Dracula color palette to terminal."""

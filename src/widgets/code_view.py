@@ -6,6 +6,8 @@ gi.require_version("GtkSource", "5")
 
 from gi.repository import Gtk, GtkSource, Pango
 
+from ..services import SettingsService
+
 # File extension to language ID mapping
 EXTENSION_LANGUAGES = {
     ".py": "python3",
@@ -121,9 +123,11 @@ class CodeView(Gtk.Frame):
             if language:
                 self.buffer.set_language(language)
 
-        # Set up style scheme (Dracula to match terminal)
+        # Set up style scheme from settings
+        settings = SettingsService.get_instance()
+        scheme_id = settings.get("appearance.syntax_scheme", "Adwaita-dark")
         style_manager = GtkSource.StyleSchemeManager.get_default()
-        scheme = style_manager.get_scheme("dracula")
+        scheme = style_manager.get_scheme(scheme_id)
         if not scheme:
             scheme = style_manager.get_scheme("Adwaita-dark")
         if not scheme:

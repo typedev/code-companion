@@ -5,8 +5,8 @@ from pathlib import Path
 from gi.repository import Adw, Gtk, GLib, Gio
 
 from .models import Session
-from .services import HistoryService, ProjectLock, ProjectRegistry, GitService, IconCache, ToastService
-from .widgets import SessionView, TerminalView, FileTree, FileEditor, TasksPanel, GitChangesPanel, GitHistoryPanel, DiffView, CommitDetailView, ClaudeHistoryPanel, FileSearchDialog, UnifiedSearch, NotesPanel
+from .services import HistoryService, ProjectLock, ProjectRegistry, GitService, IconCache, ToastService, SettingsService
+from .widgets import SessionView, TerminalView, FileTree, FileEditor, TasksPanel, GitChangesPanel, GitHistoryPanel, DiffView, CommitDetailView, ClaudeHistoryPanel, FileSearchDialog, UnifiedSearch, NotesPanel, PreferencesDialog
 
 
 def escape_markup(text: str) -> str:
@@ -56,7 +56,48 @@ class ProjectWindow(Adw.ApplicationWindow):
     def _setup_window(self):
         """Configure window properties."""
         self.set_title(f"{self.project_name} - Claude Companion")
-        self.set_default_size(1200, 800)
+
+        # Get settings service
+        self.settings = SettingsService.get_instance()
+
+        # Apply theme
+        self._apply_theme()
+
+        # Listen for theme changes
+        self.settings.connect("changed", self._on_setting_changed)
+
+        # Restore window size from settings or use default
+        width = self.settings.get("window.width", 1200)
+        height = self.settings.get("window.height", 800)
+        self.set_default_size(width, height)
+
+        # Restore maximized state
+        if self.settings.get("window.maximized", False):
+            self.maximize()
+
+        # Connect to window state changes for saving
+        self.connect("notify::maximized", self._on_window_state_changed)
+
+    def _apply_theme(self):
+        """Apply color theme from settings."""
+        theme = self.settings.get("appearance.theme", "system")
+        style_manager = Adw.StyleManager.get_default()
+
+        if theme == "dark":
+            style_manager.set_color_scheme(Adw.ColorScheme.FORCE_DARK)
+        elif theme == "light":
+            style_manager.set_color_scheme(Adw.ColorScheme.FORCE_LIGHT)
+        else:  # system
+            style_manager.set_color_scheme(Adw.ColorScheme.DEFAULT)
+
+    def _on_setting_changed(self, settings, key, value):
+        """Handle setting changes."""
+        if key == "appearance.theme":
+            self._apply_theme()
+
+    def _on_window_state_changed(self, window, pspec):
+        """Handle window state changes (maximized)."""
+        self.settings.set("window.maximized", self.is_maximized())
 
     def _build_ui(self):
         """Build the UI layout."""
@@ -148,6 +189,13 @@ class ProjectWindow(Adw.ApplicationWindow):
         ext_terminal_btn.set_tooltip_text("Open in system terminal")
         ext_terminal_btn.connect("clicked", self._on_external_terminal_clicked)
         header.pack_end(ext_terminal_btn)
+
+        # Preferences button
+        prefs_btn = Gtk.Button()
+        prefs_btn.set_icon_name("emblem-system-symbolic")
+        prefs_btn.set_tooltip_text("Preferences")
+        prefs_btn.connect("clicked", self._on_preferences_clicked)
+        header.pack_end(prefs_btn)
 
         return header
 
@@ -529,6 +577,11 @@ class ProjectWindow(Adw.ApplicationWindow):
         terminal.current_directory = str(self.project_path)
         terminal.open_system_terminal()
 
+    def _on_preferences_clicked(self, button):
+        """Show preferences dialog."""
+        dialog = PreferencesDialog()
+        dialog.present(self)
+
     def _on_refresh_files_clicked(self, button):
         """Refresh file tree."""
         self.file_tree.refresh()
@@ -829,6 +882,16 @@ class ProjectWindow(Adw.ApplicationWindow):
 
     def _on_destroy(self, window):
         """Clean up on window destroy."""
+        # Save window size (only if not maximized)
+        if not self.is_maximized():
+            width, height = self.get_default_size()
+            # get_default_size returns -1 if not set, use actual size
+            if width <= 0 or height <= 0:
+                width = self.get_width()
+                height = self.get_height()
+            self.settings.set("window.width", width)
+            self.settings.set("window.height", height)
+
         self.lock.release()
 
     def _setup_shortcuts(self):

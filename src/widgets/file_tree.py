@@ -5,7 +5,7 @@ from pathlib import Path
 import pathspec
 from gi.repository import Gtk, Gio, GLib, GObject, Pango, Gdk
 
-from ..services import GitService, FileStatus, IconCache, ToastService
+from ..services import GitService, FileStatus, IconCache, ToastService, SettingsService
 
 
 # CSS classes for git status colors
@@ -72,6 +72,11 @@ class FileTree(Gtk.Box):
         self._show_ignored = False
         self._ignore_spec: pathspec.PathSpec | None = None
         self._load_ignore_patterns()
+
+        # Settings
+        self._settings = SettingsService.get_instance()
+        self._show_hidden = self._settings.get("file_tree.show_hidden", False)
+        self._settings.connect("changed", self._on_setting_changed)
 
         # File monitoring
         self._file_monitors: dict[str, Gio.FileMonitor] = {}
@@ -144,6 +149,26 @@ class FileTree(Gtk.Box):
         if self._show_ignored != value:
             self._show_ignored = value
             self.refresh()
+
+    @property
+    def show_hidden(self) -> bool:
+        """Get whether hidden (dotfiles) are shown."""
+        return self._show_hidden
+
+    @show_hidden.setter
+    def show_hidden(self, value: bool):
+        """Set whether hidden files are shown."""
+        if self._show_hidden != value:
+            self._show_hidden = value
+            self._settings.set("file_tree.show_hidden", value)
+            self.refresh()
+
+    def _on_setting_changed(self, settings, key, value):
+        """Handle settings changes."""
+        if key == "file_tree.show_hidden":
+            if self._show_hidden != value:
+                self._show_hidden = value
+                self.refresh()
 
     def _build_ui(self):
         """Build the file tree UI."""
@@ -371,6 +396,10 @@ class FileTree(Gtk.Box):
         for entry in entries:
             # Always skip .git folder
             if entry.name in self.ALWAYS_HIDDEN:
+                continue
+
+            # Skip hidden files (dotfiles) unless show_hidden is True
+            if not self._show_hidden and entry.name.startswith("."):
                 continue
 
             # Skip ignored files unless show_ignored is True

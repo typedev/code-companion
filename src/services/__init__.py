@@ -5,6 +5,7 @@ from .tasks_service import TasksService, Task, TaskInput
 from .git_service import GitService, GitFileStatus, FileStatus, GitCommit
 from .icon_cache import IconCache
 from .toast_service import ToastService
+from .settings_service import SettingsService
 
 __all__ = [
     "HistoryService",
@@ -19,4 +20,5 @@ __all__ = [
     "GitCommit",
     "IconCache",
     "ToastService",
+    "SettingsService",
 ]

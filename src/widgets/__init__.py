@@ -16,6 +16,7 @@ from .claude_history_panel import ClaudeHistoryPanel
 from .file_search_dialog import FileSearchDialog
 from .unified_search import UnifiedSearch
 from .notes_panel import NotesPanel
+from .preferences_dialog import PreferencesDialog
 
 __all__ = [
     "MessageRow",
@@ -37,4 +38,5 @@ __all__ = [
     "FileSearchDialog",
     "UnifiedSearch",
     "NotesPanel",
+    "PreferencesDialog",
 ]

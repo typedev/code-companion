@@ -65,6 +65,7 @@ src/
 │   ├── branch_popover.py     # Branch management popover
 │   ├── tasks_panel.py   # VSCode tasks.json runner
 │   ├── notes_panel.py   # Notes panel (My Notes + Docs + TODOs)
+│   ├── preferences_dialog.py  # Settings dialog (Adw.PreferencesDialog)
 │   └── ...
 ├── services/            # Business logic
 │   ├── history.py       # Claude session history reader
@@ -73,6 +74,7 @@ src/
 │   ├── git_service.py   # Git operations via pygit2
 │   ├── tasks_service.py # VSCode tasks.json parser
 │   ├── toast_service.py # Toast notifications singleton
+│   ├── settings_service.py  # App settings singleton (JSON storage)
 │   └── icon_cache.py    # Material Design icons cache (O(1) lookup)
 ├── resources/
 │   └── icons/           # Material Design SVG icons (from vscode-material-icon-theme)
@@ -82,7 +84,7 @@ src/
 **UI Structure**:
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│ Header: [Sidebar] [Claude] [Terminal+]          Title        [Term] │
+│ Header: [Sidebar] [Claude] [Terminal+]    Title      [⚙️] [Term]    │
 ├──────────────────────┬──────────────────────────────────────────────┤
 │ Sidebar (resizable)  │  Main Area (Tabs)                            │
 │ [Files][Git][Claude][Notes]  [Session] [Commit] [file.py] [Terminal]│
@@ -119,6 +121,7 @@ Key patterns:
 - **File monitoring**: Auto-refresh via `Gio.FileMonitor` with debounce (file tree, git changes)
 - **Toast notifications**: `ToastService` singleton for app-wide feedback
 - **Selection preservation**: Lists preserve selection across refresh (git history, claude sessions)
+- **Settings service**: `SettingsService` singleton with JSON storage at `~/.config/claude-companion/settings.json`
 - Parse Claude Code JSONL session files from `~/.claude/projects/[encoded-path]/`
 - Project paths are encoded by replacing `/` with `-`
 
@@ -157,7 +160,17 @@ Session files are JSONL with event types: `user`, `assistant`, `tool_use`, `tool
   - Custom tab switcher (linked toggle buttons)
   - Git changes auto-refresh
   - Selection preservation across refresh
-- [ ] v0.7: Polish (settings, packaging)
+- [x] v0.7: Settings & Preferences:
+  - `SettingsService` singleton with JSON storage
+  - `PreferencesDialog` with 3 pages (Appearance, Editor, Files)
+  - Theme: system/light/dark via `Adw.StyleManager`
+  - Syntax scheme: all GtkSourceView schemes
+  - Font: family, size, line height (shared by editor + terminal)
+  - Editor: tab size, insert spaces
+  - File tree: show hidden files
+  - Window state: size, position, maximized (auto-saved)
+  - Live apply (no restart needed)
+- [ ] v0.8: Packaging (Flatpak, .desktop file)
 - [ ] v1.0: Multi-agent orchestration with Git worktrees
 
 ## GTK4/libadwaita Gotchas
@@ -218,6 +231,44 @@ image.set_pixel_size(16)
 texture = Gdk.Texture.new_from_file(file)
 image = Gtk.Image.new_from_paintable(texture)
 ```
+
+### Settings Service
+
+**Using SettingsService for app settings**:
+```python
+from ..services import SettingsService
+
+# Get singleton instance
+settings = SettingsService.get_instance()
+
+# Read settings (dot notation)
+theme = settings.get("appearance.theme", "system")
+font_size = settings.get("editor.font_size", 12)
+
+# Write settings (auto-saves, emits signal)
+settings.set("appearance.theme", "dark")
+
+# Listen for changes
+settings.connect("changed", on_setting_changed)
+
+def on_setting_changed(settings, key, value):
+    if key == "appearance.theme":
+        apply_theme(value)
+```
+
+**Available settings**:
+| Key | Default | Description |
+|-----|---------|-------------|
+| `appearance.theme` | `"system"` | Color scheme: system/light/dark |
+| `appearance.syntax_scheme` | `"Adwaita-dark"` | GtkSourceView scheme |
+| `editor.font_family` | `"Monospace"` | Font family |
+| `editor.font_size` | `12` | Font size in pt |
+| `editor.line_height` | `1.4` | Line height multiplier |
+| `editor.tab_size` | `4` | Tab width |
+| `editor.insert_spaces` | `true` | Use spaces for indentation |
+| `file_tree.show_hidden` | `false` | Show dotfiles |
+| `window.width/height` | `1200/800` | Window size |
+| `window.maximized` | `false` | Maximized state |
 
 ## Running the Application
 
