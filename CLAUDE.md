@@ -55,11 +55,11 @@ src/
 │   ├── file_tree.py     # File browser with git status, file monitoring, gitignore filtering
 │   ├── file_editor.py   # Code editor with autosave, go-to-line with highlighting
 │   ├── unified_search.py    # Unified search (files + content) with replace
-│   ├── terminal_view.py # VTE terminal with Dracula theme
+│   ├── terminal_view.py # VTE terminal with Dracula theme, left padding, auto .venv activation
 │   ├── session_view.py  # Claude session content viewer
-│   ├── claude_history_panel.py  # Claude sessions list with filtering
+│   ├── claude_history_panel.py  # Claude sessions list with filtering, lazy loading
 │   ├── code_view.py     # Read-only code display + DiffView
-│   ├── git_changes_panel.py  # Git changes (stage/commit/push/pull) with auto-refresh
+│   ├── git_changes_panel.py  # Git changes (stage/commit/push/pull) with auth dialog
 │   ├── git_history_panel.py  # Git commit history with filtering
 │   ├── commit_detail_view.py # Commit details (files + message + diff)
 │   ├── branch_popover.py     # Branch management popover
@@ -72,11 +72,12 @@ src/
 │   ├── history.py       # Claude session history reader
 │   ├── project_registry.py  # Registered projects storage
 │   ├── project_lock.py  # Lock files for single-instance per project
-│   ├── git_service.py   # Git operations via pygit2 (push/pull via git CLI)
+│   ├── git_service.py   # Git operations via pygit2 (push/pull via git CLI with auth)
 │   ├── tasks_service.py # VSCode tasks.json parser
 │   ├── toast_service.py # Toast notifications singleton
 │   ├── settings_service.py  # App settings singleton (JSON storage)
 │   ├── snippets_service.py  # Text snippets management (files in ~/.config/claude-companion/snippets/)
+│   ├── file_monitor_service.py  # Centralized file monitoring (git, working tree, notes, tasks)
 │   └── icon_cache.py    # Material Design icons cache (O(1) lookup)
 ├── resources/
 │   └── icons/           # Material Design SVG icons (from vscode-material-icon-theme)
@@ -120,10 +121,13 @@ Key patterns:
 - **Unified search**: Single search box for both filenames and content (ripgrep/grep)
 - **Single tab reuse**: Commit details and session details reuse single tab (no duplicates)
 - **Icon cache**: Pre-loaded Material Design SVG icons with O(1) lookup by extension/filename
-- **File monitoring**: Auto-refresh via `Gio.FileMonitor` with debounce (file tree, git changes)
+- **Centralized file monitoring**: `FileMonitorService` handles all file watching (git, working tree, notes, tasks) with debouncing
 - **Toast notifications**: `ToastService` singleton for app-wide feedback
 - **Selection preservation**: Lists preserve selection across refresh (git history, claude sessions)
 - **Settings service**: `SettingsService` singleton with JSON storage at `~/.config/claude-companion/settings.json`
+- **Lazy loading**: Claude history panel loads sessions only when tab is shown (background thread)
+- **Git authentication**: HTTPS credentials dialog with git credential storage
+- **Terminal enhancements**: Left padding for readability, auto `.venv` activation on launch
 - Parse Claude Code JSONL session files from `~/.claude/projects/[encoded-path]/`
 - Project paths are encoded by replacing `/` with `-`
 
@@ -172,6 +176,13 @@ Session files are JSONL with event types: `user`, `assistant`, `tool_use`, `tool
   - File tree: show hidden files
   - Window state: size, position, maximized (auto-saved)
   - Live apply (no restart needed)
+- [x] v0.7.1: Performance & UX:
+  - Lazy loading for Claude history (background thread, loads only when tab shown)
+  - Centralized `FileMonitorService` (replaces duplicated monitors across components)
+  - Terminal left padding (24px) for better readability
+  - Auto `.venv` activation on terminal launch
+  - Git HTTPS authentication dialog with credential storage
+  - Version system and About dialog
 - [ ] v0.8: Packaging (Flatpak, .desktop file)
 - [ ] v1.0: Multi-agent orchestration with Git worktrees
 

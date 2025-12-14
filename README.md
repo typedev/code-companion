@@ -27,8 +27,8 @@ A native GTK4/libadwaita desktop application for working with [Claude Code](http
   - View staged and unstaged changes
   - Stage/unstage individual files or all at once
   - Commit with message
-  - Push/Pull with SSH key support
-  - Auto-refresh on file changes
+  - Push/Pull with HTTPS authentication dialog and credential storage
+  - Auto-refresh on file changes (centralized monitoring)
 - **History Panel:**
   - Browse commit history with filtering (by message/author/hash)
   - View commit details (files list + full message + per-file diff)
@@ -38,7 +38,7 @@ A native GTK4/libadwaita desktop application for working with [Claude Code](http
   - Branch popover with quick access
 
 #### Claude Tab
-- Browse past Claude Code sessions
+- Browse past Claude Code sessions (lazy loading for performance)
 - Filter by preview text or date
 - View messages with tool calls, thinking blocks, code/diff display
 - One-click Claude Code session launch
@@ -50,7 +50,7 @@ A native GTK4/libadwaita desktop application for working with [Claude Code](http
 
 ### Main Area
 - **File Editor** — Syntax highlighting via GtkSourceView 5, autosave on focus loss, go-to-line
-- **Terminal Tabs** — Embedded VTE terminal with Dracula theme
+- **Terminal Tabs** — Embedded VTE terminal with Dracula theme, left padding, auto `.venv` activation
 - **Session View** — Claude session content with Markdown support
 - **Commit Detail View** — Files list + commit message + unified diff
 
@@ -138,10 +138,11 @@ src/
 │   ├── history.py           # Claude session reader
 │   ├── project_registry.py  # Registered projects storage
 │   ├── project_lock.py      # Lock files for single-instance per project
-│   ├── git_service.py       # Git operations via pygit2
+│   ├── git_service.py       # Git operations via pygit2 (with HTTPS auth)
 │   ├── tasks_service.py     # tasks.json parser
 │   ├── toast_service.py     # Toast notifications singleton
 │   ├── settings_service.py  # App settings (JSON storage)
+│   ├── file_monitor_service.py  # Centralized file monitoring
 │   └── icon_cache.py        # Material Design icons cache
 └── resources/
     └── icons/               # Material Design SVG icons
@@ -155,7 +156,9 @@ src/
 - **Settings** — `~/.config/claude-companion/settings.json` stores user preferences
 - **Claude data** — Reads session history from `~/.claude/projects/[encoded-path]/`
 - **Material Design Icons** — Pre-loaded SVG icons from vscode-material-icon-theme with O(1) lookup
-- **File monitoring** — Auto-refresh via `Gio.FileMonitor` with debounce
+- **Centralized file monitoring** — `FileMonitorService` handles all file watching with debouncing
+- **Lazy loading** — Claude history loads only when needed (background thread)
+- **Git authentication** — HTTPS credentials dialog with git credential storage
 
 ## Roadmap
 
@@ -170,6 +173,7 @@ src/
 - [x] v0.5.3: UX improvements (toast notifications, branch management, auto-refresh)
 - [x] v0.6: Search & Notes (unified search, notes panel, filtering)
 - [x] v0.7: Settings & Preferences
+- [x] v0.7.1: Performance & UX (lazy loading, file monitoring, terminal enhancements, git auth)
 - [ ] v0.8: Packaging (Flatpak, .desktop file)
 - [ ] v1.0: Multi-agent orchestration with Git worktrees
 
