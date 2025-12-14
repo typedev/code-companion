@@ -7,6 +7,7 @@ from pathlib import Path
 from gi.repository import Adw, Gtk, GLib, Gio
 
 from .services.project_registry import ProjectRegistry
+from .version import __version__, get_version_info
 
 
 def escape_markup(text: str) -> str:
@@ -38,6 +39,14 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
 
         # Header bar
         header = Adw.HeaderBar()
+        header.set_title_widget(self._create_title_widget())
+
+        # About button
+        about_button = Gtk.Button(icon_name="help-about-symbolic")
+        about_button.set_tooltip_text("About")
+        about_button.connect("clicked", self._on_about_clicked)
+        header.pack_end(about_button)
+
         main_box.append(header)
 
         # Content
@@ -136,18 +145,18 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
 
         return row
 
-    def _on_selection_changed(self, listbox, row):
+    def _on_selection_changed(self, _listbox, row):
         """Handle selection change - enable/disable remove button."""
         self.remove_button.set_sensitive(row is not None and hasattr(row, "project_path"))
 
-    def _on_list_double_click(self, gesture, n_press, x, y):
+    def _on_list_double_click(self, _gesture, n_press, _x, _y):
         """Handle double-click on project list."""
         if n_press == 2:  # Double-click
             row = self.project_list.get_selected_row()
             if row and hasattr(row, "project_path"):
                 self._open_project(row.project_path)
 
-    def _on_add_project_clicked(self, button):
+    def _on_add_project_clicked(self, _button):
         """Handle add project button click."""
         dialog = Gtk.FileDialog()
         dialog.set_title("Select Project Folder")
@@ -174,7 +183,7 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
             # User cancelled
             pass
 
-    def _on_remove_project_clicked(self, button):
+    def _on_remove_project_clicked(self, _button):
         """Handle remove project button click."""
         row = self.project_list.get_selected_row()
         if row and hasattr(row, "project_path"):
@@ -214,7 +223,52 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
             start_new_session=True,
         )
 
-    def _on_force_open_response(self, dialog, response, project_path):
+    def _on_force_open_response(self, _dialog, response, project_path):
         """Handle force open dialog response."""
         if response == "force":
             self._open_project(project_path, force=True)
+
+    def _create_title_widget(self):
+        """Create header title with version subtitle."""
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        box.set_valign(Gtk.Align.CENTER)
+
+        title = Gtk.Label(label="Claude Companion")
+        title.add_css_class("title")
+
+        subtitle = Gtk.Label(label=f"v{__version__}")
+        subtitle.add_css_class("subtitle")
+
+        box.append(title)
+        box.append(subtitle)
+        return box
+
+    def _on_about_clicked(self, _button):
+        """Show about dialog."""
+        info = get_version_info()
+
+        about = Adw.AboutDialog()
+        about.set_application_name("Claude Companion")
+        about.set_version(info["version"])
+        about.set_comments("Native GTK4 companion app for Claude Code")
+
+        # License
+        about.set_license_type(Gtk.License.APACHE_2_0)
+        about.set_copyright("© 2025 Alexander Lubovenko")
+
+        # Links
+        about.set_website("https://github.com/typedev")
+        about.set_issue_url("https://github.com/typedev/claude-companion/issues")
+
+        # Credits
+        about.set_developer_name("Alexander Lubovenko")
+        about.set_developers(["Alexander Lubovenko <lubovenko@gmail.com>"])
+
+        # Debug info with commit
+        if info["commit"]:
+            commit_info = info["commit"]
+            if info["dirty"]:
+                commit_info += " (modified)"
+            about.set_debug_info(f"Commit: {commit_info}")
+
+        about.present(self)
