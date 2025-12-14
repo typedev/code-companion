@@ -1,39 +1,37 @@
 """Claude history panel widget for viewing sessions in sidebar."""
 
-from datetime import datetime
+import threading
 from pathlib import Path
 
-from gi.repository import Gtk, Gio, GLib, GObject, Adw
+from gi.repository import Gtk, GLib, GObject
 
 from ..models import Session
 from ..services import HistoryService
 
 
 class ClaudeHistoryPanel(Gtk.Box):
-    """Panel displaying Claude session history in sidebar."""
+    """Panel displaying Claude session history in sidebar.
+
+    Uses lazy loading - sessions are only parsed when the tab is shown.
+    """
 
     __gsignals__ = {
         "session-activated": (GObject.SignalFlags.RUN_FIRST, None, (object,)),  # Session object
     }
-
-    # Auto-refresh interval (5 seconds)
-    REFRESH_INTERVAL = 5000
 
     def __init__(self, project_path: Path, history_service: HistoryService):
         super().__init__(orientation=Gtk.Orientation.VERTICAL)
 
         self.project_path = project_path
         self.history_service = history_service
-        self._refresh_timer_id: int | None = None
         self._all_sessions = []  # Cache sessions for filtering
         self._filter_text = ""
+        self._loaded = False  # Lazy loading flag
+        self._loading = False  # Currently loading flag
 
         self._setup_css()
         self._build_ui()
-        self.refresh()
-        self._start_refresh_timer()
-
-        self.connect("destroy", self._on_destroy)
+        # Don't load on init - wait for tab to be shown
 
     def _setup_css(self):
         """Set up CSS for the panel."""
@@ -76,12 +74,12 @@ class ClaudeHistoryPanel(Gtk.Box):
         header_box.append(label)
 
         # Refresh button
-        refresh_btn = Gtk.Button()
-        refresh_btn.set_icon_name("view-refresh-symbolic")
-        refresh_btn.add_css_class("flat")
-        refresh_btn.set_tooltip_text("Refresh")
-        refresh_btn.connect("clicked", lambda b: self.refresh())
-        header_box.append(refresh_btn)
+        self.refresh_btn = Gtk.Button()
+        self.refresh_btn.set_icon_name("view-refresh-symbolic")
+        self.refresh_btn.add_css_class("flat")
+        self.refresh_btn.set_tooltip_text("Refresh")
+        self.refresh_btn.connect("clicked", lambda b: self.refresh())
+        header_box.append(self.refresh_btn)
 
         self.append(header_box)
 
@@ -94,7 +92,26 @@ class ClaudeHistoryPanel(Gtk.Box):
         self.search_entry.connect("search-changed", self._on_search_changed)
         self.append(self.search_entry)
 
-        # Scrolled list
+        # Stack for content (loading spinner vs sessions list)
+        self.content_stack = Gtk.Stack()
+        self.content_stack.set_vexpand(True)
+
+        # Loading view with spinner
+        loading_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        loading_box.set_valign(Gtk.Align.CENTER)
+        loading_box.set_halign(Gtk.Align.CENTER)
+
+        self.spinner = Gtk.Spinner()
+        self.spinner.set_size_request(32, 32)
+        loading_box.append(self.spinner)
+
+        loading_label = Gtk.Label(label="Loading sessions...")
+        loading_label.add_css_class("dim-label")
+        loading_box.append(loading_label)
+
+        self.content_stack.add_named(loading_box, "loading")
+
+        # Sessions list view
         scrolled = Gtk.ScrolledWindow()
         scrolled.set_vexpand(True)
         scrolled.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
@@ -108,28 +125,63 @@ class ClaudeHistoryPanel(Gtk.Box):
         self.sessions_list.connect("row-activated", self._on_row_activated)
 
         scrolled.set_child(self.sessions_list)
-        self.append(scrolled)
+        self.content_stack.add_named(scrolled, "sessions")
+
+        # Initial state - show empty sessions view
+        self.content_stack.set_visible_child_name("sessions")
+        self.append(self.content_stack)
+
+    def load_if_needed(self):
+        """Load sessions if not already loaded. Called when tab is shown."""
+        if not self._loaded and not self._loading:
+            self.refresh()
 
     def refresh(self):
-        """Refresh the sessions list."""
+        """Refresh the sessions list (loads in background thread)."""
+        if self._loading:
+            return  # Already loading
+
         # Save current selection
         self._selected_session_id = None
         selected_row = self.sessions_list.get_selected_row()
         if selected_row and hasattr(selected_row, "session"):
             self._selected_session_id = selected_row.session.id
 
+        # Show loading state
+        self._loading = True
+        self.refresh_btn.set_sensitive(False)
+        self.spinner.start()
+        self.content_stack.set_visible_child_name("loading")
+
+        # Load in background thread
+        def load_sessions():
+            try:
+                sessions = self.history_service.get_sessions_for_path(self.project_path)
+                GLib.idle_add(self._on_sessions_loaded, sessions, None)
+            except Exception as e:
+                GLib.idle_add(self._on_sessions_loaded, [], str(e))
+
+        thread = threading.Thread(target=load_sessions, daemon=True)
+        thread.start()
+
+    def _on_sessions_loaded(self, sessions: list, error: str | None):
+        """Called when sessions are loaded (on main thread)."""
+        self._loading = False
+        self._loaded = True
+        self.refresh_btn.set_sensitive(True)
+        self.spinner.stop()
+        self.content_stack.set_visible_child_name("sessions")
+
         # Clear existing
         self.sessions_list.remove_all()
 
-        # Get sessions
-        try:
-            self._all_sessions = self.history_service.get_sessions_for_path(self.project_path)
-        except Exception as e:
-            label = Gtk.Label(label=f"Error: {e}")
+        if error:
+            label = Gtk.Label(label=f"Error: {error}")
             label.add_css_class("dim-label")
             self.sessions_list.append(label)
             return
 
+        self._all_sessions = sessions
         self._display_sessions()
 
     def _on_search_changed(self, entry):
@@ -226,26 +278,3 @@ class ClaudeHistoryPanel(Gtk.Box):
         """Handle session activation."""
         if row and hasattr(row, "session"):
             self.emit("session-activated", row.session)
-
-    def _start_refresh_timer(self):
-        """Start periodic refresh."""
-        self._stop_refresh_timer()
-        self._refresh_timer_id = GLib.timeout_add(
-            self.REFRESH_INTERVAL,
-            self._on_refresh_tick
-        )
-
-    def _stop_refresh_timer(self):
-        """Stop refresh timer."""
-        if self._refresh_timer_id is not None:
-            GLib.source_remove(self._refresh_timer_id)
-            self._refresh_timer_id = None
-
-    def _on_refresh_tick(self) -> bool:
-        """Periodically refresh."""
-        self.refresh()
-        return True
-
-    def _on_destroy(self, widget):
-        """Clean up on destroy."""
-        self._stop_refresh_timer()

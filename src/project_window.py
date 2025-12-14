@@ -307,6 +307,9 @@ class ProjectWindow(Adw.ApplicationWindow):
             for name, btn in self._tab_buttons.items():
                 if name != tab_name:
                     btn.set_active(False)
+            # Lazy load Claude history when tab is shown
+            if tab_name == "claude" and hasattr(self, "claude_history_panel"):
+                self.claude_history_panel.load_if_needed()
         else:
             # Don't allow deactivating without activating another
             # Check if any other button is active
