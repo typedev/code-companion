@@ -7,7 +7,19 @@ from pathlib import Path
 
 from gi.repository import Gtk, Gdk, Gio, GLib, GObject, Adw
 
-from ..services import SnippetsService, ToastService
+from ..services import SnippetsService, ToastService, GitService, FileStatus
+from ..services.icon_cache import IconCache
+
+
+# CSS classes for git status colors (same as file_tree.py)
+STATUS_CSS_CLASSES = {
+    FileStatus.MODIFIED: "git-modified",
+    FileStatus.ADDED: "git-added",
+    FileStatus.DELETED: "git-deleted",
+    FileStatus.RENAMED: "git-renamed",
+    FileStatus.UNTRACKED: "git-added",
+    FileStatus.TYPECHANGE: "git-modified",
+}
 
 
 class NotesPanel(Gtk.Box):
@@ -32,6 +44,16 @@ class NotesPanel(Gtk.Box):
         self.project_path = Path(project_path)
         self._file_monitors: list[Gio.FileMonitor] = []
         self._refresh_pending = False
+
+        # Icon cache for file icons
+        self._icon_cache = IconCache()
+
+        # Git service for file status
+        self._git_service = GitService(self.project_path)
+        self._is_git_repo = self._git_service.is_git_repo()
+        if self._is_git_repo:
+            self._git_service.open()
+        self._git_status: dict[str, FileStatus] = {}
 
         self._build_ui()
         self._setup_css()
@@ -65,6 +87,13 @@ class NotesPanel(Gtk.Box):
         .todo-tag-fixme { background: alpha(@error_color, 0.3); }
         .todo-tag-hack { background: alpha(@warning_color, 0.2); }
         .todo-tag-note { background: alpha(@accent_color, 0.2); }
+        /* Git status colors */
+        .git-modified { color: #f1c40f; }
+        .git-added { color: #2ecc71; }
+        .git-deleted { color: #e74c3c; }
+        .git-renamed { color: #3498db; }
+        /* Normal font weight for file labels */
+        .notes-file-label { font-weight: normal; }
         """
         provider = Gtk.CssProvider()
         provider.load_from_data(css)
@@ -214,6 +243,12 @@ class NotesPanel(Gtk.Box):
 
     def refresh(self):
         """Refresh all sections."""
+        # Update git status
+        if self._is_git_repo:
+            self._git_status = self._git_service.get_file_status_map()
+        else:
+            self._git_status = {}
+
         self._refresh_notes()
         self._refresh_docs()
         self._refresh_todos()
@@ -376,15 +411,40 @@ class NotesPanel(Gtk.Box):
         self.todos_header.set_label(f"TODOs ({total})")
 
         for file_path, items in sorted(results.items()):
-            # File header
+            # File header with icon
             file_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
             file_box.set_margin_top(4)
 
+            header_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+            header_box.set_margin_start(4)
+
+            # File icon
+            full_path = self.project_path / file_path
+            gicon = self._icon_cache.get_file_gicon(full_path)
+            if gicon:
+                icon = Gtk.Image.new_from_gicon(gicon)
+                icon.set_pixel_size(16)
+            else:
+                icon = Gtk.Image.new_from_icon_name("text-x-generic-symbolic")
+                icon.add_css_class("dim-label")
+            header_box.append(icon)
+
+            # File name
             file_label = Gtk.Label(label=f"{file_path} ({len(items)})")
             file_label.set_xalign(0)
-            file_label.add_css_class("dim-label")
-            file_label.set_margin_start(4)
-            file_box.append(file_label)
+            file_label.add_css_class("notes-file-label")
+
+            # Apply git status color
+            git_status = self._git_status.get(file_path)
+            if git_status:
+                css_class = STATUS_CSS_CLASSES.get(git_status)
+                if css_class:
+                    file_label.add_css_class(css_class)
+            else:
+                file_label.add_css_class("dim-label")
+
+            header_box.append(file_label)
+            file_box.append(header_box)
 
             # TODO items (limit to 10 per file)
             for line_num, tag, content in items[:10]:
@@ -421,26 +481,43 @@ class NotesPanel(Gtk.Box):
 
         btn_box = Gtk.Box(spacing=6)
 
-        # Icon - lock for protected files, document for others
+        # Icon - lock for protected files, Material Design icon for others
         if is_protected:
             icon = Gtk.Image.new_from_icon_name("changes-prevent-symbolic")
             icon.set_tooltip_text("Protected file")
+            icon.add_css_class("dim-label")
         else:
-            icon = Gtk.Image.new_from_icon_name("text-x-generic-symbolic")
-        icon.add_css_class("dim-label")
+            gicon = self._icon_cache.get_file_gicon(file_path)
+            if gicon:
+                icon = Gtk.Image.new_from_gicon(gicon)
+                icon.set_pixel_size(16)
+            else:
+                icon = Gtk.Image.new_from_icon_name("text-x-generic-symbolic")
+                icon.add_css_class("dim-label")
         btn_box.append(icon)
 
         # Show relative path for docs, just filename for notes/snippets
         try:
             rel = file_path.relative_to(self.project_path)
             display_name = str(rel) if "docs" in str(rel) or file_path.name == "CLAUDE.md" else file_path.name
+            relative_path = str(rel)
         except ValueError:
             display_name = file_path.name
+            relative_path = file_path.name
 
         label = Gtk.Label(label=display_name)
         label.set_xalign(0)
         label.set_ellipsize(2)
         label.set_hexpand(True)
+        label.add_css_class("notes-file-label")
+
+        # Apply git status color
+        git_status = self._git_status.get(relative_path)
+        if git_status:
+            css_class = STATUS_CSS_CLASSES.get(git_status)
+            if css_class:
+                label.add_css_class(css_class)
+
         btn_box.append(label)
 
         btn.set_child(btn_box)

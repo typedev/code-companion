@@ -80,6 +80,7 @@ class FileTree(Gtk.Box):
 
         # File monitoring
         self._file_monitors: dict[str, Gio.FileMonitor] = {}
+        self._git_index_monitor: Gio.FileMonitor | None = None
         self._refresh_scheduled = False
         self._refresh_timeout_id: int | None = None
 
@@ -539,6 +540,19 @@ class FileTree(Gtk.Box):
         for path_str in self._expanded_paths:
             self._add_monitor(Path(path_str))
 
+        # Monitor .git/index for git status changes (stage/unstage/commit)
+        if self._is_git_repo:
+            git_index = self.root_path / ".git" / "index"
+            if git_index.exists():
+                try:
+                    gfile = Gio.File.new_for_path(str(git_index))
+                    self._git_index_monitor = gfile.monitor_file(
+                        Gio.FileMonitorFlags.NONE, None
+                    )
+                    self._git_index_monitor.connect("changed", self._on_git_index_changed)
+                except GLib.Error:
+                    pass
+
     def _add_monitor(self, directory: Path):
         """Add a file monitor for a directory."""
         path_str = str(directory)
@@ -583,6 +597,13 @@ class FileTree(Gtk.Box):
         for path_str in list(self._file_monitors.keys()):
             if path_str not in should_monitor and path_str != str(self.root_path):
                 self._remove_monitor(Path(path_str))
+
+    def _on_git_index_changed(self, monitor, file, other_file, event_type):
+        """Handle .git/index changes to update file git status."""
+        if event_type != Gio.FileMonitorEvent.CHANGED:
+            return
+        # Schedule debounced refresh to update git status colors
+        self._schedule_refresh()
 
     def _on_file_changed(self, monitor, file, other_file, event_type):
         """Handle file system changes."""
@@ -634,7 +655,12 @@ class FileTree(Gtk.Box):
             GLib.source_remove(self._refresh_timeout_id)
             self._refresh_timeout_id = None
 
-        # Cancel all monitors
+        # Cancel git index monitor
+        if self._git_index_monitor is not None:
+            self._git_index_monitor.cancel()
+            self._git_index_monitor = None
+
+        # Cancel all file monitors
         for monitor in self._file_monitors.values():
             monitor.cancel()
         self._file_monitors.clear()

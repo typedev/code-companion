@@ -5,6 +5,7 @@ from pathlib import Path
 from gi.repository import Gtk, Gio, GLib, GObject, Adw
 
 from ..services import GitService, GitFileStatus, FileStatus, ToastService
+from ..services.icon_cache import IconCache
 from .branch_popover import BranchPopover
 
 
@@ -33,6 +34,10 @@ class GitChangesPanel(Gtk.Box):
         self.project_path = Path(project_path)
         self.service = GitService(self.project_path)
         self._file_monitor = None
+        self._icon_cache = IconCache()
+        # Track expanded directories per section (staged/unstaged)
+        self._expanded_staged: set[str] = set()
+        self._expanded_unstaged: set[str] = set()
 
         # Check if git repo
         if not self.service.is_git_repo():
@@ -166,6 +171,8 @@ class GitChangesPanel(Gtk.Box):
         .git-added { color: #2ecc71; }
         .git-deleted { color: #e74c3c; }
         .git-renamed { color: #3498db; }
+        .git-file-label { font-weight: normal; }
+        .git-dir-label { font-weight: normal; }
         """
         provider = Gtk.CssProvider()
         provider.load_from_data(css)
@@ -176,32 +183,65 @@ class GitChangesPanel(Gtk.Box):
         )
 
     def _setup_file_monitor(self):
-        """Set up file monitors for .git directory and working tree."""
+        """Set up file monitors for git internals and working tree."""
         self._monitors = []
         self._refresh_pending = False
 
-        # Monitor .git directory for index changes
         git_dir = self.project_path / ".git"
         if git_dir.exists():
-            try:
-                gfile = Gio.File.new_for_path(str(git_dir))
-                monitor = gfile.monitor_directory(Gio.FileMonitorFlags.NONE, None)
-                monitor.connect("changed", self._on_file_changed)
-                self._monitors.append(monitor)
-            except GLib.Error:
-                pass
+            # Monitor .git/index for stage/unstage changes
+            index_file = git_dir / "index"
+            if index_file.exists():
+                self._add_git_monitor(index_file, is_file=True)
+
+            # Monitor .git/refs/heads/ for new commits
+            refs_dir = git_dir / "refs" / "heads"
+            if refs_dir.exists():
+                self._add_git_monitor(refs_dir)
+
+            # Monitor .git/logs/HEAD for all operations (commit, reset, etc)
+            logs_head = git_dir / "logs" / "HEAD"
+            if logs_head.exists():
+                self._add_git_monitor(logs_head, is_file=True)
 
         # Monitor project root for working tree changes
         try:
             gfile = Gio.File.new_for_path(str(self.project_path))
             monitor = gfile.monitor_directory(Gio.FileMonitorFlags.WATCH_MOVES, None)
-            monitor.connect("changed", self._on_file_changed)
+            monitor.connect("changed", self._on_working_tree_changed)
             self._monitors.append(monitor)
         except GLib.Error:
             pass
 
-    def _on_file_changed(self, monitor, file, other_file, event_type):
-        """Handle file changes - debounced refresh."""
+    def _add_git_monitor(self, path: Path, is_file: bool = False):
+        """Add a monitor for a git internal file or directory."""
+        try:
+            gfile = Gio.File.new_for_path(str(path))
+            if is_file:
+                monitor = gfile.monitor_file(Gio.FileMonitorFlags.NONE, None)
+            else:
+                monitor = gfile.monitor_directory(Gio.FileMonitorFlags.NONE, None)
+            monitor.connect("changed", self._on_git_changed)
+            self._monitors.append(monitor)
+        except GLib.Error:
+            pass
+
+    def _on_git_changed(self, monitor, file, other_file, event_type):
+        """Handle git internal file changes."""
+        if event_type not in (
+            Gio.FileMonitorEvent.CHANGED,
+            Gio.FileMonitorEvent.CREATED,
+            Gio.FileMonitorEvent.DELETED,
+        ):
+            return
+
+        # Debounce
+        if not self._refresh_pending:
+            self._refresh_pending = True
+            GLib.timeout_add(300, self._delayed_refresh)
+
+    def _on_working_tree_changed(self, monitor, file, other_file, event_type):
+        """Handle working tree file changes."""
         if event_type not in (
             Gio.FileMonitorEvent.CHANGED,
             Gio.FileMonitorEvent.CREATED,
@@ -211,13 +251,13 @@ class GitChangesPanel(Gtk.Box):
         ):
             return
 
-        # Skip .git internal files for working tree monitor
+        # Skip .git directory
         if file:
             path = file.get_path()
-            if path and "/.git/" in path:
+            if path and "/.git" in path:
                 return
 
-        # Debounce - schedule refresh if not already pending
+        # Debounce
         if not self._refresh_pending:
             self._refresh_pending = True
             GLib.timeout_add(300, self._delayed_refresh)
@@ -292,8 +332,26 @@ class GitChangesPanel(Gtk.Box):
             self.pull_btn.set_label("Pull")
             self.pull_btn.remove_css_class("suggested-action")
 
+    def _group_files_by_directory(self, files: list[GitFileStatus]) -> dict[str, list[GitFileStatus]]:
+        """Group files by their parent directory.
+
+        Returns:
+            Dict mapping directory path to list of files.
+            Empty string key "" for root-level files.
+        """
+        groups: dict[str, list[GitFileStatus]] = {}
+        for file_status in files:
+            path = Path(file_status.path)
+            parent = str(path.parent) if path.parent != Path(".") else ""
+            if parent not in groups:
+                groups[parent] = []
+            groups[parent].append(file_status)
+
+        # Sort: root first, then alphabetically
+        return dict(sorted(groups.items(), key=lambda x: (x[0] != "", x[0])))
+
     def _add_section(self, title: str, files: list[GitFileStatus], is_staged: bool):
-        """Add a section (Staged or Changes) to the panel."""
+        """Add a section (Staged or Changes) to the panel with tree structure."""
         # Section header
         header_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
         header_box.set_margin_top(6)
@@ -315,15 +373,88 @@ class GitChangesPanel(Gtk.Box):
 
         self.content_box.append(header_box)
 
-        # Files list
-        for file_status in files:
-            row = self._create_file_row(file_status)
-            self.content_box.append(row)
+        # Group files by directory
+        groups = self._group_files_by_directory(files)
+        expanded_set = self._expanded_staged if is_staged else self._expanded_unstaged
 
-    def _create_file_row(self, file_status: GitFileStatus) -> Gtk.Box:
+        for dir_path, dir_files in groups.items():
+            if dir_path:  # Non-root directory
+                # Directory header row
+                is_expanded = dir_path not in expanded_set  # Default expanded (not in collapsed set)
+                dir_row = self._create_directory_row(dir_path, len(dir_files), is_expanded, is_staged)
+                self.content_box.append(dir_row)
+
+                # Files under this directory (only if expanded)
+                if is_expanded:
+                    for file_status in dir_files:
+                        row = self._create_file_row(file_status, indent=True)
+                        self.content_box.append(row)
+            else:
+                # Root-level files (no directory header)
+                for file_status in dir_files:
+                    row = self._create_file_row(file_status, indent=False)
+                    self.content_box.append(row)
+
+    def _create_directory_row(self, dir_path: str, file_count: int, is_expanded: bool, is_staged: bool) -> Gtk.Box:
+        """Create a collapsible directory header row."""
+        box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+        box.set_margin_start(4)
+        box.set_margin_top(4)
+        box.set_margin_bottom(2)
+
+        # Clickable area for expand/collapse
+        click_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+        click_box.set_hexpand(True)
+
+        # Expand/collapse arrow
+        arrow = Gtk.Image.new_from_icon_name(
+            "pan-down-symbolic" if is_expanded else "pan-end-symbolic"
+        )
+        arrow.set_pixel_size(12)
+        arrow.add_css_class("dim-label")
+        click_box.append(arrow)
+
+        # Folder icon
+        folder_path = self.project_path / dir_path
+        gicon = self._icon_cache.get_folder_gicon(folder_path, is_open=is_expanded)
+        if gicon:
+            folder_icon = Gtk.Image.new_from_gicon(gicon)
+            folder_icon.set_pixel_size(16)
+            click_box.append(folder_icon)
+
+        # Directory name with file count
+        label = Gtk.Label(label=f"{dir_path}/ ({file_count})")
+        label.set_xalign(0)
+        label.add_css_class("dim-label")
+        label.add_css_class("git-dir-label")
+        click_box.append(label)
+
+        # Make clickable via button
+        dir_btn = Gtk.Button()
+        dir_btn.set_child(click_box)
+        dir_btn.add_css_class("flat")
+        dir_btn.set_hexpand(True)
+        dir_btn.connect("clicked", self._on_directory_clicked, dir_path, is_staged)
+        box.append(dir_btn)
+
+        return box
+
+    def _on_directory_clicked(self, button, dir_path: str, is_staged: bool):
+        """Toggle directory expand/collapse."""
+        expanded_set = self._expanded_staged if is_staged else self._expanded_unstaged
+
+        # Toggle: if in set (collapsed), remove (expand). If not in set (expanded), add (collapse).
+        if dir_path in expanded_set:
+            expanded_set.discard(dir_path)
+        else:
+            expanded_set.add(dir_path)
+
+        self.refresh()
+
+    def _create_file_row(self, file_status: GitFileStatus, indent: bool = False) -> Gtk.Box:
         """Create a row for a file."""
         box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-        box.set_margin_start(4)
+        box.set_margin_start(24 if indent else 4)
         box.set_margin_top(2)
         box.set_margin_bottom(2)
 
@@ -335,14 +466,25 @@ class GitChangesPanel(Gtk.Box):
             status_label.add_css_class(css_class)
         box.append(status_label)
 
-        # File name (clickable)
+        # File icon
+        file_path = self.project_path / file_status.path
+        gicon = self._icon_cache.get_file_gicon(file_path)
+        if gicon:
+            file_icon = Gtk.Image.new_from_gicon(gicon)
+            file_icon.set_pixel_size(16)
+            box.append(file_icon)
+
+        # File name (just the filename, not full path)
         file_btn = Gtk.Button()
         file_btn.add_css_class("flat")
         file_btn.set_hexpand(True)
 
-        file_label = Gtk.Label(label=file_status.path)
+        display_name = Path(file_status.path).name
+        file_label = Gtk.Label(label=display_name)
         file_label.set_xalign(0)
         file_label.set_ellipsize(2)  # PANGO_ELLIPSIZE_MIDDLE
+        file_label.set_tooltip_text(file_status.path)  # Full path in tooltip
+        file_label.add_css_class("git-file-label")
         if css_class:
             file_label.add_css_class(css_class)
         file_btn.set_child(file_label)
