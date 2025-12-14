@@ -891,13 +891,16 @@ class GitService:
 
         if credentials:
             username, password = credentials
-            # Create a simple askpass script that returns credentials
-            # GIT_ASKPASS is called with a prompt, we return username for "Username" and password for "Password"
-            askpass_script = f'''#!/bin/bash
-if [[ "$1" == *"Username"* ]]; then
-    echo "{username}"
-elif [[ "$1" == *"Password"* ]]; then
-    echo "{password}"
+            # Pass credentials via environment variables (safer than embedding in script)
+            env["GIT_USERNAME"] = username
+            env["GIT_PASSWORD"] = password
+
+            # Create askpass script that reads from environment
+            askpass_script = '''#!/bin/bash
+if [[ "$1" == *"Username"* ]] || [[ "$1" == *"username"* ]]; then
+    echo "$GIT_USERNAME"
+elif [[ "$1" == *"Password"* ]] || [[ "$1" == *"password"* ]]; then
+    echo "$GIT_PASSWORD"
 fi
 '''
             # Write temporary script
@@ -909,7 +912,7 @@ fi
                 os.chmod(path, 0o700)
                 env["GIT_ASKPASS"] = path
                 env["GIT_TERMINAL_PROMPT"] = "0"
-                # Store path for cleanup (we'll let OS clean it up on next boot if needed)
+                # Store path for cleanup
                 self._askpass_script = path
             except Exception:
                 pass
@@ -933,9 +936,10 @@ fi
             # Format for git credential
             credential_input = f"protocol={protocol}\nhost={host}\nusername={username}\npassword={password}\n\n"
 
-            # Store using git credential approve
+            # Use git credential-store directly (more reliable than approve)
+            # This stores credentials in ~/.git-credentials
             subprocess.run(
-                ["git", "credential", "approve"],
+                ["git", "-c", "credential.helper=store", "credential", "approve"],
                 input=credential_input,
                 cwd=str(self.repo_path),
                 capture_output=True,
