@@ -2,9 +2,9 @@
 
 from pathlib import Path
 
-from gi.repository import Gtk, Gio, GLib, GObject, Adw
+from gi.repository import Gtk, GObject, Adw
 
-from ..services import TasksService, Task, TaskInput
+from ..services import TasksService, Task, TaskInput, FileMonitorService
 
 
 class TasksPanel(Gtk.Box):
@@ -14,15 +14,15 @@ class TasksPanel(Gtk.Box):
         "task-run": (GObject.SignalFlags.RUN_FIRST, None, (str, str)),  # label, command
     }
 
-    def __init__(self, project_path: str):
+    def __init__(self, project_path: str, file_monitor_service: FileMonitorService):
         super().__init__(orientation=Gtk.Orientation.VERTICAL)
 
         self.project_path = Path(project_path)
         self.service = TasksService(self.project_path)
-        self._file_monitor = None
+        self._file_monitor_service = file_monitor_service
 
         self._build_ui()
-        self._setup_file_monitor()
+        self._connect_monitor_signals()
         self.refresh()
 
     def _build_ui(self):
@@ -57,39 +57,13 @@ class TasksPanel(Gtk.Box):
         self.tasks_box.set_margin_bottom(12)
         self.append(self.tasks_box)
 
-    def _setup_file_monitor(self):
-        """Set up file monitor for tasks.json."""
-        vscode_dir = self.project_path / ".vscode"
+    def _connect_monitor_signals(self):
+        """Connect to FileMonitorService signals."""
+        self._file_monitor_service.connect("tasks-changed", self._on_tasks_changed)
 
-        # Monitor the .vscode directory for tasks.json changes
-        if vscode_dir.exists():
-            gfile = Gio.File.new_for_path(str(vscode_dir))
-        else:
-            # Monitor project root for .vscode creation
-            gfile = Gio.File.new_for_path(str(self.project_path))
-
-        try:
-            self._file_monitor = gfile.monitor_directory(
-                Gio.FileMonitorFlags.NONE,
-                None
-            )
-            self._file_monitor.connect("changed", self._on_file_changed)
-        except GLib.Error:
-            pass
-
-    def _on_file_changed(self, monitor, file, other_file, event_type):
-        """Handle file changes in monitored directory."""
-        filename = file.get_basename()
-
-        # Check if it's tasks.json or .vscode directory
-        if filename in ("tasks.json", ".vscode"):
-            if event_type in (
-                Gio.FileMonitorEvent.CREATED,
-                Gio.FileMonitorEvent.CHANGED,
-                Gio.FileMonitorEvent.DELETED,
-            ):
-                # Delay refresh slightly to avoid rapid updates
-                GLib.timeout_add(100, self._delayed_refresh)
+    def _on_tasks_changed(self, service):
+        """Handle tasks.json changes from monitor service."""
+        self.refresh()
 
     def _delayed_refresh(self):
         """Delayed refresh to coalesce rapid changes."""

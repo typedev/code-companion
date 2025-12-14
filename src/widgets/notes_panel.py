@@ -5,9 +5,9 @@ import shutil
 import threading
 from pathlib import Path
 
-from gi.repository import Gtk, Gdk, Gio, GLib, GObject, Adw
+from gi.repository import Gtk, Gdk, GLib, GObject, Adw
 
-from ..services import SnippetsService, ToastService, GitService, FileStatus
+from ..services import SnippetsService, ToastService, GitService, FileStatus, FileMonitorService
 from ..services.icon_cache import IconCache
 
 
@@ -38,12 +38,11 @@ class NotesPanel(Gtk.Box):
     # TODO patterns to search for
     TODO_PATTERNS = ["TODO:", "FIXME:", "HACK:", "XXX:", "NOTE:"]
 
-    def __init__(self, project_path: str):
+    def __init__(self, project_path: str, file_monitor_service: FileMonitorService):
         super().__init__(orientation=Gtk.Orientation.VERTICAL)
 
         self.project_path = Path(project_path)
-        self._file_monitors: list[Gio.FileMonitor] = []
-        self._refresh_pending = False
+        self._file_monitor_service = file_monitor_service
 
         # Icon cache for file icons
         self._icon_cache = IconCache()
@@ -58,9 +57,15 @@ class NotesPanel(Gtk.Box):
         self._build_ui()
         self._setup_css()
         self.refresh()
-        self._setup_file_monitors()
+        self._connect_monitor_signals()
 
-        self.connect("destroy", self._on_destroy)
+    def _connect_monitor_signals(self):
+        """Connect to FileMonitorService signals."""
+        self._file_monitor_service.connect("notes-changed", self._on_notes_changed)
+
+    def _on_notes_changed(self, service):
+        """Handle notes/docs changes from monitor service."""
+        self.refresh()
 
     def _setup_css(self):
         """Set up CSS styles."""
@@ -200,46 +205,6 @@ class NotesPanel(Gtk.Box):
         expander.set_child(file_list)
 
         return expander, title_label, file_list
-
-    def _setup_file_monitors(self):
-        """Set up file monitors for notes and docs folders."""
-        folders_to_watch = [
-            self.project_path / "notes",
-            self.project_path / "docs",
-        ]
-
-        for folder in folders_to_watch:
-            if folder.exists():
-                try:
-                    gfile = Gio.File.new_for_path(str(folder))
-                    monitor = gfile.monitor_directory(Gio.FileMonitorFlags.NONE, None)
-                    monitor.connect("changed", self._on_folder_changed)
-                    self._file_monitors.append(monitor)
-                except GLib.Error:
-                    pass
-
-    def _on_folder_changed(self, monitor, file, other_file, event_type):
-        """Handle folder changes - debounced refresh."""
-        if event_type in (
-            Gio.FileMonitorEvent.CREATED,
-            Gio.FileMonitorEvent.DELETED,
-            Gio.FileMonitorEvent.CHANGED,
-        ):
-            if not self._refresh_pending:
-                self._refresh_pending = True
-                GLib.timeout_add(300, self._delayed_refresh)
-
-    def _delayed_refresh(self):
-        """Perform delayed refresh."""
-        self._refresh_pending = False
-        self.refresh()
-        return False
-
-    def _on_destroy(self, widget):
-        """Clean up on destroy."""
-        for monitor in self._file_monitors:
-            monitor.cancel()
-        self._file_monitors.clear()
 
     def refresh(self):
         """Refresh all sections."""

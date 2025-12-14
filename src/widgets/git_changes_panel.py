@@ -2,9 +2,9 @@
 
 from pathlib import Path
 
-from gi.repository import Gtk, Gio, GLib, GObject, Adw
+from gi.repository import Gtk, GLib, GObject, Adw
 
-from ..services import GitService, GitFileStatus, FileStatus, ToastService
+from ..services import GitService, GitFileStatus, FileStatus, ToastService, FileMonitorService
 from ..services.icon_cache import IconCache
 from .branch_popover import BranchPopover
 
@@ -28,22 +28,22 @@ class GitChangesPanel(Gtk.Box):
         "branch-changed": (GObject.SignalFlags.RUN_FIRST, None, ()),  # emitted when branch switches
     }
 
-    # Polling interval for git status (ms) - fallback for deep directory changes
-    POLL_INTERVAL = 3000  # 3 seconds
+    # Polling interval for git status (ms) - fast operation ~2ms
+    POLL_INTERVAL = 2000
 
-    def __init__(self, project_path: str):
+    def __init__(self, project_path: str, file_monitor_service: FileMonitorService):
         super().__init__(orientation=Gtk.Orientation.VERTICAL)
 
         self.project_path = Path(project_path)
         self.service = GitService(self.project_path)
-        self._monitors: list = []
+        self._file_monitor_service = file_monitor_service
         self._icon_cache = IconCache()
-        self._refresh_pending = False
-        self._poll_timer_id: int | None = None
         # Track expanded directories per section (staged/unstaged)
         self._expanded_staged: set[str] = set()
         self._expanded_unstaged: set[str] = set()
-        # Track last status hash to avoid unnecessary UI rebuilds
+
+        # Polling state
+        self._poll_timeout_id: int | None = None
         self._last_status_hash: str | None = None
 
         # Check if git repo
@@ -54,52 +54,59 @@ class GitChangesPanel(Gtk.Box):
         self.service.open()
         self._build_ui()
         self._setup_css()
-        self._setup_file_monitor()
+        self._connect_monitor_signals()
         self._start_polling()
         self.refresh()
 
+        # Stop polling on destroy
         self.connect("destroy", self._on_destroy)
 
+    def _connect_monitor_signals(self):
+        """Connect to FileMonitorService signals."""
+        self._file_monitor_service.connect("git-status-changed", self._on_git_status_changed)
+        self._file_monitor_service.connect("working-tree-changed", self._on_working_tree_changed)
+
+    def _on_git_status_changed(self, service):
+        """Handle git status changes from monitor service."""
+        self.refresh()
+
+    def _on_working_tree_changed(self, service, path: str):
+        """Handle working tree changes from monitor service."""
+        self.refresh()
+
     def _start_polling(self):
-        """Start periodic git status polling as fallback for file monitoring."""
-        self._poll_timer_id = GLib.timeout_add(self.POLL_INTERVAL, self._on_poll_timer)
+        """Start polling git status for changes."""
+        if self._poll_timeout_id is None:
+            self._poll_timeout_id = GLib.timeout_add(
+                self.POLL_INTERVAL, self._poll_git_status
+            )
 
-    def _on_poll_timer(self) -> bool:
-        """Periodic check for git status changes."""
-        self._check_for_changes()
-        return True  # Continue polling
+    def _stop_polling(self):
+        """Stop polling git status."""
+        if self._poll_timeout_id is not None:
+            GLib.source_remove(self._poll_timeout_id)
+            self._poll_timeout_id = None
 
-    def _check_for_changes(self):
-        """Check if git status changed and refresh if needed."""
-        # Get current status and compute simple hash
-        staged = self.service.get_staged_files()
-        unstaged = self.service.get_unstaged_files()
+    def _poll_git_status(self) -> bool:
+        """Poll git status and refresh if changed."""
+        try:
+            staged = self.service.get_staged_files()
+            unstaged = self.service.get_unstaged_files()
+            all_files = staged + unstaged
+            # Create a simple hash of current status
+            status_hash = str(sorted((f.path, f.status.name, f.staged) for f in all_files)) if all_files else ""
 
-        # Create hash from file paths and statuses
-        status_parts = []
-        for f in staged:
-            status_parts.append(f"S:{f.path}:{f.status.value}")
-        for f in unstaged:
-            status_parts.append(f"U:{f.path}:{f.status.value}")
-        current_hash = "|".join(sorted(status_parts))
+            if status_hash != self._last_status_hash:
+                self._last_status_hash = status_hash
+                self.refresh()
+        except Exception:
+            pass  # Ignore errors during polling
 
-        # Only refresh UI if status changed
-        if current_hash != self._last_status_hash:
-            self._last_status_hash = current_hash
-            # Use idle_add to avoid blocking the timer
-            GLib.idle_add(self._refresh_ui_only)
+        return True  # Keep polling
 
     def _on_destroy(self, widget):
-        """Clean up on widget destruction."""
-        # Cancel polling timer
-        if self._poll_timer_id is not None:
-            GLib.source_remove(self._poll_timer_id)
-            self._poll_timer_id = None
-
-        # Cancel all monitors
-        for monitor in self._monitors:
-            monitor.cancel()
-        self._monitors.clear()
+        """Handle widget destruction."""
+        self._stop_polling()
 
     def _build_no_repo_ui(self):
         """Build UI for non-git directories."""
@@ -233,109 +240,6 @@ class GitChangesPanel(Gtk.Box):
             Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
         )
 
-    def _setup_file_monitor(self):
-        """Set up file monitors for git internals and working tree."""
-        self._monitors = []
-        self._refresh_pending = False
-
-        git_dir = self.project_path / ".git"
-        if git_dir.exists():
-            # Monitor .git/index for stage/unstage changes
-            index_file = git_dir / "index"
-            if index_file.exists():
-                self._add_git_monitor(index_file, is_file=True)
-
-            # Monitor .git/refs/heads/ for new commits
-            refs_dir = git_dir / "refs" / "heads"
-            if refs_dir.exists():
-                self._add_git_monitor(refs_dir)
-
-            # Monitor .git/logs/HEAD for all operations (commit, reset, etc)
-            logs_head = git_dir / "logs" / "HEAD"
-            if logs_head.exists():
-                self._add_git_monitor(logs_head, is_file=True)
-
-        # Monitor project root and first-level subdirectories for working tree changes
-        self._add_working_tree_monitor(self.project_path)
-
-        # Monitor first-level subdirectories (for files like notes/note1.md)
-        try:
-            for item in self.project_path.iterdir():
-                if item.is_dir() and not item.name.startswith('.'):
-                    self._add_working_tree_monitor(item)
-        except OSError:
-            pass
-
-    def _add_working_tree_monitor(self, path: Path):
-        """Add a working tree monitor for a directory."""
-        try:
-            gfile = Gio.File.new_for_path(str(path))
-            monitor = gfile.monitor_directory(Gio.FileMonitorFlags.WATCH_MOVES, None)
-            monitor.connect("changed", self._on_working_tree_changed)
-            self._monitors.append(monitor)
-        except GLib.Error:
-            pass
-
-    def _add_git_monitor(self, path: Path, is_file: bool = False):
-        """Add a monitor for a git internal file or directory."""
-        try:
-            gfile = Gio.File.new_for_path(str(path))
-            if is_file:
-                monitor = gfile.monitor_file(Gio.FileMonitorFlags.NONE, None)
-            else:
-                monitor = gfile.monitor_directory(Gio.FileMonitorFlags.NONE, None)
-            monitor.connect("changed", self._on_git_changed)
-            self._monitors.append(monitor)
-        except GLib.Error:
-            pass
-
-    def _on_git_changed(self, monitor, file, other_file, event_type):
-        """Handle git internal file changes."""
-        if event_type not in (
-            Gio.FileMonitorEvent.CHANGED,
-            Gio.FileMonitorEvent.CREATED,
-            Gio.FileMonitorEvent.DELETED,
-        ):
-            return
-
-        # Debounce
-        if not self._refresh_pending:
-            self._refresh_pending = True
-            GLib.timeout_add(300, self._delayed_refresh)
-
-    def _on_working_tree_changed(self, monitor, file, other_file, event_type):
-        """Handle working tree file changes."""
-        if event_type not in (
-            Gio.FileMonitorEvent.CHANGED,
-            Gio.FileMonitorEvent.CREATED,
-            Gio.FileMonitorEvent.DELETED,
-            Gio.FileMonitorEvent.MOVED_IN,
-            Gio.FileMonitorEvent.MOVED_OUT,
-        ):
-            return
-
-        # Skip .git directory
-        if file:
-            path = file.get_path()
-            if path and "/.git" in path:
-                return
-
-        # Debounce
-        if not self._refresh_pending:
-            self._refresh_pending = True
-            GLib.timeout_add(300, self._delayed_refresh)
-
-    def _delayed_refresh(self):
-        """Delayed refresh to coalesce rapid changes."""
-        self._refresh_pending = False
-        self.refresh()
-        return False
-
-    def _refresh_ui_only(self):
-        """Refresh UI only (called from polling timer)."""
-        self.refresh()
-        return False  # Don't repeat (for idle_add)
-
     def refresh(self):
         """Refresh the changes list."""
         if not hasattr(self, "branch_label"):
@@ -368,6 +272,7 @@ class GitChangesPanel(Gtk.Box):
             label.set_margin_top(24)
             self.content_box.append(label)
             self._update_commit_button()
+            self._last_status_hash = ""
             return
 
         # Staged section
@@ -379,6 +284,10 @@ class GitChangesPanel(Gtk.Box):
             self._add_section("Changes", unstaged, is_staged=False)
 
         self._update_commit_button()
+
+        # Update status hash to avoid duplicate polling refreshes
+        all_files = staged + unstaged
+        self._last_status_hash = str(sorted((f.path, f.status.name, f.staged) for f in all_files))
 
     def _update_sync_buttons(self):
         """Update Push/Pull button labels with ahead/behind counts."""

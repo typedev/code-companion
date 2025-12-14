@@ -5,7 +5,7 @@ from pathlib import Path
 import pathspec
 from gi.repository import Gtk, Gio, GLib, GObject, Pango, Gdk
 
-from ..services import GitService, FileStatus, IconCache, ToastService, SettingsService
+from ..services import GitService, FileStatus, IconCache, ToastService, SettingsService, FileMonitorService
 
 
 # CSS classes for git status colors
@@ -33,13 +33,11 @@ class FileTree(Gtk.Box):
     # Files that should always be visible (even if in .gitignore)
     ALWAYS_VISIBLE = {".gitignore"}
 
-    # Debounce delay for file system events (ms)
-    FS_DEBOUNCE_DELAY = 300
-
-    def __init__(self, root_path: str):
+    def __init__(self, root_path: str, file_monitor_service: FileMonitorService):
         super().__init__(orientation=Gtk.Orientation.VERTICAL)
 
         self.root_path = Path(root_path)
+        self._file_monitor_service = file_monitor_service
         self._expanded_paths: set[str] = set()
         self._git_status: dict[str, FileStatus] = {}
         self.context_menu = None
@@ -48,12 +46,6 @@ class FileTree(Gtk.Box):
         self._show_ignored = False
         self._ignore_spec: pathspec.PathSpec | None = None
         self._load_ignore_patterns()
-
-        # File monitoring
-        self._file_monitors: dict[str, Gio.FileMonitor] = {}
-        self._git_index_monitor: Gio.FileMonitor | None = None
-        self._refresh_scheduled = False
-        self._refresh_timeout_id: int | None = None
 
         # Initialize icon cache (singleton, loads icons once)
         self._icon_cache = IconCache()
@@ -68,11 +60,11 @@ class FileTree(Gtk.Box):
         self._setup_css()
         self._populate_tree()
 
-        # Start file system monitoring
-        self._setup_file_monitoring()
+        # Connect to monitor service signals
+        self._connect_monitor_signals()
 
-        # Cleanup on destroy
-        self.connect("destroy", self._on_destroy)
+        # Setup initial working tree monitors via service
+        self._setup_initial_monitors()
 
     def _load_ignore_patterns(self):
         """Load ignore patterns from .gitignore only."""
@@ -459,11 +451,11 @@ class FileTree(Gtk.Box):
             if path_str in self._expanded_paths:
                 self._expanded_paths.discard(path_str)
                 # Remove monitor when collapsing
-                self._remove_monitor(path)
+                self._file_monitor_service.remove_working_tree_monitor(path)
             else:
                 self._expanded_paths.add(path_str)
                 # Add monitor when expanding
-                self._add_monitor(path)
+                self._file_monitor_service.add_working_tree_monitor(path)
             self.refresh()
         else:
             # Emit file activated signal
@@ -482,57 +474,21 @@ class FileTree(Gtk.Box):
         except ValueError:
             pass  # Path not under root
 
-    # --- File System Monitoring ---
+    # --- File System Monitoring via FileMonitorService ---
 
-    def _setup_file_monitoring(self):
-        """Set up file system monitoring for the project."""
+    def _connect_monitor_signals(self):
+        """Connect to FileMonitorService signals."""
+        self._file_monitor_service.connect("git-status-changed", self._on_git_status_changed)
+        self._file_monitor_service.connect("working-tree-changed", self._on_working_tree_changed)
+
+    def _setup_initial_monitors(self):
+        """Setup initial working tree monitors via service."""
         # Monitor root directory
-        self._add_monitor(self.root_path)
+        self._file_monitor_service.add_working_tree_monitor(self.root_path)
 
         # Monitor all expanded directories
         for path_str in self._expanded_paths:
-            self._add_monitor(Path(path_str))
-
-        # Monitor .git/index for git status changes (stage/unstage/commit)
-        if self._is_git_repo:
-            git_index = self.root_path / ".git" / "index"
-            if git_index.exists():
-                try:
-                    gfile = Gio.File.new_for_path(str(git_index))
-                    self._git_index_monitor = gfile.monitor_file(
-                        Gio.FileMonitorFlags.NONE, None
-                    )
-                    self._git_index_monitor.connect("changed", self._on_git_index_changed)
-                except GLib.Error:
-                    pass
-
-    def _add_monitor(self, directory: Path):
-        """Add a file monitor for a directory."""
-        path_str = str(directory)
-
-        # Skip if already monitoring or hidden
-        if path_str in self._file_monitors:
-            return
-        if directory.name in self.ALWAYS_HIDDEN:
-            return
-
-        try:
-            gfile = Gio.File.new_for_path(path_str)
-            monitor = gfile.monitor_directory(
-                Gio.FileMonitorFlags.WATCH_MOVES,
-                None
-            )
-            monitor.connect("changed", self._on_file_changed)
-            self._file_monitors[path_str] = monitor
-        except GLib.Error:
-            pass  # Directory may not exist or be accessible
-
-    def _remove_monitor(self, directory: Path):
-        """Remove a file monitor for a directory."""
-        path_str = str(directory)
-        if path_str in self._file_monitors:
-            monitor = self._file_monitors.pop(path_str)
-            monitor.cancel()
+            self._file_monitor_service.add_working_tree_monitor(Path(path_str))
 
     def _update_monitors(self):
         """Update monitors to match currently expanded directories."""
@@ -541,82 +497,30 @@ class FileTree(Gtk.Box):
         for path_str in self._expanded_paths:
             should_monitor.add(path_str)
 
+        # Get currently monitored directories from service
+        currently_monitored = self._file_monitor_service.get_monitored_directories()
+
         # Add new monitors
         for path_str in should_monitor:
-            if path_str not in self._file_monitors:
-                self._add_monitor(Path(path_str))
+            if path_str not in currently_monitored:
+                self._file_monitor_service.add_working_tree_monitor(Path(path_str))
 
         # Remove stale monitors (except root)
-        for path_str in list(self._file_monitors.keys()):
-            if path_str not in should_monitor and path_str != str(self.root_path):
-                self._remove_monitor(Path(path_str))
+        root_str = str(self.root_path)
+        for path_str in currently_monitored:
+            if path_str not in should_monitor and path_str != root_str:
+                self._file_monitor_service.remove_working_tree_monitor(Path(path_str))
 
-    def _on_git_index_changed(self, monitor, file, other_file, event_type):
-        """Handle .git/index changes to update file git status."""
-        if event_type != Gio.FileMonitorEvent.CHANGED:
-            return
-        # Schedule debounced refresh to update git status colors
-        self._schedule_refresh()
+    def _on_git_status_changed(self, service):
+        """Handle git status changes from monitor service."""
+        self.refresh()
 
-    def _on_file_changed(self, monitor, file, other_file, event_type):
-        """Handle file system changes."""
-        # Only react to relevant events
-        if event_type not in (
-            Gio.FileMonitorEvent.CHANGED,
-            Gio.FileMonitorEvent.CREATED,
-            Gio.FileMonitorEvent.DELETED,
-            Gio.FileMonitorEvent.MOVED_IN,
-            Gio.FileMonitorEvent.MOVED_OUT,
-            Gio.FileMonitorEvent.RENAMED,
-        ):
-            return
-
-        filename = file.get_basename()
-
-        # Reload .gitignore patterns when it changes
-        if filename == ".gitignore":
+    def _on_working_tree_changed(self, service, path: str):
+        """Handle working tree changes from monitor service."""
+        # Check if .gitignore was changed
+        if path.endswith(".gitignore"):
             self._load_ignore_patterns()
 
-        # Ignore .git internal changes
-        if file.get_path().startswith(str(self.root_path / ".git")):
-            return
-
-        # Schedule debounced refresh
-        self._schedule_refresh()
-
-    def _schedule_refresh(self):
-        """Schedule a debounced refresh."""
-        # Cancel any pending refresh
-        if self._refresh_timeout_id is not None:
-            GLib.source_remove(self._refresh_timeout_id)
-
-        # Schedule new refresh
-        self._refresh_timeout_id = GLib.timeout_add(
-            self.FS_DEBOUNCE_DELAY,
-            self._do_scheduled_refresh
-        )
-
-    def _do_scheduled_refresh(self) -> bool:
-        """Perform the scheduled refresh."""
-        self._refresh_timeout_id = None
         self.refresh()
         # Update monitors for newly expanded/collapsed directories
         self._update_monitors()
-        return False  # Don't repeat
-
-    def _on_destroy(self, widget):
-        """Clean up monitors on widget destruction."""
-        # Cancel pending refresh
-        if self._refresh_timeout_id is not None:
-            GLib.source_remove(self._refresh_timeout_id)
-            self._refresh_timeout_id = None
-
-        # Cancel git index monitor
-        if self._git_index_monitor is not None:
-            self._git_index_monitor.cancel()
-            self._git_index_monitor = None
-
-        # Cancel all file monitors
-        for monitor in self._file_monitors.values():
-            monitor.cancel()
-        self._file_monitors.clear()

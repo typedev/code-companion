@@ -1,11 +1,10 @@
 """Git history panel widget for viewing and managing commits."""
 
 from datetime import datetime
-from pathlib import Path
 
-from gi.repository import Gtk, Gio, GLib, GObject, Adw
+from gi.repository import Gtk, Gio, GObject, Adw
 
-from ..services import GitService, ToastService
+from ..services import GitService, ToastService, FileMonitorService
 
 
 class GitHistoryPanel(Gtk.Box):
@@ -15,101 +14,27 @@ class GitHistoryPanel(Gtk.Box):
         "commit-view-diff": (GObject.SignalFlags.RUN_FIRST, None, (str,)),  # commit hash
     }
 
-    # Debounce delay for file monitor events (ms)
-    REFRESH_DEBOUNCE = 300
-
-    def __init__(self, git_service: GitService):
+    def __init__(self, git_service: GitService, file_monitor_service: FileMonitorService):
         super().__init__(orientation=Gtk.Orientation.VERTICAL)
 
         self.service = git_service
+        self._file_monitor_service = file_monitor_service
         self._selected_commit = None
-        self._file_monitors: list[Gio.FileMonitor] = []
-        self._refresh_timeout_id: int | None = None
         self._all_commits = []  # Cache all commits for filtering
         self._filter_text = ""
 
         self._build_ui()
         self._setup_css()
-        self._setup_file_monitoring()
+        self._connect_monitor_signals()
         self.refresh()
 
-        self.connect("destroy", self._on_destroy)
+    def _connect_monitor_signals(self):
+        """Connect to FileMonitorService signals."""
+        self._file_monitor_service.connect("git-history-changed", self._on_git_history_changed)
 
-    def _setup_file_monitoring(self):
-        """Set up file monitoring for git refs changes."""
-        if not self.service.repo:
-            return
-
-        git_dir = Path(self.service.repo.path).parent / ".git"
-        if not git_dir.exists():
-            git_dir = Path(self.service.repo.path)
-
-        # Monitor refs/heads for new commits and branch changes
-        refs_heads = git_dir / "refs" / "heads"
-        if refs_heads.exists():
-            self._add_monitor(refs_heads)
-
-        # Monitor HEAD for checkout/branch switch
-        head_file = git_dir / "HEAD"
-        if head_file.exists():
-            self._add_monitor(head_file.parent, watch_file=head_file.name)
-
-        # Monitor logs/HEAD for commit history
-        logs_head = git_dir / "logs" / "HEAD"
-        if logs_head.exists():
-            self._add_monitor(logs_head.parent, watch_file="HEAD")
-
-    def _add_monitor(self, path: Path, watch_file: str | None = None):
-        """Add a file monitor."""
-        try:
-            gfile = Gio.File.new_for_path(str(path))
-            monitor = gfile.monitor_directory(
-                Gio.FileMonitorFlags.NONE,
-                None
-            )
-            monitor.connect("changed", self._on_git_changed, watch_file)
-            self._file_monitors.append(monitor)
-        except GLib.Error:
-            pass
-
-    def _on_git_changed(self, monitor, file, other_file, event_type, watch_file):
-        """Handle git directory changes."""
-        # Filter by specific file if specified
-        if watch_file and file.get_basename() != watch_file:
-            return
-
-        if event_type in (
-            Gio.FileMonitorEvent.CHANGED,
-            Gio.FileMonitorEvent.CREATED,
-            Gio.FileMonitorEvent.DELETED,
-        ):
-            self._schedule_refresh()
-
-    def _schedule_refresh(self):
-        """Schedule a debounced refresh."""
-        if self._refresh_timeout_id is not None:
-            GLib.source_remove(self._refresh_timeout_id)
-
-        self._refresh_timeout_id = GLib.timeout_add(
-            self.REFRESH_DEBOUNCE,
-            self._do_scheduled_refresh
-        )
-
-    def _do_scheduled_refresh(self) -> bool:
-        """Perform scheduled refresh."""
-        self._refresh_timeout_id = None
+    def _on_git_history_changed(self, service):
+        """Handle git history changes from monitor service."""
         self.refresh()
-        return False
-
-    def _on_destroy(self, widget):
-        """Clean up on destroy."""
-        if self._refresh_timeout_id is not None:
-            GLib.source_remove(self._refresh_timeout_id)
-            self._refresh_timeout_id = None
-
-        for monitor in self._file_monitors:
-            monitor.cancel()
-        self._file_monitors.clear()
 
     def _setup_css(self):
         """Set up CSS for history panel."""

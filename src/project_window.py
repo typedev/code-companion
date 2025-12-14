@@ -5,7 +5,7 @@ from pathlib import Path
 from gi.repository import Adw, Gtk, GLib, Gio
 
 from .models import Session
-from .services import HistoryService, ProjectLock, ProjectRegistry, GitService, IconCache, ToastService, SettingsService
+from .services import HistoryService, ProjectLock, ProjectRegistry, GitService, IconCache, ToastService, SettingsService, FileMonitorService
 from .widgets import SessionView, TerminalView, FileTree, FileEditor, TasksPanel, GitChangesPanel, GitHistoryPanel, DiffView, CommitDetailView, ClaudeHistoryPanel, FileSearchDialog, UnifiedSearch, NotesPanel, PreferencesDialog, SnippetsBar
 
 
@@ -26,6 +26,7 @@ class ProjectWindow(Adw.ApplicationWindow):
         self.history_service = HistoryService()
         self.registry = ProjectRegistry()
         self.lock = ProjectLock(str(self.project_path))
+        self.file_monitor_service = FileMonitorService(self.project_path)
 
         self.claude_tab_page: Adw.TabPage | None = None
         self.claude_terminal: TerminalView | None = None
@@ -322,7 +323,7 @@ class ProjectWindow(Adw.ApplicationWindow):
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         box.set_vexpand(True)
 
-        self.notes_panel = NotesPanel(str(self.project_path))
+        self.notes_panel = NotesPanel(str(self.project_path), self.file_monitor_service)
         self.notes_panel.connect("open-file", self._on_notes_open_file)
         self.notes_panel.connect("open-file-at-line", self._on_notes_open_file_at_line)
         box.append(self.notes_panel)
@@ -426,13 +427,13 @@ class ProjectWindow(Adw.ApplicationWindow):
         box.append(self.unified_search)
 
         # File tree
-        self.file_tree = FileTree(str(self.project_path))
+        self.file_tree = FileTree(str(self.project_path), self.file_monitor_service)
         self.file_tree.connect("file-activated", self._on_file_activated)
         self.file_tree.connect("selection-changed", self._on_file_selection_changed)
         box.append(self.file_tree)
 
         # Tasks panel (below file tree)
-        self.tasks_panel = TasksPanel(str(self.project_path))
+        self.tasks_panel = TasksPanel(str(self.project_path), self.file_monitor_service)
         self.tasks_panel.connect("task-run", self._on_task_run)
         box.append(self.tasks_panel)
 
@@ -458,13 +459,13 @@ class ProjectWindow(Adw.ApplicationWindow):
         box.append(git_switcher)
 
         # Changes panel
-        self.git_changes_panel = GitChangesPanel(str(self.project_path))
+        self.git_changes_panel = GitChangesPanel(str(self.project_path), self.file_monitor_service)
         self.git_changes_panel.connect("file-clicked", self._on_git_file_clicked)
         self.git_changes_panel.connect("branch-changed", self._on_branch_changed)
         self.git_stack.add_titled(self.git_changes_panel, "changes", "Changes")
 
         # History panel
-        self.git_history_panel = GitHistoryPanel(self.git_service)
+        self.git_history_panel = GitHistoryPanel(self.git_service, self.file_monitor_service)
         self.git_history_panel.connect("commit-view-diff", self._on_commit_view_diff)
         self.git_stack.add_titled(self.git_history_panel, "history", "History")
 
@@ -962,6 +963,9 @@ class ProjectWindow(Adw.ApplicationWindow):
                 height = self.get_height()
             self.settings.set("window.width", width)
             self.settings.set("window.height", height)
+
+        # Shutdown file monitor service
+        self.file_monitor_service.shutdown()
 
         self.lock.release()
 
