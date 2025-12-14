@@ -15,7 +15,7 @@ class FileStatus(Enum):
     ADDED = "A"
     DELETED = "D"
     RENAMED = "R"
-    UNTRACKED = "?"
+    UNTRACKED = "U"
     TYPECHANGE = "T"
 
 
@@ -171,6 +171,34 @@ class GitService:
             self.repo.reset(self.repo.head.target, pygit2.GIT_RESET_MIXED)
         except pygit2.GitError:
             pass
+
+    def restore_file(self, path: str) -> None:
+        """Restore a file from HEAD (discard working tree changes).
+
+        This is equivalent to 'git restore <path>' or 'git checkout -- <path>'.
+        For deleted files, this recreates them from HEAD.
+        For modified files, this discards local changes.
+        """
+        try:
+            head = self.repo.head.peel(pygit2.Commit)
+            if path in head.tree:
+                # Get blob from HEAD
+                entry = head.tree[path]
+                blob = self.repo.get(entry.id)
+
+                # Write file to working tree
+                full_path = self.repo_path / path
+                full_path.parent.mkdir(parents=True, exist_ok=True)
+                full_path.write_bytes(blob.data)
+
+                # Restore file mode
+                import stat
+                if entry.filemode == pygit2.GIT_FILEMODE_BLOB_EXECUTABLE:
+                    full_path.chmod(full_path.stat().st_mode | stat.S_IXUSR)
+            else:
+                raise pygit2.GitError(f"File '{path}' not found in HEAD")
+        except pygit2.GitError as e:
+            raise RuntimeError(f"Cannot restore '{path}': {e}")
 
     def commit(self, message: str) -> str:
         """Create a commit. Returns commit hash."""

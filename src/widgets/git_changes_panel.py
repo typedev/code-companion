@@ -559,6 +559,16 @@ class GitChangesPanel(Gtk.Box):
         file_btn.connect("clicked", self._on_file_clicked, file_status)
         box.append(file_btn)
 
+        # Restore button (only for deleted/modified unstaged files)
+        if not file_status.staged and file_status.status in (FileStatus.DELETED, FileStatus.MODIFIED):
+            restore_btn = Gtk.Button()
+            restore_btn.set_icon_name("edit-undo-symbolic")
+            restore_btn.add_css_class("flat")
+            restore_btn.add_css_class("circular")
+            restore_btn.set_tooltip_text("Restore from HEAD")
+            restore_btn.connect("clicked", self._on_restore_clicked, file_status)
+            box.append(restore_btn)
+
         # Stage/Unstage button
         action_btn = Gtk.Button()
         action_btn.set_icon_name("list-remove-symbolic" if file_status.staged else "list-add-symbolic")
@@ -584,6 +594,33 @@ class GitChangesPanel(Gtk.Box):
             self.refresh()
         except Exception as e:
             self._show_error(f"Failed to {'unstage' if file_status.staged else 'stage'}: {e}")
+
+    def _on_restore_clicked(self, button, file_status: GitFileStatus):
+        """Handle restore button click - restore file from HEAD."""
+        # Show confirmation dialog for destructive action
+        dialog = Adw.AlertDialog()
+        dialog.set_heading("Restore File?")
+        dialog.set_body(
+            f"This will discard changes to:\n{file_status.path}\n\n"
+            "This action cannot be undone."
+        )
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("restore", "Restore")
+        dialog.set_response_appearance("restore", Adw.ResponseAppearance.DESTRUCTIVE)
+        dialog.set_default_response("cancel")
+        dialog.set_close_response("cancel")
+        dialog.connect("response", self._on_restore_response, file_status)
+        dialog.present(self.get_root())
+
+    def _on_restore_response(self, dialog, response: str, file_status: GitFileStatus):
+        """Handle restore confirmation dialog response."""
+        if response == "restore":
+            try:
+                self.service.restore_file(file_status.path)
+                self._show_toast(f"Restored: {file_status.path}")
+                self.refresh()
+            except Exception as e:
+                self._show_error(f"Failed to restore: {e}")
 
     def _on_stage_all_clicked(self, button, is_staged: bool):
         """Handle stage/unstage all button."""
