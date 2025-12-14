@@ -85,13 +85,24 @@ class TerminalView(Gtk.Box):
         key_controller.connect("key-pressed", self._on_key_pressed)
         self.terminal.add_controller(key_controller)
 
-        # Wrap in scrolled window
+        # Horizontal container for left padding + terminal
+        hbox = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+        hbox.set_vexpand(True)
+
+        # Left padding with terminal background color
+        self._left_padding = Gtk.Box()
+        self._left_padding.set_size_request(24, -1)  # 24px width
+        hbox.append(self._left_padding)
+
+        # Wrap terminal in scrolled window
         scrolled = Gtk.ScrolledWindow()
         scrolled.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
         scrolled.set_child(self.terminal)
+        scrolled.set_hexpand(True)
         scrolled.set_vexpand(True)
+        hbox.append(scrolled)
 
-        self.append(scrolled)
+        self.append(hbox)
 
     def _on_key_pressed(self, controller, keyval, keycode, state):
         """Handle key press events for copy/paste."""
@@ -173,6 +184,23 @@ class TerminalView(Gtk.Box):
             ToastService.show_error(f"Terminal spawn error: {error}")
         else:
             self.child_pid = pid
+            # Auto-activate .venv if exists
+            self._activate_venv_if_exists()
+
+    def _activate_venv_if_exists(self):
+        """Activate .venv if it exists in the working directory."""
+        if not self.current_directory:
+            return
+
+        venv_activate = os.path.join(self.current_directory, ".venv", "bin", "activate")
+        if os.path.isfile(venv_activate):
+            # Small delay to let shell initialize
+            GLib.timeout_add(100, lambda: self._source_venv(venv_activate) or False)
+
+    def _source_venv(self, activate_path: str):
+        """Source the venv activate script."""
+        # Use source command (works in bash, zsh, etc.)
+        self.terminal.feed_child(f"source {GLib.shell_quote(activate_path)}\n".encode())
 
     def _on_child_exited(self, terminal, status):
         """Handle shell exit."""
@@ -249,6 +277,21 @@ class TerminalView(Gtk.Box):
             palette.append(rgba)
 
         self.terminal.set_colors(fg, bg, palette)
+
+        # Apply background color to left padding
+        css = f"""
+        .terminal-padding {{
+            background-color: {DRACULA_PALETTE["background"]};
+        }}
+        """
+        provider = Gtk.CssProvider()
+        provider.load_from_data(css.encode())
+        Gtk.StyleContext.add_provider_for_display(
+            Gdk.Display.get_default(),
+            provider,
+            Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
+        )
+        self._left_padding.add_css_class("terminal-padding")
 
     def open_system_terminal(self):
         """Open system terminal in current directory."""
