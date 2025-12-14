@@ -28,16 +28,23 @@ class GitChangesPanel(Gtk.Box):
         "branch-changed": (GObject.SignalFlags.RUN_FIRST, None, ()),  # emitted when branch switches
     }
 
+    # Polling interval for git status (ms) - fallback for deep directory changes
+    POLL_INTERVAL = 3000  # 3 seconds
+
     def __init__(self, project_path: str):
         super().__init__(orientation=Gtk.Orientation.VERTICAL)
 
         self.project_path = Path(project_path)
         self.service = GitService(self.project_path)
-        self._file_monitor = None
+        self._monitors: list = []
         self._icon_cache = IconCache()
+        self._refresh_pending = False
+        self._poll_timer_id: int | None = None
         # Track expanded directories per section (staged/unstaged)
         self._expanded_staged: set[str] = set()
         self._expanded_unstaged: set[str] = set()
+        # Track last status hash to avoid unnecessary UI rebuilds
+        self._last_status_hash: str | None = None
 
         # Check if git repo
         if not self.service.is_git_repo():
@@ -48,7 +55,51 @@ class GitChangesPanel(Gtk.Box):
         self._build_ui()
         self._setup_css()
         self._setup_file_monitor()
+        self._start_polling()
         self.refresh()
+
+        self.connect("destroy", self._on_destroy)
+
+    def _start_polling(self):
+        """Start periodic git status polling as fallback for file monitoring."""
+        self._poll_timer_id = GLib.timeout_add(self.POLL_INTERVAL, self._on_poll_timer)
+
+    def _on_poll_timer(self) -> bool:
+        """Periodic check for git status changes."""
+        self._check_for_changes()
+        return True  # Continue polling
+
+    def _check_for_changes(self):
+        """Check if git status changed and refresh if needed."""
+        # Get current status and compute simple hash
+        staged = self.service.get_staged_files()
+        unstaged = self.service.get_unstaged_files()
+
+        # Create hash from file paths and statuses
+        status_parts = []
+        for f in staged:
+            status_parts.append(f"S:{f.path}:{f.status.value}")
+        for f in unstaged:
+            status_parts.append(f"U:{f.path}:{f.status.value}")
+        current_hash = "|".join(sorted(status_parts))
+
+        # Only refresh UI if status changed
+        if current_hash != self._last_status_hash:
+            self._last_status_hash = current_hash
+            # Use idle_add to avoid blocking the timer
+            GLib.idle_add(self._refresh_ui_only)
+
+    def _on_destroy(self, widget):
+        """Clean up on widget destruction."""
+        # Cancel polling timer
+        if self._poll_timer_id is not None:
+            GLib.source_remove(self._poll_timer_id)
+            self._poll_timer_id = None
+
+        # Cancel all monitors
+        for monitor in self._monitors:
+            monitor.cancel()
+        self._monitors.clear()
 
     def _build_no_repo_ui(self):
         """Build UI for non-git directories."""
@@ -204,9 +255,21 @@ class GitChangesPanel(Gtk.Box):
             if logs_head.exists():
                 self._add_git_monitor(logs_head, is_file=True)
 
-        # Monitor project root for working tree changes
+        # Monitor project root and first-level subdirectories for working tree changes
+        self._add_working_tree_monitor(self.project_path)
+
+        # Monitor first-level subdirectories (for files like notes/note1.md)
         try:
-            gfile = Gio.File.new_for_path(str(self.project_path))
+            for item in self.project_path.iterdir():
+                if item.is_dir() and not item.name.startswith('.'):
+                    self._add_working_tree_monitor(item)
+        except OSError:
+            pass
+
+    def _add_working_tree_monitor(self, path: Path):
+        """Add a working tree monitor for a directory."""
+        try:
+            gfile = Gio.File.new_for_path(str(path))
             monitor = gfile.monitor_directory(Gio.FileMonitorFlags.WATCH_MOVES, None)
             monitor.connect("changed", self._on_working_tree_changed)
             self._monitors.append(monitor)
@@ -267,6 +330,11 @@ class GitChangesPanel(Gtk.Box):
         self._refresh_pending = False
         self.refresh()
         return False
+
+    def _refresh_ui_only(self):
+        """Refresh UI only (called from polling timer)."""
+        self.refresh()
+        return False  # Don't repeat (for idle_add)
 
     def refresh(self):
         """Refresh the changes list."""

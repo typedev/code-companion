@@ -167,12 +167,21 @@ class CodeView(Gtk.Frame):
 class DiffView(Gtk.Box):
     """A widget for displaying unified diff with +/- and color highlighting."""
 
-    def __init__(self, old_text: str, new_text: str, file_path: str | None = None):
+    def __init__(self, old_text: str, new_text: str, file_path: str | None = None, raw_diff: str | None = None):
+        """Create a diff view.
+
+        Args:
+            old_text: Original text (for generating diff)
+            new_text: New text (for generating diff)
+            file_path: File path for display
+            raw_diff: Pre-generated unified diff text (if provided, old_text/new_text are ignored)
+        """
         super().__init__(orientation=Gtk.Orientation.VERTICAL)
 
         self.old_text = old_text
         self.new_text = new_text
         self.file_path = file_path
+        self.raw_diff = raw_diff
 
         self._setup_css()
         self._build_ui()
@@ -212,17 +221,21 @@ class DiffView(Gtk.Box):
         """Build the diff view UI."""
         import difflib
 
-        # Generate unified diff
-        old_lines = self.old_text.splitlines(keepends=True) if self.old_text else []
-        new_lines = self.new_text.splitlines(keepends=True) if self.new_text else []
+        # Use raw diff if provided, otherwise generate from old/new text
+        if self.raw_diff:
+            diff = self.raw_diff.splitlines()
+        else:
+            # Generate unified diff
+            old_lines = self.old_text.splitlines(keepends=True) if self.old_text else []
+            new_lines = self.new_text.splitlines(keepends=True) if self.new_text else []
 
-        diff = list(difflib.unified_diff(
-            old_lines,
-            new_lines,
-            fromfile=f"a/{self.file_path}" if self.file_path else "a/old",
-            tofile=f"b/{self.file_path}" if self.file_path else "b/new",
-            lineterm=""
-        ))
+            diff = list(difflib.unified_diff(
+                old_lines,
+                new_lines,
+                fromfile=f"a/{self.file_path}" if self.file_path else "a/old",
+                tofile=f"b/{self.file_path}" if self.file_path else "b/new",
+                lineterm=""
+            ))
 
         # Scrolled window
         scrolled = Gtk.ScrolledWindow()

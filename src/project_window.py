@@ -33,6 +33,10 @@ class ProjectWindow(Adw.ApplicationWindow):
         self.commit_detail_view: CommitDetailView | None = None
         self.session_detail_page: Adw.TabPage | None = None
         self.session_detail_view: SessionView | None = None
+        self.git_diff_page: Adw.TabPage | None = None
+        self.git_diff_view: DiffView | None = None
+        self.git_diff_path: str | None = None
+        self.git_diff_staged: bool | None = None
 
         # Acquire lock
         if not self.lock.acquire():
@@ -783,21 +787,34 @@ class ProjectWindow(Adw.ApplicationWindow):
             self.tab_view.close_page(page)
 
     def _on_git_file_clicked(self, git_panel, path: str, staged: bool):
-        """Handle git file click - open diff view."""
+        """Handle git file click - open diff view (reuses tab for same file)."""
+        # If same file already open - just switch to it
+        if (self.git_diff_page is not None and
+            self.git_diff_path == path and
+            self.git_diff_staged == staged):
+            self.tab_view.set_selected_page(self.git_diff_page)
+            return
+
         # Get diff content
         old_content, new_content = self.git_service.get_diff(path, staged)
 
-        # Create diff view
-        diff_view = DiffView(old_content, new_content, file_path=path)
-
-        # Add tab
-        page = self.tab_view.append(diff_view)
         status_prefix = "[staged] " if staged else ""
-        page.set_title(f"{status_prefix}{Path(path).name}")
-        page.set_icon(Gio.ThemedIcon.new("document-edit-symbolic"))
-        page.set_tooltip(f"Diff: {path}")
+        title = f"{status_prefix}{Path(path).name}"
 
-        self.tab_view.set_selected_page(page)
+        # Close existing diff tab if open (different file)
+        if self.git_diff_page is not None:
+            self.tab_view.close_page(self.git_diff_page)
+
+        # Create new diff view and tab
+        self.git_diff_view = DiffView(old_content, new_content, file_path=path)
+        self.git_diff_page = self.tab_view.append(self.git_diff_view)
+        self.git_diff_page.set_title(title)
+        self.git_diff_page.set_icon(Gio.ThemedIcon.new("document-edit-symbolic"))
+        self.git_diff_page.set_tooltip(f"Diff: {path}")
+        self.git_diff_path = path
+        self.git_diff_staged = staged
+
+        self.tab_view.set_selected_page(self.git_diff_page)
 
     def _on_branch_changed(self, git_panel):
         """Handle branch change - update window title."""
@@ -914,6 +931,13 @@ class ProjectWindow(Adw.ApplicationWindow):
             self.session_detail_page = None
             self.session_detail_view = None
 
+        # Git diff tab - clear references when closed
+        if page == self.git_diff_page:
+            self.git_diff_page = None
+            self.git_diff_view = None
+            self.git_diff_path = None
+            self.git_diff_staged = None
+
         return False  # Allow close
 
     def _on_claude_close_response(self, dialog, response, page):
@@ -955,6 +979,12 @@ class ProjectWindow(Adw.ApplicationWindow):
         shortcut_controller.add_shortcut(Gtk.Shortcut(
             trigger=Gtk.ShortcutTrigger.parse_string("<Control><Shift>f"),
             action=Gtk.CallbackAction.new(lambda *args: self._focus_search() or True)
+        ))
+
+        # Ctrl+W - Close current tab (with autosave)
+        shortcut_controller.add_shortcut(Gtk.Shortcut(
+            trigger=Gtk.ShortcutTrigger.parse_string("<Control>w"),
+            action=Gtk.CallbackAction.new(lambda *args: self._close_current_tab() or True)
         ))
 
         self.add_controller(shortcut_controller)
@@ -1002,3 +1032,19 @@ class ProjectWindow(Adw.ApplicationWindow):
         """Switch to Files tab and focus the unified search entry."""
         self._tab_buttons["files"].set_active(True)
         GLib.idle_add(lambda: self.unified_search.grab_focus() or False)
+
+    def _close_current_tab(self):
+        """Close current tab with autosave if it's a modified file."""
+        page = self.tab_view.get_selected_page()
+        if page is None:
+            return
+
+        # Get the child widget
+        child = page.get_child()
+
+        # If it's a FileEditor with unsaved changes, save first
+        if isinstance(child, FileEditor) and child._modified:
+            child.save()
+
+        # Close the page (this will trigger close-page signal for cleanup)
+        self.tab_view.close_page(page)

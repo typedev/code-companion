@@ -347,8 +347,8 @@ class CommitDetailView(Gtk.Box):
             child = next_child
 
         if diff_text:
-            # Create diff view
-            diff_view = DiffView("", diff_text, file_path=file_path)
+            # Create diff view with raw diff from git
+            diff_view = DiffView("", "", file_path=file_path, raw_diff=diff_text)
             self.diff_container.append(diff_view)
         else:
             # No diff available
