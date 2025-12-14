@@ -1,12 +1,22 @@
 """Git service using pygit2 for repository operations."""
 
+import os
 import subprocess
+import urllib.parse
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
 
 import pygit2
+
+
+class AuthenticationRequired(Exception):
+    """Raised when git operation requires authentication."""
+
+    def __init__(self, message: str, remote_url: str):
+        super().__init__(message)
+        self.remote_url = remote_url
 
 
 class FileStatus(Enum):
@@ -325,23 +335,35 @@ class GitService:
         status = self.repo.status()
         return len(status) > 0
 
-    def pull(self) -> str:
-        """Pull from remote using git CLI. Returns status message."""
+    def pull(self, credentials: tuple[str, str] | None = None) -> str:
+        """Pull from remote using git CLI. Returns status message.
+
+        Args:
+            credentials: Optional (username, password) tuple for authentication.
+        """
         remote = self.get_remote()
         if not remote:
             raise RuntimeError("No remote configured")
 
         try:
+            env = self._get_auth_env(remote.url, credentials)
             result = subprocess.run(
                 ["git", "pull"],
                 cwd=str(self.repo_path),
                 capture_output=True,
                 text=True,
                 timeout=60,
+                env=env,
             )
             if result.returncode != 0:
                 error = result.stderr.strip() or result.stdout.strip()
+                if self._is_auth_error(error):
+                    raise AuthenticationRequired(error, remote.url)
                 raise RuntimeError(error or "Pull failed")
+
+            # Store credentials if provided and successful
+            if credentials:
+                self._store_credentials(remote.url, credentials)
 
             output = result.stdout.strip()
             if "Already up to date" in output:
@@ -353,16 +375,20 @@ class GitService:
         except FileNotFoundError:
             raise RuntimeError("git command not found")
 
-    def push(self) -> str:
+    def push(self, credentials: tuple[str, str] | None = None) -> str:
         """Push to remote using git CLI. Returns status message.
 
         Automatically sets upstream for new branches.
+
+        Args:
+            credentials: Optional (username, password) tuple for authentication.
         """
         remote = self.get_remote()
         if not remote:
             raise RuntimeError("No remote configured")
 
         branch_name = self.get_branch_name()
+        env = self._get_auth_env(remote.url, credentials)
 
         try:
             # First try normal push
@@ -372,6 +398,7 @@ class GitService:
                 capture_output=True,
                 text=True,
                 timeout=60,
+                env=env,
             )
 
             if result.returncode != 0:
@@ -386,12 +413,21 @@ class GitService:
                         capture_output=True,
                         text=True,
                         timeout=60,
+                        env=env,
                     )
                     if result.returncode == 0:
+                        if credentials:
+                            self._store_credentials(remote.url, credentials)
                         return f"Push successful (upstream set to {remote.name}/{branch_name})"
                     error = result.stderr.strip() or result.stdout.strip()
 
+                if self._is_auth_error(error):
+                    raise AuthenticationRequired(error, remote.url)
                 raise RuntimeError(error or "Push failed")
+
+            # Store credentials if provided and successful
+            if credentials:
+                self._store_credentials(remote.url, credentials)
 
             return "Push successful"
 
@@ -833,3 +869,78 @@ class GitService:
 
         except pygit2.GitError:
             return ""
+
+    # --- Authentication helpers ---
+
+    def _is_auth_error(self, error: str) -> bool:
+        """Check if error message indicates authentication failure."""
+        auth_indicators = [
+            "could not read Username",
+            "could not read Password",
+            "Authentication failed",
+            "Invalid username or password",
+            "fatal: Authentication failed",
+            "Permission denied",
+            "remote: Invalid username or password",
+        ]
+        return any(indicator in error for indicator in auth_indicators)
+
+    def _get_auth_env(self, remote_url: str, credentials: tuple[str, str] | None) -> dict:
+        """Get environment dict with GIT_ASKPASS for credentials."""
+        env = os.environ.copy()
+
+        if credentials:
+            username, password = credentials
+            # Create a simple askpass script that returns credentials
+            # GIT_ASKPASS is called with a prompt, we return username for "Username" and password for "Password"
+            askpass_script = f'''#!/bin/bash
+if [[ "$1" == *"Username"* ]]; then
+    echo "{username}"
+elif [[ "$1" == *"Password"* ]]; then
+    echo "{password}"
+fi
+'''
+            # Write temporary script
+            import tempfile
+            fd, path = tempfile.mkstemp(prefix="git_askpass_", suffix=".sh")
+            try:
+                os.write(fd, askpass_script.encode())
+                os.close(fd)
+                os.chmod(path, 0o700)
+                env["GIT_ASKPASS"] = path
+                env["GIT_TERMINAL_PROMPT"] = "0"
+                # Store path for cleanup (we'll let OS clean it up on next boot if needed)
+                self._askpass_script = path
+            except Exception:
+                pass
+        else:
+            # Disable terminal prompts to trigger auth error
+            env["GIT_TERMINAL_PROMPT"] = "0"
+
+        return env
+
+    def _store_credentials(self, remote_url: str, credentials: tuple[str, str]):
+        """Store credentials using git credential helper."""
+        username, password = credentials
+
+        # Parse the URL to get protocol and host
+        try:
+            from urllib.parse import urlparse
+            parsed = urlparse(remote_url)
+            protocol = parsed.scheme or "https"
+            host = parsed.hostname or ""
+
+            # Format for git credential
+            credential_input = f"protocol={protocol}\nhost={host}\nusername={username}\npassword={password}\n\n"
+
+            # Store using git credential approve
+            subprocess.run(
+                ["git", "credential", "approve"],
+                input=credential_input,
+                cwd=str(self.repo_path),
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+        except Exception:
+            pass  # Silently fail - credentials will just not be stored

@@ -4,7 +4,7 @@ from pathlib import Path
 
 from gi.repository import Gtk, GLib, GObject, Adw
 
-from ..services import GitService, GitFileStatus, FileStatus, ToastService, FileMonitorService
+from ..services import GitService, GitFileStatus, FileStatus, ToastService, FileMonitorService, AuthenticationRequired
 from ..services.icon_cache import IconCache
 from .branch_popover import BranchPopover
 
@@ -596,23 +596,95 @@ class GitChangesPanel(Gtk.Box):
         if response == "pull":
             self._do_pull()
 
-    def _do_pull(self):
+    def _do_pull(self, credentials: tuple[str, str] | None = None):
         """Execute pull operation."""
         try:
-            result = self.service.pull()
+            result = self.service.pull(credentials)
             self._show_toast(result)
             self.refresh()
+        except AuthenticationRequired as e:
+            self._show_credentials_dialog("Pull", e.remote_url, self._do_pull)
         except Exception as e:
             self._show_error_dialog("Pull Failed", str(e))
 
     def _on_push_clicked(self, button):
         """Handle push button click."""
+        self._do_push()
+
+    def _do_push(self, credentials: tuple[str, str] | None = None):
+        """Execute push operation."""
         try:
-            result = self.service.push()
+            result = self.service.push(credentials)
             self._show_toast(result)
             self.refresh()  # Update counts
+        except AuthenticationRequired as e:
+            self._show_credentials_dialog("Push", e.remote_url, self._do_push)
         except Exception as e:
             self._show_error_dialog("Push Failed", str(e))
+
+    def _show_credentials_dialog(self, operation: str, remote_url: str, retry_callback):
+        """Show dialog to get git credentials."""
+        dialog = Adw.AlertDialog()
+        dialog.set_heading(f"Authentication Required")
+        dialog.set_body(f"Enter credentials for {remote_url}")
+
+        # Create form
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        box.set_margin_start(12)
+        box.set_margin_end(12)
+
+        # Username entry
+        username_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        username_label = Gtk.Label(label="Username:")
+        username_label.set_xalign(0)
+        username_label.set_size_request(80, -1)
+        username_box.append(username_label)
+
+        username_entry = Gtk.Entry()
+        username_entry.set_hexpand(True)
+        username_box.append(username_entry)
+        box.append(username_box)
+
+        # Password entry
+        password_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        password_label = Gtk.Label(label="Password:")
+        password_label.set_xalign(0)
+        password_label.set_size_request(80, -1)
+        password_box.append(password_label)
+
+        password_entry = Gtk.PasswordEntry()
+        password_entry.set_hexpand(True)
+        password_entry.set_show_peek_icon(True)
+        password_box.append(password_entry)
+        box.append(password_box)
+
+        # Hint about tokens
+        hint = Gtk.Label(label="Tip: For GitHub, use a Personal Access Token as password")
+        hint.add_css_class("dim-label")
+        hint.add_css_class("caption")
+        hint.set_wrap(True)
+        hint.set_xalign(0)
+        box.append(hint)
+
+        dialog.set_extra_child(box)
+
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("authenticate", operation)
+        dialog.set_response_appearance("authenticate", Adw.ResponseAppearance.SUGGESTED)
+        dialog.set_default_response("authenticate")
+        dialog.set_close_response("cancel")
+
+        def on_response(d, response):
+            if response == "authenticate":
+                username = username_entry.get_text().strip()
+                password = password_entry.get_text()
+                if username and password:
+                    retry_callback((username, password))
+                else:
+                    self._show_error("Username and password are required")
+
+        dialog.connect("response", on_response)
+        dialog.present(self.get_root())
 
     def _on_branch_switched(self, popover):
         """Handle branch switch - refresh and notify."""
