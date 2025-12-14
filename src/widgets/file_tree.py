@@ -30,32 +30,8 @@ class FileTree(Gtk.Box):
     # Folders to always hide (not toggleable)
     ALWAYS_HIDDEN = {".git"}
 
-    # Default ignore patterns (common build/dependency folders)
-    DEFAULT_IGNORE_PATTERNS = [
-        "node_modules/",
-        "__pycache__/",
-        "*.pyc",
-        ".venv/",
-        "venv/",
-        ".env/",
-        "env/",
-        ".mypy_cache/",
-        ".pytest_cache/",
-        ".ruff_cache/",
-        "dist/",
-        "build/",
-        "*.egg-info/",
-        ".tox/",
-        ".nox/",
-        "coverage/",
-        ".coverage",
-        "htmlcov/",
-        ".DS_Store",
-        "Thumbs.db",
-        "*.swp",
-        "*.swo",
-        "*~",
-    ]
+    # Files that should always be visible (even if in .gitignore)
+    ALWAYS_VISIBLE = {".gitignore"}
 
     # Debounce delay for file system events (ms)
     FS_DEBOUNCE_DELAY = 300
@@ -68,15 +44,10 @@ class FileTree(Gtk.Box):
         self._git_status: dict[str, FileStatus] = {}
         self.context_menu = None
 
-        # File filtering
+        # File filtering (only .gitignore patterns)
         self._show_ignored = False
         self._ignore_spec: pathspec.PathSpec | None = None
         self._load_ignore_patterns()
-
-        # Settings
-        self._settings = SettingsService.get_instance()
-        self._show_hidden = self._settings.get("file_tree.show_hidden", False)
-        self._settings.connect("changed", self._on_setting_changed)
 
         # File monitoring
         self._file_monitors: dict[str, Gio.FileMonitor] = {}
@@ -104,8 +75,8 @@ class FileTree(Gtk.Box):
         self.connect("destroy", self._on_destroy)
 
     def _load_ignore_patterns(self):
-        """Load ignore patterns from .gitignore and defaults."""
-        patterns = list(self.DEFAULT_IGNORE_PATTERNS)
+        """Load ignore patterns from .gitignore only."""
+        patterns = []
 
         # Load .gitignore if exists
         gitignore_path = self.root_path / ".gitignore"
@@ -120,11 +91,14 @@ class FileTree(Gtk.Box):
             except OSError:
                 pass
 
-        # Create pathspec matcher
-        self._ignore_spec = pathspec.PathSpec.from_lines(
-            pathspec.patterns.GitWildMatchPattern,
-            patterns
-        )
+        # Create pathspec matcher (None if no patterns)
+        if patterns:
+            self._ignore_spec = pathspec.PathSpec.from_lines(
+                pathspec.patterns.GitWildMatchPattern,
+                patterns
+            )
+        else:
+            self._ignore_spec = None
 
     def _is_ignored(self, path: Path) -> bool:
         """Check if a path should be ignored."""
@@ -141,7 +115,7 @@ class FileTree(Gtk.Box):
 
     @property
     def show_ignored(self) -> bool:
-        """Get whether ignored files are shown."""
+        """Get whether ignored files (from .gitignore) are shown."""
         return self._show_ignored
 
     @show_ignored.setter
@@ -150,26 +124,6 @@ class FileTree(Gtk.Box):
         if self._show_ignored != value:
             self._show_ignored = value
             self.refresh()
-
-    @property
-    def show_hidden(self) -> bool:
-        """Get whether hidden (dotfiles) are shown."""
-        return self._show_hidden
-
-    @show_hidden.setter
-    def show_hidden(self, value: bool):
-        """Set whether hidden files are shown."""
-        if self._show_hidden != value:
-            self._show_hidden = value
-            self._settings.set("file_tree.show_hidden", value)
-            self.refresh()
-
-    def _on_setting_changed(self, settings, key, value):
-        """Handle settings changes."""
-        if key == "file_tree.show_hidden":
-            if self._show_hidden != value:
-                self._show_hidden = value
-                self.refresh()
 
     def _build_ui(self):
         """Build the file tree UI."""
@@ -399,12 +353,11 @@ class FileTree(Gtk.Box):
             if entry.name in self.ALWAYS_HIDDEN:
                 continue
 
-            # Skip hidden files (dotfiles) unless show_hidden is True
-            if not self._show_hidden and entry.name.startswith("."):
-                continue
-
-            # Skip ignored files unless show_ignored is True
-            if not self._show_ignored and self._is_ignored(entry):
+            # Always show certain files (like .gitignore)
+            if entry.name in self.ALWAYS_VISIBLE:
+                pass  # Don't skip
+            # Skip ignored files (from .gitignore) unless show_ignored is True
+            elif not self._show_ignored and self._is_ignored(entry):
                 continue
 
             row = self._create_row(entry, depth)
@@ -618,12 +571,15 @@ class FileTree(Gtk.Box):
         ):
             return
 
-        # Ignore hidden files and .git changes
         filename = file.get_basename()
-        if filename.startswith("."):
-            # Still allow refresh for non-.git hidden files if they affect tree
-            if filename == ".git" or file.get_path().startswith(str(self.root_path / ".git")):
-                return
+
+        # Reload .gitignore patterns when it changes
+        if filename == ".gitignore":
+            self._load_ignore_patterns()
+
+        # Ignore .git internal changes
+        if file.get_path().startswith(str(self.root_path / ".git")):
+            return
 
         # Schedule debounced refresh
         self._schedule_refresh()

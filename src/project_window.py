@@ -398,11 +398,11 @@ class ProjectWindow(Adw.ApplicationWindow):
         spacer.set_hexpand(True)
         header_box.append(spacer)
 
-        # Show ignored files toggle
+        # Show ignored files toggle (files from .gitignore)
         self.show_ignored_btn = Gtk.ToggleButton()
         self.show_ignored_btn.set_icon_name("view-reveal-symbolic")
         self.show_ignored_btn.add_css_class("flat")
-        self.show_ignored_btn.set_tooltip_text("Show ignored files")
+        self.show_ignored_btn.set_tooltip_text("Show files ignored by .gitignore")
         self.show_ignored_btn.connect("toggled", self._on_show_ignored_toggled)
         header_box.append(self.show_ignored_btn)
 

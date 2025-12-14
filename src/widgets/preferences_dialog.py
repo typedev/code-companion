@@ -23,7 +23,6 @@ class PreferencesDialog(Adw.PreferencesDialog):
         # Build pages
         self._build_appearance_page()
         self._build_editor_page()
-        self._build_files_page()
 
     def _build_appearance_page(self):
         """Build the Appearance preferences page."""
@@ -157,26 +156,6 @@ class PreferencesDialog(Adw.PreferencesDialog):
         page.add(display_group)
         self.add(page)
 
-    def _build_files_page(self):
-        """Build the Files preferences page."""
-        page = Adw.PreferencesPage()
-        page.set_title("Files")
-        page.set_icon_name("folder-symbolic")
-
-        # File tree group
-        tree_group = Adw.PreferencesGroup()
-        tree_group.set_title("File Tree")
-
-        # Show hidden files
-        hidden_row = Adw.SwitchRow()
-        hidden_row.set_title("Show Hidden Files")
-        hidden_row.set_subtitle("Show files and folders starting with a dot")
-        hidden_row.set_active(self.settings.get("file_tree.show_hidden", False))
-        hidden_row.connect("notify::active", self._on_show_hidden_changed)
-        tree_group.add(hidden_row)
-
-        page.add(tree_group)
-        self.add(page)
 
     # Signal handlers
 
@@ -211,10 +190,6 @@ class PreferencesDialog(Adw.PreferencesDialog):
     def _on_insert_spaces_changed(self, row, pspec):
         """Handle insert spaces toggle."""
         self.settings.set("editor.insert_spaces", row.get_active())
-
-    def _on_show_hidden_changed(self, row, pspec):
-        """Handle show hidden files toggle."""
-        self.settings.set("file_tree.show_hidden", row.get_active())
 
     def _on_word_wrap_changed(self, row, pspec):
         """Handle word wrap toggle."""

@@ -24,9 +24,6 @@ DEFAULT_SETTINGS = {
         "tab_size": 4,
         "insert_spaces": True,
     },
-    "file_tree": {
-        "show_hidden": False,
-    },
     "window": {
         "width": 1200,
         "height": 800,

@@ -269,7 +269,6 @@ def on_setting_changed(settings, key, value):
 | `editor.tab_size` | `4` | Tab width |
 | `editor.insert_spaces` | `true` | Use spaces for indentation |
 | `editor.word_wrap` | `true` | Wrap long lines at word boundaries |
-| `file_tree.show_hidden` | `false` | Show dotfiles |
 | `window.width/height` | `1200/800` | Window size |
 | `window.maximized` | `false` | Maximized state |
 
