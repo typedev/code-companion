@@ -1,3 +1,0 @@
-# notes3
-
-dvsdvzsvasdvasdv
