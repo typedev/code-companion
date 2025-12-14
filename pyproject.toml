@@ -11,7 +11,7 @@ dependencies = [
 ]
 license = "Apache-2.0"
 authors = [
-    { name = "Alexander Lubovenko", email = "typedev@github.com" }
+    { name = "Alexander Lubovenko", email = "lubovenko@gmail.com" }
 ]
 
 [project.scripts]

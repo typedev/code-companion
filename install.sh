@@ -23,6 +23,16 @@ error() { echo -e "${RED}[ERROR]${NC} $1"; exit 1; }
 install() {
     info "Installing Claude Companion..."
 
+    # Clean up old installation (before rename to dev.typedev.ClaudeCompanion)
+    if [ -f "$DESKTOP_DIR/$APP_NAME.desktop" ]; then
+        info "Removing old .desktop file..."
+        rm "$DESKTOP_DIR/$APP_NAME.desktop"
+    fi
+    if [ -f "$ICON_DIR/$APP_NAME.svg" ]; then
+        info "Removing old icon..."
+        rm "$ICON_DIR/$APP_NAME.svg"
+    fi
+
     # Check dependencies
     if ! command -v uv &> /dev/null; then
         error "uv is not installed. Install it first: curl -LsSf https://astral.sh/uv/install.sh | sh"
@@ -40,15 +50,15 @@ install() {
     info "Creating symlink in $BIN_DIR..."
     sudo ln -sf "$APP_DIR/bin/$APP_NAME" "$BIN_DIR/$APP_NAME"
 
-    # Install icon
+    # Install icon (name must match app ID for GNOME Shell)
     info "Installing icon..."
     mkdir -p "$ICON_DIR"
-    cp "$APP_DIR/src/resources/icons/claude.svg" "$ICON_DIR/$APP_NAME.svg"
+    cp "$APP_DIR/src/resources/icons/claude.svg" "$ICON_DIR/dev.typedev.ClaudeCompanion.svg"
 
-    # Install .desktop file
+    # Install .desktop file (name must match app ID)
     info "Installing .desktop file..."
     mkdir -p "$DESKTOP_DIR"
-    cp "$APP_DIR/data/$APP_NAME.desktop" "$DESKTOP_DIR/"
+    cp "$APP_DIR/data/dev.typedev.ClaudeCompanion.desktop" "$DESKTOP_DIR/"
 
     # Update desktop database
     if command -v update-desktop-database &> /dev/null; then
@@ -67,6 +77,10 @@ install() {
 update() {
     info "Updating Claude Companion..."
 
+    # Clean up old installation (before rename to dev.typedev.ClaudeCompanion)
+    [ -f "$DESKTOP_DIR/$APP_NAME.desktop" ] && rm "$DESKTOP_DIR/$APP_NAME.desktop"
+    [ -f "$ICON_DIR/$APP_NAME.svg" ] && rm "$ICON_DIR/$APP_NAME.svg"
+
     cd "$APP_DIR"
 
     # Pull latest changes
@@ -83,7 +97,11 @@ update() {
 
     # Update icon (in case it changed)
     mkdir -p "$ICON_DIR"
-    cp "$APP_DIR/src/resources/icons/claude.svg" "$ICON_DIR/$APP_NAME.svg"
+    cp "$APP_DIR/src/resources/icons/claude.svg" "$ICON_DIR/dev.typedev.ClaudeCompanion.svg"
+
+    # Update .desktop file
+    mkdir -p "$DESKTOP_DIR"
+    cp "$APP_DIR/data/dev.typedev.ClaudeCompanion.desktop" "$DESKTOP_DIR/"
 
     info "Update complete!"
 }
@@ -98,16 +116,20 @@ uninstall() {
     fi
 
     # Remove icon
-    if [ -f "$ICON_DIR/$APP_NAME.svg" ]; then
+    if [ -f "$ICON_DIR/dev.typedev.ClaudeCompanion.svg" ]; then
         info "Removing icon..."
-        rm "$ICON_DIR/$APP_NAME.svg"
+        rm "$ICON_DIR/dev.typedev.ClaudeCompanion.svg"
     fi
+    # Also remove old icon name if exists
+    [ -f "$ICON_DIR/$APP_NAME.svg" ] && rm "$ICON_DIR/$APP_NAME.svg"
 
     # Remove .desktop file
-    if [ -f "$DESKTOP_DIR/$APP_NAME.desktop" ]; then
+    if [ -f "$DESKTOP_DIR/dev.typedev.ClaudeCompanion.desktop" ]; then
         info "Removing .desktop file..."
-        rm "$DESKTOP_DIR/$APP_NAME.desktop"
+        rm "$DESKTOP_DIR/dev.typedev.ClaudeCompanion.desktop"
     fi
+    # Also remove old .desktop name if exists
+    [ -f "$DESKTOP_DIR/$APP_NAME.desktop" ] && rm "$DESKTOP_DIR/$APP_NAME.desktop"
 
     # Update desktop database
     if command -v update-desktop-database &> /dev/null; then
