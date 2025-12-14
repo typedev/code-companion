@@ -211,13 +211,13 @@ class GitChangesPanel(Gtk.Box):
         self.commit_btn.connect("clicked", self._on_commit_clicked)
         buttons_box.append(self.commit_btn)
 
-        self.pull_btn = Gtk.Button(label="Pull")
-        self.pull_btn.connect("clicked", self._on_pull_clicked)
-        buttons_box.append(self.pull_btn)
-
         self.push_btn = Gtk.Button(label="Push")
         self.push_btn.connect("clicked", self._on_push_clicked)
         buttons_box.append(self.push_btn)
+
+        self.pull_btn = Gtk.Button(label="Pull")
+        self.pull_btn.connect("clicked", self._on_pull_clicked)
+        buttons_box.append(self.pull_btn)
 
         actions_box.append(buttons_box)
         self.append(actions_box)

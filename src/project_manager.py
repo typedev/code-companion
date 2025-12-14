@@ -84,19 +84,19 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
         # Buttons row
         buttons_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
 
-        # Add project button
-        add_button = Gtk.Button(label="Add Project...")
-        add_button.add_css_class("suggested-action")
-        add_button.set_hexpand(True)
-        add_button.connect("clicked", self._on_add_project_clicked)
-        buttons_box.append(add_button)
-
         # Remove project button
         self.remove_button = Gtk.Button(label="Remove")
         self.remove_button.add_css_class("destructive-action")
         self.remove_button.set_sensitive(False)
         self.remove_button.connect("clicked", self._on_remove_project_clicked)
         buttons_box.append(self.remove_button)
+
+        # Add project button
+        add_button = Gtk.Button(label="Add Project...")
+        add_button.add_css_class("suggested-action")
+        add_button.set_hexpand(True)
+        add_button.connect("clicked", self._on_add_project_clicked)
+        buttons_box.append(add_button)
 
         content_box.append(buttons_box)
 
