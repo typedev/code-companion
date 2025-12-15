@@ -238,6 +238,24 @@ class ProjectWindow(Adw.ApplicationWindow):
 
         return header
 
+    def _create_toolbar_button(self, icon_name: str, tooltip: str, tab_name: str) -> Gtk.ToggleButton:
+        """Create a toolbar toggle button with an icon."""
+        btn = Gtk.ToggleButton()
+        btn.set_tooltip_text(tooltip)
+        btn.add_css_class("flat")
+        btn.set_size_request(36, 36)
+
+        # Load icon from resources
+        icon_path = Path(__file__).parent / "resources" / "icons" / f"{icon_name}.svg"
+        if icon_path.exists():
+            gicon = Gio.FileIcon.new(Gio.File.new_for_path(str(icon_path)))
+            image = Gtk.Image.new_from_gicon(gicon)
+            image.set_pixel_size(20)
+            btn.set_child(image)
+
+        btn.connect("toggled", self._on_tab_toggled, tab_name)
+        return btn
+
     def _build_vertical_toolbar(self) -> Gtk.Box:
         """Build vertical toolbar with tab buttons on the left."""
         toolbar = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
@@ -250,48 +268,28 @@ class ProjectWindow(Adw.ApplicationWindow):
         self._tab_buttons = {}
 
         # Files button
-        files_btn = Gtk.ToggleButton(label="F")
-        files_btn.set_tooltip_text("Files")
+        files_btn = self._create_toolbar_button("folder-open", "Files", "files")
         files_btn.set_active(True)
-        files_btn.add_css_class("flat")
-        files_btn.set_size_request(36, 36)
-        files_btn.connect("toggled", self._on_tab_toggled, "files")
         toolbar.append(files_btn)
         self._tab_buttons["files"] = files_btn
 
         # Git button (will be shown/hidden based on git repo status)
-        self._git_toolbar_btn = Gtk.ToggleButton(label="G")
-        self._git_toolbar_btn.set_tooltip_text("Git")
-        self._git_toolbar_btn.add_css_class("flat")
-        self._git_toolbar_btn.set_size_request(36, 36)
-        self._git_toolbar_btn.connect("toggled", self._on_tab_toggled, "git")
+        self._git_toolbar_btn = self._create_toolbar_button("git", "Git", "git")
         toolbar.append(self._git_toolbar_btn)
         self._tab_buttons["git"] = self._git_toolbar_btn
 
         # Claude button
-        claude_btn = Gtk.ToggleButton(label="C")
-        claude_btn.set_tooltip_text("Claude")
-        claude_btn.add_css_class("flat")
-        claude_btn.set_size_request(36, 36)
-        claude_btn.connect("toggled", self._on_tab_toggled, "claude")
+        claude_btn = self._create_toolbar_button("claude", "Claude", "claude")
         toolbar.append(claude_btn)
         self._tab_buttons["claude"] = claude_btn
 
         # Notes button
-        notes_btn = Gtk.ToggleButton(label="N")
-        notes_btn.set_tooltip_text("Notes")
-        notes_btn.add_css_class("flat")
-        notes_btn.set_size_request(36, 36)
-        notes_btn.connect("toggled", self._on_tab_toggled, "notes")
+        notes_btn = self._create_toolbar_button("file", "Notes", "notes")
         toolbar.append(notes_btn)
         self._tab_buttons["notes"] = notes_btn
 
         # Problems button
-        problems_btn = Gtk.ToggleButton(label="P")
-        problems_btn.set_tooltip_text("Problems (ruff/mypy)")
-        problems_btn.add_css_class("flat")
-        problems_btn.set_size_request(36, 36)
-        problems_btn.connect("toggled", self._on_tab_toggled, "problems")
+        problems_btn = self._create_toolbar_button("problems", "Problems (ruff/mypy)", "problems")
         toolbar.append(problems_btn)
         self._tab_buttons["problems"] = problems_btn
 
@@ -365,6 +363,9 @@ class ProjectWindow(Adw.ApplicationWindow):
     def _on_tab_toggled(self, button, tab_name):
         """Handle tab button toggle."""
         if button.get_active():
+            # Skip if sidebar_stack not yet created (during init)
+            if not hasattr(self, "sidebar_stack"):
+                return
             # Switch to this tab (only if page exists in stack)
             if self.sidebar_stack.get_child_by_name(tab_name):
                 self.sidebar_stack.set_visible_child_name(tab_name)
