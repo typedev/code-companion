@@ -229,6 +229,13 @@ class ProjectWindow(Adw.ApplicationWindow):
         ext_terminal_btn.connect("clicked", self._on_external_terminal_clicked)
         header.pack_end(ext_terminal_btn)
 
+        # Projects button (open Project Manager)
+        projects_btn = Gtk.Button()
+        projects_btn.set_icon_name("view-app-grid-symbolic")
+        projects_btn.set_tooltip_text("Projects")
+        projects_btn.connect("clicked", self._on_projects_clicked)
+        header.pack_end(projects_btn)
+
         # Preferences button
         prefs_btn = Gtk.Button()
         prefs_btn.set_icon_name("emblem-system-symbolic")
@@ -733,6 +740,23 @@ class ProjectWindow(Adw.ApplicationWindow):
         """Show preferences dialog."""
         dialog = PreferencesDialog()
         dialog.present(self)
+
+    def _on_projects_clicked(self, button):
+        """Open or activate Project Manager window."""
+        from .services.project_lock import ManagerLock
+
+        # Try to activate existing Project Manager
+        if ManagerLock.activate_existing():
+            return
+
+        # No existing Project Manager, start a new one
+        import subprocess
+        import sys
+
+        subprocess.Popen(
+            [sys.executable, "-m", "src.main"],
+            start_new_session=True,
+        )
 
     def _on_refresh_files_clicked(self, button):
         """Refresh file tree."""

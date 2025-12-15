@@ -1,12 +1,14 @@
 """Project Manager window for selecting and opening projects."""
 
+import signal
 import subprocess
 import sys
 from pathlib import Path
 
-from gi.repository import Adw, Gtk, GLib, Gio
+from gi.repository import Adw, Gtk, GLib, Gio, GObject
 
 from .services.project_registry import ProjectRegistry
+from .services.project_lock import ManagerLock
 from .version import __version__, get_version_info
 
 
@@ -22,10 +24,27 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
         super().__init__(**kwargs)
 
         self.registry = ProjectRegistry()
+        self._manager_lock = ManagerLock()
+        self._manager_lock.acquire()
 
+        self._setup_signal_handler()
         self._setup_window()
         self._build_ui()
         self._load_projects()
+
+        self.connect("destroy", self._on_destroy)
+
+    def _setup_signal_handler(self):
+        """Setup SIGUSR1 handler to bring window to front."""
+        def on_sigusr1(signum, frame):
+            # Use GLib.idle_add to safely call GTK from signal handler
+            GLib.idle_add(self.present)
+
+        signal.signal(signal.SIGUSR1, on_sigusr1)
+
+    def _on_destroy(self, _widget):
+        """Release lock when window is destroyed."""
+        self._manager_lock.release()
 
     def _setup_window(self):
         """Configure window properties."""

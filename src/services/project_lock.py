@@ -2,7 +2,109 @@
 
 import hashlib
 import os
+import signal
 from pathlib import Path
+
+LOCK_DIR = Path("/tmp/claude-companion-locks")
+
+
+class ManagerLock:
+    """Manages lock file for Project Manager to enable single-instance activation."""
+
+    LOCK_FILE = LOCK_DIR / "manager.lock"
+
+    def __init__(self):
+        self._pid = os.getpid()
+
+    def acquire(self) -> bool:
+        """Acquire lock for Project Manager. Returns True if successful."""
+        if self.is_locked():
+            return False
+
+        LOCK_DIR.mkdir(parents=True, exist_ok=True)
+
+        try:
+            with open(self.LOCK_FILE, "w") as f:
+                f.write(str(self._pid))
+            return True
+        except OSError:
+            return False
+
+    def release(self):
+        """Release the lock."""
+        try:
+            if self.LOCK_FILE.exists():
+                with open(self.LOCK_FILE, "r") as f:
+                    pid = int(f.read().strip())
+                if pid == self._pid:
+                    self.LOCK_FILE.unlink()
+        except (OSError, ValueError):
+            pass
+
+    def is_locked(self) -> bool:
+        """Check if Project Manager is locked by another process."""
+        if not self.LOCK_FILE.exists():
+            return False
+
+        try:
+            with open(self.LOCK_FILE, "r") as f:
+                pid = int(f.read().strip())
+
+            if pid == self._pid:
+                return False
+
+            if self._is_process_alive(pid):
+                return True
+            else:
+                self.LOCK_FILE.unlink()
+                return False
+
+        except (OSError, ValueError):
+            try:
+                self.LOCK_FILE.unlink()
+            except OSError:
+                pass
+            return False
+
+    def get_lock_pid(self) -> int | None:
+        """Get the PID holding the lock, or None if not locked."""
+        if not self.LOCK_FILE.exists():
+            return None
+        try:
+            with open(self.LOCK_FILE, "r") as f:
+                return int(f.read().strip())
+        except (OSError, ValueError):
+            return None
+
+    @staticmethod
+    def activate_existing() -> bool:
+        """Send SIGUSR1 to existing Project Manager to activate its window.
+
+        Returns True if signal was sent successfully.
+        """
+        lock = ManagerLock()
+        pid = lock.get_lock_pid()
+        if pid and lock._is_process_alive(pid):
+            try:
+                os.kill(pid, signal.SIGUSR1)
+                return True
+            except OSError:
+                return False
+        return False
+
+    def _is_process_alive(self, pid: int) -> bool:
+        """Check if process with given PID is alive and is our app."""
+        try:
+            os.kill(pid, 0)
+            cmdline_path = Path(f"/proc/{pid}/cmdline")
+            if cmdline_path.exists():
+                cmdline = cmdline_path.read_text()
+                if "python" in cmdline and ("claude-companion" in cmdline or "src.main" in cmdline):
+                    return True
+                return False
+            return True
+        except (OSError, PermissionError):
+            return False
 
 
 class ProjectLock:
