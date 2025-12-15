@@ -18,6 +18,8 @@ from .unified_search import UnifiedSearch
 from .notes_panel import NotesPanel
 from .preferences_dialog import PreferencesDialog
 from .snippets_bar import SnippetsBar
+from .problems_panel import ProblemsPanel
+from .problems_detail_view import ProblemsDetailView
 
 __all__ = [
     "MessageRow",
@@ -41,4 +43,6 @@ __all__ = [
     "NotesPanel",
     "PreferencesDialog",
     "SnippetsBar",
+    "ProblemsPanel",
+    "ProblemsDetailView",
 ]

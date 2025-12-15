@@ -67,6 +67,8 @@ src/
 │   ├── notes_panel.py   # Notes panel (My Notes + Docs + TODOs)
 │   ├── preferences_dialog.py  # Settings dialog (Adw.PreferencesDialog)
 │   ├── snippets_bar.py  # Snippets buttons bar (right-click to delete)
+│   ├── problems_panel.py  # Problems sidebar (ruff/mypy file list)
+│   ├── problems_detail_view.py  # Problems detail (list + code preview)
 │   └── ...
 ├── services/            # Business logic
 │   ├── history.py       # Claude session history reader
@@ -78,6 +80,7 @@ src/
 │   ├── settings_service.py  # App settings singleton (JSON storage)
 │   ├── snippets_service.py  # Text snippets management (files in ~/.config/claude-companion/snippets/)
 │   ├── file_monitor_service.py  # Centralized file monitoring (git, working tree, notes, tasks)
+│   ├── problems_service.py  # Linter runner (ruff, mypy) with JSON parsing
 │   └── icon_cache.py    # Material Design icons cache (O(1) lookup)
 ├── resources/
 │   └── icons/           # Material Design SVG icons (from vscode-material-icon-theme)
@@ -88,28 +91,29 @@ src/
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
 │ Header: [Sidebar] [Claude] [Terminal+]    Title      [⚙️] [Term]    │
-├──────────────────────┬──────────────────────────────────────────────┤
-│ Sidebar (resizable)  │  Main Area (Tabs)                            │
-│ [Files][Git][Claude][Notes]  [Session] [Commit] [file.py] [Terminal]│
-│                      │                                              │
-│ Files tab:           │  Content view:                               │
-│  - Unified search    │  - Session details                           │
-│  - File tree         │  - Commit details (files + message + diff)   │
-│  - Tasks panel       │  - File editor                               │
-│                      │  - Terminal                                  │
-│ Git tab:             │                                              │
-│  [Changes][History]  │                                              │
-│  - Stage/commit/push │                                              │
-│  - Commit list       │                                              │
-│                      │                                              │
-│ Claude tab:          │                                              │
-│  - Sessions list     │                                              │
-│                      │                                              │
-│ Notes tab:           │                                              │
-│  - My Notes (notes/) │                                              │
-│  - Docs (docs/)      │                                              │
-│  - TODOs from code   │                                              │
-└──────────────────────┴──────────────────────────────────────────────┘
+├───┬──────────────────┬──────────────────────────────────────────────┤
+│ F │ Sidebar          │  Main Area (Tabs)                            │
+│ G │ (resizable)      │  [Session] [Commit] [Problems] [file.py]     │
+│ C │                  │                                              │
+│ N │ Files tab:       │  Content view:                               │
+│ P │  - Unified search│  - Session details                           │
+│   │  - File tree     │  - Commit details (files + message + diff)   │
+│   │  - Tasks panel   │  - Problems detail (list + code preview)     │
+│   │                  │  - File editor                               │
+│   │ Git tab:         │  - Terminal                                  │
+│   │  [Changes][Hist] │                                              │
+│   │                  │                                              │
+│   │ Claude tab:      │                                              │
+│   │  - Sessions list │                                              │
+│   │                  │                                              │
+│   │ Notes tab:       │                                              │
+│   │  - My Notes      │                                              │
+│   │  - Docs / TODOs  │                                              │
+│   │                  │                                              │
+│   │ Problems tab:    │                                              │
+│   │  - Files w/issues│                                              │
+│   │  - Error counts  │                                              │
+└───┴──────────────────┴──────────────────────────────────────────────┘
 ```
 
 Key patterns:
@@ -117,7 +121,7 @@ Key patterns:
 - **Lock files**: `/tmp/claude-companion-locks/` prevents opening same project twice
 - **Project registry**: `~/.config/claude-companion/projects.json` stores user's projects
 - **Resizable pane**: `Gtk.Paned` for sidebar/content split (min 370px sidebar)
-- **Custom tab switcher**: Linked toggle buttons for Files/Git/Claude/Notes tabs
+- **Vertical toolbar**: Left sidebar with F/G/C/N/P toggle buttons for tab switching
 - **Unified search**: Single search box for both filenames and content (ripgrep/grep)
 - **Single tab reuse**: Commit details and session details reuse single tab (no duplicates)
 - **Icon cache**: Pre-loaded Material Design SVG icons with O(1) lookup by extension/filename
@@ -128,6 +132,7 @@ Key patterns:
 - **Lazy loading**: Claude history panel loads sessions only when tab is shown (background thread)
 - **Git authentication**: HTTPS credentials dialog with git credential storage
 - **Terminal enhancements**: Left padding for readability, auto `.venv` activation on launch
+- **Problems panel**: Linter integration (ruff, mypy) with file grouping and copy functionality
 - Parse Claude Code JSONL session files from `~/.claude/projects/[encoded-path]/`
 - Project paths are encoded by replacing `/` with `-`
 
@@ -183,6 +188,12 @@ Session files are JSONL with event types: `user`, `assistant`, `tool_use`, `tool
   - Auto `.venv` activation on terminal launch
   - Git HTTPS authentication dialog with credential storage
   - Version system and About dialog
+- [x] v0.7.2: Problems Panel & Vertical Toolbar:
+  - Vertical toolbar (F/G/C/N/P) replacing horizontal tab switcher
+  - Problems panel with ruff/mypy integration
+  - Problems detail view (list + code preview with highlighted lines)
+  - Copy problems to clipboard (single/all)
+  - Lazy loading for problems (runs linters on tab show)
 - [ ] v0.8: Packaging (Flatpak, .desktop file)
 - [ ] v1.0: Multi-agent orchestration with Git worktrees
 
@@ -282,6 +293,9 @@ def on_setting_changed(settings, key, value):
 | `editor.word_wrap` | `true` | Wrap long lines at word boundaries |
 | `window.width/height` | `1200/800` | Window size |
 | `window.maximized` | `false` | Maximized state |
+| `linters.ruff_enabled` | `true` | Enable ruff linter |
+| `linters.mypy_enabled` | `true` | Enable mypy type checker |
+| `linters.ignored_codes` | `""` | Comma-separated codes to ignore (e.g. "import-untyped, E402") |
 
 ## Running the Application
 

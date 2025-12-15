@@ -23,6 +23,7 @@ class PreferencesDialog(Adw.PreferencesDialog):
         # Build pages
         self._build_appearance_page()
         self._build_editor_page()
+        self._build_linters_page()
 
     def _build_appearance_page(self):
         """Build the Appearance preferences page."""
@@ -156,6 +157,64 @@ class PreferencesDialog(Adw.PreferencesDialog):
         page.add(display_group)
         self.add(page)
 
+    def _build_linters_page(self):
+        """Build the Linters preferences page."""
+        page = Adw.PreferencesPage()
+        page.set_title("Linters")
+        page.set_icon_name("dialog-warning-symbolic")
+
+        # Linters group
+        linters_group = Adw.PreferencesGroup()
+        linters_group.set_title("Enabled Linters")
+        linters_group.set_description("Choose which linters to run in the Problems panel")
+
+        # Ruff toggle
+        ruff_row = Adw.SwitchRow()
+        ruff_row.set_title("Ruff")
+        ruff_row.set_subtitle("Fast Python linter (style, imports, etc.)")
+        ruff_row.set_active(self.settings.get("linters.ruff_enabled", True))
+        ruff_row.connect("notify::active", self._on_ruff_enabled_changed)
+        linters_group.add(ruff_row)
+
+        # Mypy toggle
+        mypy_row = Adw.SwitchRow()
+        mypy_row.set_title("Mypy")
+        mypy_row.set_subtitle("Static type checker for Python")
+        mypy_row.set_active(self.settings.get("linters.mypy_enabled", True))
+        mypy_row.connect("notify::active", self._on_mypy_enabled_changed)
+        linters_group.add(mypy_row)
+
+        page.add(linters_group)
+
+        # Filters group
+        filters_group = Adw.PreferencesGroup()
+        filters_group.set_title("Filters")
+        filters_group.set_description("Ignore specific error codes (comma-separated)")
+
+        # Ignored codes
+        ignored_row = Adw.EntryRow()
+        ignored_row.set_title("Ignored Codes")
+        current_ignored = self.settings.get("linters.ignored_codes", "")
+        ignored_row.set_text(current_ignored)
+        ignored_row.connect("changed", self._on_ignored_codes_changed)
+        filters_group.add(ignored_row)
+
+        # Help text
+        help_label = Gtk.Label()
+        help_label.set_markup(
+            '<span size="small" alpha="60%">'
+            'Examples: import-untyped, E402, F401\n'
+            'Use ruff codes (E*, F*, W*) and mypy codes (import-untyped, arg-type, etc.)'
+            '</span>'
+        )
+        help_label.set_xalign(0)
+        help_label.set_margin_start(12)
+        help_label.set_margin_top(4)
+        help_label.set_wrap(True)
+        filters_group.add(help_label)
+
+        page.add(filters_group)
+        self.add(page)
 
     # Signal handlers
 
@@ -194,3 +253,15 @@ class PreferencesDialog(Adw.PreferencesDialog):
     def _on_word_wrap_changed(self, row, pspec):
         """Handle word wrap toggle."""
         self.settings.set("editor.word_wrap", row.get_active())
+
+    def _on_ruff_enabled_changed(self, row, pspec):
+        """Handle ruff enabled toggle."""
+        self.settings.set("linters.ruff_enabled", row.get_active())
+
+    def _on_mypy_enabled_changed(self, row, pspec):
+        """Handle mypy enabled toggle."""
+        self.settings.set("linters.mypy_enabled", row.get_active())
+
+    def _on_ignored_codes_changed(self, row):
+        """Handle ignored codes change."""
+        self.settings.set("linters.ignored_codes", row.get_text())

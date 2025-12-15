@@ -8,6 +8,7 @@ from .toast_service import ToastService
 from .settings_service import SettingsService
 from .snippets_service import SnippetsService
 from .file_monitor_service import FileMonitorService
+from .problems_service import ProblemsService, Problem, FileProblems
 
 __all__ = [
     "HistoryService",
@@ -26,4 +27,7 @@ __all__ = [
     "SettingsService",
     "SnippetsService",
     "FileMonitorService",
+    "ProblemsService",
+    "Problem",
+    "FileProblems",
 ]

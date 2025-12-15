@@ -6,7 +6,7 @@ from gi.repository import Adw, Gtk, GLib, Gio
 
 from .models import Session
 from .services import HistoryService, ProjectLock, ProjectRegistry, GitService, IconCache, ToastService, SettingsService, FileMonitorService
-from .widgets import SessionView, TerminalView, FileTree, FileEditor, TasksPanel, GitChangesPanel, GitHistoryPanel, DiffView, CommitDetailView, ClaudeHistoryPanel, FileSearchDialog, UnifiedSearch, NotesPanel, PreferencesDialog, SnippetsBar
+from .widgets import SessionView, TerminalView, FileTree, FileEditor, TasksPanel, GitChangesPanel, GitHistoryPanel, DiffView, CommitDetailView, ClaudeHistoryPanel, FileSearchDialog, UnifiedSearch, NotesPanel, PreferencesDialog, SnippetsBar, ProblemsPanel, ProblemsDetailView
 
 
 def escape_markup(text: str) -> str:
@@ -38,6 +38,8 @@ class ProjectWindow(Adw.ApplicationWindow):
         self.git_diff_view: DiffView | None = None
         self.git_diff_path: str | None = None
         self.git_diff_staged: bool | None = None
+        self.problems_detail_page: Adw.TabPage | None = None
+        self.problems_detail_view: ProblemsDetailView | None = None
 
         # Acquire lock
         if not self.lock.acquire():
@@ -125,12 +127,20 @@ class ProjectWindow(Adw.ApplicationWindow):
 
     def _build_ui(self):
         """Build the UI layout."""
+        # Main container: [Vertical Toolbar | Paned[Sidebar | Content]]
+        main_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+
+        # Vertical toolbar on the left
+        self.vertical_toolbar = self._build_vertical_toolbar()
+        main_box.append(self.vertical_toolbar)
+
         # Main horizontal split with resizable pane
         self.paned = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL)
         self.paned.set_shrink_start_child(False)  # Don't shrink below min size
         self.paned.set_shrink_end_child(False)
         self.paned.set_resize_start_child(False)
         self.paned.set_resize_end_child(True)
+        self.paned.set_hexpand(True)
 
         # Sidebar
         self.sidebar = self._build_sidebar()
@@ -143,11 +153,13 @@ class ProjectWindow(Adw.ApplicationWindow):
         # Set initial sidebar width
         self.paned.set_position(240)
 
+        main_box.append(self.paned)
+
         # Wrap everything in a toolbar view
         toolbar_view = Adw.ToolbarView()
         header = self._build_header()
         toolbar_view.add_top_bar(header)
-        toolbar_view.set_content(self.paned)
+        toolbar_view.set_content(main_box)
 
         # Wrap in toast overlay for notifications
         self.toast_overlay = Adw.ToastOverlay()
@@ -226,6 +238,78 @@ class ProjectWindow(Adw.ApplicationWindow):
 
         return header
 
+    def _build_vertical_toolbar(self) -> Gtk.Box:
+        """Build vertical toolbar with tab buttons on the left."""
+        toolbar = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        toolbar.set_spacing(2)
+        toolbar.set_margin_top(8)
+        toolbar.set_margin_bottom(8)
+        toolbar.set_margin_start(6)
+        toolbar.set_margin_end(6)
+
+        self._tab_buttons = {}
+
+        # Files button
+        files_btn = Gtk.ToggleButton(label="F")
+        files_btn.set_tooltip_text("Files")
+        files_btn.set_active(True)
+        files_btn.add_css_class("flat")
+        files_btn.set_size_request(36, 36)
+        files_btn.connect("toggled", self._on_tab_toggled, "files")
+        toolbar.append(files_btn)
+        self._tab_buttons["files"] = files_btn
+
+        # Git button (will be shown/hidden based on git repo status)
+        self._git_toolbar_btn = Gtk.ToggleButton(label="G")
+        self._git_toolbar_btn.set_tooltip_text("Git")
+        self._git_toolbar_btn.add_css_class("flat")
+        self._git_toolbar_btn.set_size_request(36, 36)
+        self._git_toolbar_btn.connect("toggled", self._on_tab_toggled, "git")
+        toolbar.append(self._git_toolbar_btn)
+        self._tab_buttons["git"] = self._git_toolbar_btn
+
+        # Claude button
+        claude_btn = Gtk.ToggleButton(label="C")
+        claude_btn.set_tooltip_text("Claude")
+        claude_btn.add_css_class("flat")
+        claude_btn.set_size_request(36, 36)
+        claude_btn.connect("toggled", self._on_tab_toggled, "claude")
+        toolbar.append(claude_btn)
+        self._tab_buttons["claude"] = claude_btn
+
+        # Notes button
+        notes_btn = Gtk.ToggleButton(label="N")
+        notes_btn.set_tooltip_text("Notes")
+        notes_btn.add_css_class("flat")
+        notes_btn.set_size_request(36, 36)
+        notes_btn.connect("toggled", self._on_tab_toggled, "notes")
+        toolbar.append(notes_btn)
+        self._tab_buttons["notes"] = notes_btn
+
+        # Problems button
+        problems_btn = Gtk.ToggleButton(label="P")
+        problems_btn.set_tooltip_text("Problems (ruff/mypy)")
+        problems_btn.add_css_class("flat")
+        problems_btn.set_size_request(36, 36)
+        problems_btn.connect("toggled", self._on_tab_toggled, "problems")
+        toolbar.append(problems_btn)
+        self._tab_buttons["problems"] = problems_btn
+
+        # Spacer to push future buttons to bottom
+        spacer = Gtk.Box()
+        spacer.set_vexpand(True)
+        toolbar.append(spacer)
+
+        # Separator line on the right side
+        separator = Gtk.Separator(orientation=Gtk.Orientation.VERTICAL)
+
+        # Wrap toolbar + separator in horizontal box
+        container = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+        container.append(toolbar)
+        container.append(separator)
+
+        return container
+
     def _build_sidebar(self) -> Gtk.Box:
         """Build the sidebar with Files/Git/Claude tabs."""
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
@@ -238,57 +322,36 @@ class ProjectWindow(Adw.ApplicationWindow):
         if self._is_git_repo:
             self.git_service.open()
 
+        # Show/hide Git button based on git repo status
+        if hasattr(self, "_git_toolbar_btn"):
+            self._git_toolbar_btn.set_visible(self._is_git_repo)
+
         # Top-level stack: Files / Git / Claude / Notes
         self.sidebar_stack = Gtk.Stack()
         self.sidebar_stack.set_transition_type(Gtk.StackTransitionType.CROSSFADE)
         self.sidebar_stack.set_vexpand(True)
         self.sidebar_stack.set_hexpand(False)
 
-        # Custom switcher with toggle buttons
-        switcher_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
-        switcher_box.set_margin_start(8)
-        switcher_box.set_margin_end(8)
-        switcher_box.set_margin_top(8)
-        switcher_box.set_margin_bottom(4)
-        switcher_box.add_css_class("linked")  # Connected buttons style
-        switcher_box.set_homogeneous(True)
-        box.append(switcher_box)
-
-        self._tab_buttons = {}
-
         # Files page
         files_page = self._build_files_page()
         self.sidebar_stack.add_named(files_page, "files")
-        files_btn = Gtk.ToggleButton(label="Files")
-        files_btn.set_active(True)
-        files_btn.connect("toggled", self._on_tab_toggled, "files")
-        switcher_box.append(files_btn)
-        self._tab_buttons["files"] = files_btn
 
-        # Git page
+        # Git page (always add to stack, button visibility controls access)
         if self._is_git_repo:
             git_page = self._build_git_page()
             self.sidebar_stack.add_named(git_page, "git")
-            git_btn = Gtk.ToggleButton(label="Git")
-            git_btn.connect("toggled", self._on_tab_toggled, "git")
-            switcher_box.append(git_btn)
-            self._tab_buttons["git"] = git_btn
 
         # Claude page
         claude_page = self._build_claude_page()
         self.sidebar_stack.add_named(claude_page, "claude")
-        claude_btn = Gtk.ToggleButton(label="Claude")
-        claude_btn.connect("toggled", self._on_tab_toggled, "claude")
-        switcher_box.append(claude_btn)
-        self._tab_buttons["claude"] = claude_btn
 
         # Notes page
         notes_page = self._build_notes_page()
         self.sidebar_stack.add_named(notes_page, "notes")
-        notes_btn = Gtk.ToggleButton(label="Notes")
-        notes_btn.connect("toggled", self._on_tab_toggled, "notes")
-        switcher_box.append(notes_btn)
-        self._tab_buttons["notes"] = notes_btn
+
+        # Problems page
+        problems_page = self._build_problems_page()
+        self.sidebar_stack.add_named(problems_page, "problems")
 
         # Wrap stack in scrolled window to allow shrinking
         scrolled = Gtk.ScrolledWindow()
@@ -302,8 +365,9 @@ class ProjectWindow(Adw.ApplicationWindow):
     def _on_tab_toggled(self, button, tab_name):
         """Handle tab button toggle."""
         if button.get_active():
-            # Switch to this tab
-            self.sidebar_stack.set_visible_child_name(tab_name)
+            # Switch to this tab (only if page exists in stack)
+            if self.sidebar_stack.get_child_by_name(tab_name):
+                self.sidebar_stack.set_visible_child_name(tab_name)
             # Deactivate other buttons
             for name, btn in self._tab_buttons.items():
                 if name != tab_name:
@@ -311,10 +375,16 @@ class ProjectWindow(Adw.ApplicationWindow):
             # Lazy load Claude history when tab is shown
             if tab_name == "claude" and hasattr(self, "claude_history_panel"):
                 self.claude_history_panel.load_if_needed()
+            # Lazy load Problems when tab is shown
+            if tab_name == "problems" and hasattr(self, "problems_panel"):
+                self.problems_panel.load_if_needed()
         else:
             # Don't allow deactivating without activating another
-            # Check if any other button is active
-            any_active = any(btn.get_active() for btn in self._tab_buttons.values())
+            # Check if any other visible button is active
+            any_active = any(
+                btn.get_active() for btn in self._tab_buttons.values()
+                if btn.get_visible()
+            )
             if not any_active:
                 button.set_active(True)
 
@@ -329,6 +399,39 @@ class ProjectWindow(Adw.ApplicationWindow):
         box.append(self.notes_panel)
 
         return box
+
+    def _build_problems_page(self) -> Gtk.Box:
+        """Build the Problems tab content."""
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        box.set_vexpand(True)
+
+        self.problems_panel = ProblemsPanel(str(self.project_path))
+        self.problems_panel.connect("file-selected", self._on_problems_file_selected)
+        box.append(self.problems_panel)
+
+        return box
+
+    def _on_problems_file_selected(self, panel, file_path: str, file_problems):
+        """Handle problems panel file selection - show detail view."""
+        if not file_problems or not file_problems.problems:
+            return
+
+        # Reuse existing problems detail view if available
+        if self.problems_detail_view is not None and self.problems_detail_page is not None:
+            self.problems_detail_view.update(file_path, file_problems)
+            self.problems_detail_page.set_title(f"Problems: {Path(file_path).name}")
+            self.tab_view.set_selected_page(self.problems_detail_page)
+            return
+
+        # Create new problems detail view
+        self.problems_detail_view = ProblemsDetailView(file_path, file_problems, self.project_path)
+
+        # Add tab
+        self.problems_detail_page = self.tab_view.append(self.problems_detail_view)
+        self.problems_detail_page.set_title(f"Problems: {Path(file_path).name}")
+        self.problems_detail_page.set_icon(Gio.ThemedIcon.new("dialog-warning-symbolic"))
+
+        self.tab_view.set_selected_page(self.problems_detail_page)
 
     def _on_notes_open_file(self, panel, file_path: str):
         """Handle notes panel file open."""
@@ -941,6 +1044,11 @@ class ProjectWindow(Adw.ApplicationWindow):
             self.git_diff_view = None
             self.git_diff_path = None
             self.git_diff_staged = None
+
+        # Problems detail tab - clear references when closed
+        if page == self.problems_detail_page:
+            self.problems_detail_page = None
+            self.problems_detail_view = None
 
         return False  # Allow close
 
