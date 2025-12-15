@@ -4,7 +4,7 @@ from pathlib import Path
 
 from gi.repository import Gtk, GLib, GObject, Gdk
 
-from ..services import ProblemsService, FileProblems, ToastService
+from ..services import ProblemsService, FileProblems, ToastService, LinterStatus, SettingsService
 from ..services.icon_cache import IconCache
 
 
@@ -126,6 +126,14 @@ class ProblemsPanel(Gtk.Box):
 
         self.append(self.empty_box)
 
+        # Linter status box (shown when linters are missing)
+        self.linter_status_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        self.linter_status_box.set_margin_start(12)
+        self.linter_status_box.set_margin_end(12)
+        self.linter_status_box.set_margin_top(8)
+        self.linter_status_box.set_visible(False)
+        self.append(self.linter_status_box)
+
     def _setup_css(self):
         """Setup CSS styles."""
         css = """
@@ -233,6 +241,9 @@ class ProblemsPanel(Gtk.Box):
         # Enable/disable copy button
         self.copy_btn.set_sensitive(total > 0)
 
+        # Update linter status
+        self._update_linter_status()
+
         # Show empty state or file list
         if not self._problems:
             self.empty_box.set_visible(True)
@@ -252,6 +263,88 @@ class ProblemsPanel(Gtk.Box):
         for file_path, fp in sorted_files:
             row = self._create_file_row(file_path, fp)
             self.file_list.append(row)
+
+    def _update_linter_status(self):
+        """Update linter status display."""
+        # Clear existing status
+        while child := self.linter_status_box.get_first_child():
+            self.linter_status_box.remove(child)
+
+        settings = SettingsService.get_instance()
+        missing_linters = []
+
+        # Only show missing if linter is enabled in settings
+        if settings.get("linters.ruff_enabled", True):
+            if self.service.ruff_status == LinterStatus.NOT_INSTALLED:
+                missing_linters.append("ruff")
+
+        if settings.get("linters.mypy_enabled", True):
+            if self.service.mypy_status == LinterStatus.NOT_INSTALLED:
+                missing_linters.append("mypy")
+
+        if not missing_linters:
+            self.linter_status_box.set_visible(False)
+            return
+
+        self.linter_status_box.set_visible(True)
+
+        # Show missing linters with install buttons
+        for linter in missing_linters:
+            row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+
+            # Warning icon
+            icon = Gtk.Image.new_from_icon_name("dialog-warning-symbolic")
+            icon.add_css_class("warning")
+            row.append(icon)
+
+            # Label
+            label = Gtk.Label(label=f"{linter} not installed")
+            label.set_xalign(0)
+            label.set_hexpand(True)
+            row.append(label)
+
+            # Install button
+            install_btn = Gtk.Button(label="Install")
+            install_btn.add_css_class("suggested-action")
+            install_btn.add_css_class("pill")
+            install_btn.connect("clicked", self._on_install_linter_clicked, linter)
+            row.append(install_btn)
+
+            self.linter_status_box.append(row)
+
+        # Show which package manager will be used
+        pkg_manager = "uv" if self.service.uses_uv() else "pip"
+        hint = Gtk.Label(label=f"Will use {pkg_manager} to install")
+        hint.add_css_class("dim-label")
+        hint.add_css_class("caption")
+        hint.set_xalign(0)
+        self.linter_status_box.append(hint)
+
+    def _on_install_linter_clicked(self, button, linter: str):
+        """Handle install linter button click."""
+        button.set_sensitive(False)
+        button.set_label("Installing...")
+
+        # Run installation in background
+        import threading
+
+        def install():
+            success, message = self.service.install_linter(linter)
+            GLib.idle_add(self._on_install_complete, linter, success, message, button)
+
+        thread = threading.Thread(target=install, daemon=True)
+        thread.start()
+
+    def _on_install_complete(self, linter: str, success: bool, message: str, button: Gtk.Button):
+        """Handle installation completion."""
+        if success:
+            ToastService.show(message)
+            # Refresh to rerun linters
+            self.refresh()
+        else:
+            ToastService.show_error(f"Failed to install {linter}: {message}")
+            button.set_sensitive(True)
+            button.set_label("Install")
 
     def _create_file_row(self, file_path: str, fp: FileProblems) -> Gtk.ListBoxRow:
         """Create a row for a file with problems."""

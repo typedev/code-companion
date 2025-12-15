@@ -9,7 +9,7 @@ from .settings_service import SettingsService
 from .snippets_service import SnippetsService
 from .rules_service import RulesService
 from .file_monitor_service import FileMonitorService
-from .problems_service import ProblemsService, Problem, FileProblems
+from .problems_service import ProblemsService, Problem, FileProblems, LinterStatus
 
 __all__ = [
     "HistoryService",
@@ -32,4 +32,5 @@ __all__ = [
     "ProblemsService",
     "Problem",
     "FileProblems",
+    "LinterStatus",
 ]
