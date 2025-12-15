@@ -9,6 +9,7 @@ gi.require_version("GtkSource", "5")
 from gi.repository import Gtk, GtkSource, GLib, GObject, Pango
 
 from .code_view import get_language_for_file
+from .script_toolbar import ScriptToolbar
 from ..services import ToastService, SettingsService
 
 
@@ -17,6 +18,7 @@ class FileEditor(Gtk.Box):
 
     __gsignals__ = {
         "modified-changed": (GObject.SignalFlags.RUN_FIRST, None, (bool,)),
+        "run-requested": (GObject.SignalFlags.RUN_FIRST, None, (str, str)),  # file_path, args
     }
 
     def __init__(self, file_path: str):
@@ -35,6 +37,16 @@ class FileEditor(Gtk.Box):
         """Build the editor UI."""
         # Get settings
         self.settings = SettingsService.get_instance()
+
+        # Script toolbar for .py/.sh files
+        self.script_toolbar = None
+        ext = Path(self.file_path).suffix.lower()
+        if ext in (".py", ".sh"):
+            self.script_toolbar = ScriptToolbar(self.file_path)
+            self.script_toolbar.connect("run-script", self._on_run_script)
+            self.script_toolbar.connect("go-to-line", self._on_go_to_line)
+            self.script_toolbar.set_cursor_line_callback(self._get_cursor_line)
+            self.append(self.script_toolbar)
 
         # Create source buffer and view
         self.buffer = GtkSource.Buffer()
@@ -145,6 +157,8 @@ class FileEditor(Gtk.Box):
             self._modified = False
             # Place cursor at start
             self.buffer.place_cursor(self.buffer.get_start_iter())
+            # Update outline for Python files
+            self._update_outline()
         except (OSError, UnicodeDecodeError) as e:
             self.buffer.set_text(f"Error loading file: {e}")
             self.source_view.set_editable(False)
@@ -248,3 +262,28 @@ class FileEditor(Gtk.Box):
             0.3    # yalign (1/3 from top)
         )
         return False  # Don't repeat
+
+    def _update_outline(self):
+        """Update outline in script toolbar."""
+        if self.script_toolbar and Path(self.file_path).suffix.lower() == ".py":
+            start = self.buffer.get_start_iter()
+            end = self.buffer.get_end_iter()
+            source = self.buffer.get_text(start, end, True)
+            self.script_toolbar.update_outline(source)
+
+    def _on_run_script(self, toolbar, args: str):
+        """Handle run script request from toolbar."""
+        # Save file before running
+        if self._modified:
+            self.save()
+        self.emit("run-requested", self.file_path, args)
+
+    def _on_go_to_line(self, toolbar, line: int):
+        """Handle go to line request from outline."""
+        self.go_to_line(line)
+
+    def _get_cursor_line(self) -> int:
+        """Return current cursor line number."""
+        insert_mark = self.buffer.get_insert()
+        cursor_iter = self.buffer.get_iter_at_mark(insert_mark)
+        return cursor_iter.get_line() + 1  # 1-based line number

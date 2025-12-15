@@ -69,6 +69,7 @@ src/
 │   ├── snippets_bar.py  # Snippets buttons bar (right-click to delete)
 │   ├── problems_panel.py  # Problems sidebar (ruff/mypy file list)
 │   ├── problems_detail_view.py  # Problems detail (list + code preview)
+│   ├── script_toolbar.py  # Script toolbar (Run + Outline for .py/.sh files)
 │   └── ...
 ├── services/            # Business logic
 │   ├── history.py       # Claude session history reader
@@ -81,7 +82,8 @@ src/
 │   ├── snippets_service.py  # Text snippets management (files in ~/.config/claude-companion/snippets/)
 │   ├── file_monitor_service.py  # Centralized file monitoring (git, working tree, notes, tasks)
 │   ├── problems_service.py  # Linter runner (ruff, mypy) with JSON parsing
-│   └── icon_cache.py    # Material Design icons cache (O(1) lookup)
+│   ├── icon_cache.py    # Material Design icons cache (O(1) lookup)
+│   └── python_outline.py  # Python AST parser for code outline
 ├── resources/
 │   └── icons/           # Material Design SVG icons (from vscode-material-icon-theme)
 └── utils/               # Helpers (path encoding)
@@ -194,6 +196,14 @@ Session files are JSONL with event types: `user`, `assistant`, `tool_use`, `tool
   - Problems detail view (list + code preview with highlighted lines)
   - Copy problems to clipboard (single/all)
   - Lazy loading for problems (runs linters on tab show)
+- [x] v0.7.3: Script Toolbar:
+  - Script toolbar for .py/.sh files (Run button + Outline)
+  - Run with arguments dialog (`Adw.SplitButton` with menu)
+  - Python outline parser (`ast` module) with classes/methods/functions
+  - Hierarchical outline popover with line navigation
+  - Color coding: classes (`@accent_color`), methods (`@success_color`), functions (`@warning_color`)
+  - Cursor sync: auto-select current element in outline based on cursor position
+  - TODO: Save last used arguments per file
 - [ ] v0.8: Packaging (Flatpak, .desktop file)
 - [ ] v1.0: Multi-agent orchestration with Git worktrees
 

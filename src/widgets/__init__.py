@@ -20,6 +20,7 @@ from .preferences_dialog import PreferencesDialog
 from .snippets_bar import SnippetsBar
 from .problems_panel import ProblemsPanel
 from .problems_detail_view import ProblemsDetailView
+from .script_toolbar import ScriptToolbar
 
 __all__ = [
     "MessageRow",
@@ -45,4 +46,5 @@ __all__ = [
     "SnippetsBar",
     "ProblemsPanel",
     "ProblemsDetailView",
+    "ScriptToolbar",
 ]

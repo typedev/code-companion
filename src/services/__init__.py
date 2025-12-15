@@ -10,6 +10,7 @@ from .snippets_service import SnippetsService
 from .rules_service import RulesService
 from .file_monitor_service import FileMonitorService
 from .problems_service import ProblemsService, Problem, FileProblems, LinterStatus
+from .python_outline import parse_python_outline, parse_python_file, OutlineItem
 
 __all__ = [
     "HistoryService",
@@ -33,4 +34,7 @@ __all__ = [
     "Problem",
     "FileProblems",
     "LinterStatus",
+    "parse_python_outline",
+    "parse_python_file",
+    "OutlineItem",
 ]

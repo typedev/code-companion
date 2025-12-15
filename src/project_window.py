@@ -1011,6 +1011,9 @@ class ProjectWindow(Adw.ApplicationWindow):
         # Track modifications for tab title
         editor.connect("modified-changed", self._on_editor_modified_changed)
 
+        # Track run requests for script files
+        editor.connect("run-requested", self._on_run_requested)
+
         # Add tab with appropriate file icon
         page = self.tab_view.append(editor)
         file_name = Path(file_path).name
@@ -1037,6 +1040,36 @@ class ProjectWindow(Adw.ApplicationWindow):
                 page.set_title(f"● {file_name}")
             else:
                 page.set_title(file_name)
+
+    def _on_run_requested(self, editor, file_path: str, args: str):
+        """Handle run script request from editor toolbar."""
+        ext = Path(file_path).suffix.lower()
+        filename = Path(file_path).name
+
+        # Build command based on file type
+        if ext == ".py":
+            if args:
+                command = f"uv run python {file_path} {args}"
+            else:
+                command = f"uv run python {file_path}"
+        elif ext == ".sh":
+            if args:
+                command = f"bash {file_path} {args}"
+            else:
+                command = f"bash {file_path}"
+        else:
+            return
+
+        # Create terminal tab for running the script
+        terminal = TerminalView(working_directory=str(self.project_path))
+        page = self.tab_view.append(terminal)
+        page.set_title(f"Run: {filename}")
+        page.set_icon(Gio.ThemedIcon.new("media-playback-start-symbolic"))
+
+        self.tab_view.set_selected_page(page)
+
+        # Run command after terminal is ready
+        GLib.timeout_add(100, lambda: terminal.run_command(command) or False)
 
     def _on_tab_close_requested(self, tab_view, page) -> bool:
         """Handle tab close request."""
