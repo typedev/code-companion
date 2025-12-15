@@ -7,7 +7,7 @@ from pathlib import Path
 
 from gi.repository import Gtk, Gdk, GLib, GObject, Adw
 
-from ..services import SnippetsService, ToastService, GitService, FileStatus, FileMonitorService
+from ..services import SnippetsService, RulesService, ToastService, GitService, FileStatus, FileMonitorService
 from ..services.icon_cache import IconCache
 
 
@@ -153,12 +153,24 @@ class NotesPanel(Gtk.Box):
         self.docs_expander.set_margin_top(8)
         self.content_box.append(self.docs_expander)
 
+        # Config directory for snippets and rules
+        config_dir = Path.home() / ".config" / "claude-companion"
+
         # Snippets section (~/.config/claude-companion/snippets/*.md)
+        snippets_dir = config_dir / "snippets"
         self.snippets_expander, self.snippets_header, self.snippets_list = self._create_file_section(
-            "Snippets", self._on_add_snippet_clicked
+            "Snippets", self._on_add_snippet_clicked, snippets_dir
         )
         self.snippets_expander.set_margin_top(8)
         self.content_box.append(self.snippets_expander)
+
+        # Rules section (~/.config/claude-companion/rules/*.md)
+        rules_dir = config_dir / "rules"
+        self.rules_expander, self.rules_header, self.rules_list = self._create_file_section(
+            "Rules", self._on_add_rule_clicked, rules_dir
+        )
+        self.rules_expander.set_margin_top(8)
+        self.content_box.append(self.rules_expander)
 
         # TODOs section (code search)
         self.todos_expander = Gtk.Expander()
@@ -175,11 +187,21 @@ class NotesPanel(Gtk.Box):
         self.snippets_service = SnippetsService.get_instance()
         self.snippets_service.connect("changed", lambda s: self._refresh_snippets())
 
+        # Get rules service
+        self.rules_service = RulesService.get_instance()
+        self.rules_service.connect("changed", lambda s: self._refresh_rules())
+
         scrolled.set_child(self.content_box)
         self.append(scrolled)
 
-    def _create_file_section(self, title: str, add_callback) -> tuple[Gtk.Expander, Gtk.Label, Gtk.Box]:
-        """Create a file section with header (title + add button) and list."""
+    def _create_file_section(self, title: str, add_callback, folder_path: Path | None = None) -> tuple[Gtk.Expander, Gtk.Label, Gtk.Box]:
+        """Create a file section with header (title + add button) and list.
+
+        Args:
+            title: Section title
+            add_callback: Callback for add button
+            folder_path: Optional path to show folder button (opens in file manager)
+        """
         expander = Gtk.Expander()
         expander.set_expanded(True)
 
@@ -199,12 +221,32 @@ class NotesPanel(Gtk.Box):
         add_btn.connect("clicked", add_callback)
         header_box.append(add_btn)
 
+        # Folder button (opens directory in file manager)
+        if folder_path:
+            folder_btn = Gtk.Button()
+            folder_btn.set_icon_name("folder-open-symbolic")
+            folder_btn.add_css_class("flat")
+            folder_btn.add_css_class("circular")
+            folder_btn.set_valign(Gtk.Align.CENTER)
+            folder_btn.set_tooltip_text(str(folder_path))
+            folder_btn.connect("clicked", self._on_open_folder_clicked, folder_path)
+            header_box.append(folder_btn)
+
         expander.set_label_widget(header_box)
 
         file_list = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         expander.set_child(file_list)
 
         return expander, title_label, file_list
+
+    def _on_open_folder_clicked(self, button, folder_path: Path):
+        """Open folder in system file manager."""
+        import subprocess
+        try:
+            # Use xdg-open on Linux
+            subprocess.Popen(["xdg-open", str(folder_path)])
+        except Exception as e:
+            ToastService.show_error(f"Failed to open folder: {e}")
 
     def refresh(self):
         """Refresh all sections."""
@@ -216,8 +258,9 @@ class NotesPanel(Gtk.Box):
 
         self._refresh_notes()
         self._refresh_docs()
-        self._refresh_todos()
         self._refresh_snippets()
+        self._refresh_rules()
+        self._refresh_todos()
 
     def _refresh_notes(self):
         """Refresh My Notes section."""
@@ -563,6 +606,14 @@ class NotesPanel(Gtk.Box):
                     ToastService.show(f"Renamed to: {new_label}")
                 else:
                     ToastService.show_error("Failed to rename snippet")
+            elif section == "rules":
+                # Use rules service to rename
+                old_name = file_path.stem
+                new_label = new_name[:-3]  # Remove .md
+                if self.rules_service.rename(old_name, new_label):
+                    ToastService.show(f"Renamed to: {new_label}")
+                else:
+                    ToastService.show_error("Failed to rename rule")
             else:
                 # Rename regular file
                 new_path = file_path.parent / new_name
@@ -598,6 +649,13 @@ class NotesPanel(Gtk.Box):
                 # Use snippets service to delete
                 label = file_path.stem
                 if self.snippets_service.delete(label):
+                    ToastService.show(f"Deleted: {file_path.name}")
+                else:
+                    ToastService.show_error(f"Failed to delete: {file_path.name}")
+            elif section == "rules":
+                # Use rules service to delete
+                name = file_path.stem
+                if self.rules_service.delete(name):
                     ToastService.show(f"Deleted: {file_path.name}")
                 else:
                     ToastService.show_error(f"Failed to delete: {file_path.name}")
@@ -688,6 +746,95 @@ class NotesPanel(Gtk.Box):
             for snippet in snippets:
                 self._add_file_row(self.snippets_list, Path(snippet["path"]), "snippets")
 
+    def _refresh_rules(self):
+        """Refresh Rules section."""
+        self._clear_box(self.rules_list)
+
+        rules = self.rules_service.get_all()
+
+        if not rules:
+            label = Gtk.Label(label="No rules")
+            label.add_css_class("dim-label")
+            label.set_margin_start(8)
+            label.set_margin_top(4)
+            self.rules_list.append(label)
+            self.rules_header.set_label("Rules")
+        else:
+            self.rules_header.set_label(f"Rules ({len(rules)})")
+            for rule in rules:
+                self._add_rule_row(self.rules_list, rule)
+
+    def _add_rule_row(self, container: Gtk.Box, rule: dict):
+        """Add a rule row with copy button."""
+        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+        row.add_css_class("notes-file-btn")
+
+        # Rule button (clickable to open)
+        btn = Gtk.Button()
+        btn.add_css_class("flat")
+        btn.set_hexpand(True)
+        btn.file_path = rule["path"]
+
+        btn_box = Gtk.Box(spacing=6)
+
+        # Icon
+        icon = Gtk.Image.new_from_icon_name("emblem-documents-symbolic")
+        icon.add_css_class("dim-label")
+        btn_box.append(icon)
+
+        # Rule name
+        label = Gtk.Label(label=rule["name"])
+        label.set_xalign(0)
+        label.set_ellipsize(2)
+        label.set_hexpand(True)
+        label.add_css_class("notes-file-label")
+        btn_box.append(label)
+
+        btn.set_child(btn_box)
+        btn.connect("clicked", self._on_file_clicked)
+        row.append(btn)
+
+        # Copy button
+        copy_btn = Gtk.Button()
+        copy_btn.set_icon_name("edit-copy-symbolic")
+        copy_btn.add_css_class("flat")
+        copy_btn.add_css_class("circular")
+        copy_btn.add_css_class("dim-label")
+        copy_btn.set_valign(Gtk.Align.CENTER)
+        copy_btn.set_tooltip_text("Copy to clipboard")
+        copy_btn.connect("clicked", self._on_copy_rule_clicked, rule)
+        row.append(copy_btn)
+
+        # Rename button
+        rename_btn = Gtk.Button()
+        rename_btn.set_icon_name("document-edit-symbolic")
+        rename_btn.add_css_class("flat")
+        rename_btn.add_css_class("circular")
+        rename_btn.add_css_class("dim-label")
+        rename_btn.set_valign(Gtk.Align.CENTER)
+        rename_btn.set_tooltip_text("Rename")
+        rename_btn.connect("clicked", self._on_rename_file_clicked, Path(rule["path"]), "rules")
+        row.append(rename_btn)
+
+        # Delete button
+        del_btn = Gtk.Button()
+        del_btn.set_icon_name("edit-delete-symbolic")
+        del_btn.add_css_class("flat")
+        del_btn.add_css_class("circular")
+        del_btn.add_css_class("dim-label")
+        del_btn.set_valign(Gtk.Align.CENTER)
+        del_btn.set_tooltip_text("Delete")
+        del_btn.connect("clicked", self._on_delete_file_clicked, Path(rule["path"]), "rules")
+        row.append(del_btn)
+
+        container.append(row)
+
+    def _on_copy_rule_clicked(self, button, rule: dict):
+        """Copy rule content to clipboard."""
+        clipboard = Gdk.Display.get_default().get_clipboard()
+        clipboard.set(rule["content"])
+        ToastService.show(f"Copied: {rule['name']}")
+
     # === Add callbacks ===
 
     def _on_add_note_clicked(self, button):
@@ -769,4 +916,36 @@ class NotesPanel(Gtk.Box):
             return
 
         file_path = self.snippets_service.add(name, f"# {name}\n\n")
+        self.emit("open-file", file_path)
+
+    def _on_add_rule_clicked(self, button):
+        """Handle add rule button click."""
+        dialog = Adw.AlertDialog()
+        dialog.set_heading("New Rule")
+        dialog.set_body("Enter name for the new rule:")
+
+        entry = Gtk.Entry()
+        entry.set_placeholder_text("My Rule")
+        entry.set_margin_top(12)
+        dialog.set_extra_child(entry)
+
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("create", "Create")
+        dialog.set_response_appearance("create", Adw.ResponseAppearance.SUGGESTED)
+        dialog.set_default_response("create")
+
+        dialog.connect("response", self._on_new_rule_response, entry)
+        dialog.present(self.get_root())
+
+    def _on_new_rule_response(self, dialog, response, entry):
+        """Handle new rule dialog response."""
+        if response != "create":
+            return
+
+        name = entry.get_text().strip()
+        if not name:
+            return
+
+        content = f"## {name}\n\n"
+        file_path = self.rules_service.add(name, content)
         self.emit("open-file", file_path)

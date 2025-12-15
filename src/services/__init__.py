@@ -7,6 +7,7 @@ from .icon_cache import IconCache
 from .toast_service import ToastService
 from .settings_service import SettingsService
 from .snippets_service import SnippetsService
+from .rules_service import RulesService
 from .file_monitor_service import FileMonitorService
 from .problems_service import ProblemsService, Problem, FileProblems
 
@@ -26,6 +27,7 @@ __all__ = [
     "ToastService",
     "SettingsService",
     "SnippetsService",
+    "RulesService",
     "FileMonitorService",
     "ProblemsService",
     "Problem",
