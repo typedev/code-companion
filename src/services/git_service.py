@@ -885,9 +885,53 @@ class GitService:
         ]
         return any(indicator in error for indicator in auth_indicators)
 
+    def _get_stored_credentials(self, remote_url: str) -> tuple[str, str] | None:
+        """Try to get stored credentials from git credential helper.
+
+        Returns (username, password) tuple if found, None otherwise.
+        """
+        try:
+            parsed = urllib.parse.urlparse(remote_url)
+            protocol = parsed.scheme or "https"
+            host = parsed.hostname or ""
+
+            credential_input = f"protocol={protocol}\nhost={host}\n\n"
+
+            # Use credential.helper=store explicitly to match _store_credentials
+            result = subprocess.run(
+                ["git", "-c", "credential.helper=store", "credential", "fill"],
+                input=credential_input,
+                cwd=str(self.repo_path),
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+
+            if result.returncode == 0:
+                # Parse output
+                username = None
+                password = None
+                for line in result.stdout.strip().split("\n"):
+                    if line.startswith("username="):
+                        username = line[9:]
+                    elif line.startswith("password="):
+                        password = line[9:]
+
+                if username and password:
+                    return (username, password)
+
+        except (subprocess.TimeoutExpired, FileNotFoundError, Exception):
+            pass
+
+        return None
+
     def _get_auth_env(self, remote_url: str, credentials: tuple[str, str] | None) -> dict:
         """Get environment dict with GIT_ASKPASS for credentials."""
         env = os.environ.copy()
+
+        # If no credentials provided, try to get stored ones
+        if not credentials:
+            credentials = self._get_stored_credentials(remote_url)
 
         if credentials:
             username, password = credentials
