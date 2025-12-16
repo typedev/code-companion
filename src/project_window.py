@@ -62,29 +62,11 @@ class ProjectWindow(Adw.ApplicationWindow):
 
     def _setup_window(self):
         """Configure window properties."""
+        # Get settings service (needed by _build_ui)
+        self.settings = SettingsService.get_instance()
+
         # Initial title without branch (git service not ready yet)
         self.set_title(f"{self.project_name} - Claude Companion")
-
-    def _update_window_title(self):
-        """Update window title with project name and branch."""
-        # Get branch name if git repo
-        branch = ""
-        if hasattr(self, "git_service") and hasattr(self, "_is_git_repo") and self._is_git_repo:
-            branch = self.git_service.get_branch_name()
-
-        if branch:
-            title = f"{self.project_name} / git:{branch}"
-        else:
-            title = self.project_name
-
-        self.set_title(f"{title} - Claude Companion")
-
-        # Also update header title widget if available
-        if hasattr(self, "window_title"):
-            self.window_title.set_title(title)
-
-        # Get settings service
-        self.settings = SettingsService.get_instance()
 
         # Apply theme
         self._apply_theme()
@@ -103,6 +85,24 @@ class ProjectWindow(Adw.ApplicationWindow):
 
         # Connect to window state changes for saving
         self.connect("notify::maximized", self._on_window_state_changed)
+
+    def _update_window_title(self):
+        """Update window title with project name and branch."""
+        # Get branch name if git repo
+        branch = ""
+        if hasattr(self, "git_service") and hasattr(self, "_is_git_repo") and self._is_git_repo:
+            branch = self.git_service.get_branch_name()
+
+        if branch:
+            title = f"{self.project_name} / git:{branch}"
+        else:
+            title = self.project_name
+
+        self.set_title(f"{title} - Claude Companion")
+
+        # Also update header title widget if available
+        if hasattr(self, "window_title"):
+            self.window_title.set_title(title)
 
     def _apply_theme(self):
         """Apply color theme from settings."""
@@ -124,6 +124,13 @@ class ProjectWindow(Adw.ApplicationWindow):
     def _on_window_state_changed(self, window, pspec):
         """Handle window state changes (maximized)."""
         self.settings.set("window.maximized", self.is_maximized())
+
+    def _on_paned_position_changed(self, paned, pspec):
+        """Handle sidebar pane position changes - save to settings."""
+        position = paned.get_position()
+        # Only save if sidebar is visible and position is reasonable
+        if position >= 300:
+            self.settings.set("window.sidebar_width", position)
 
     def _build_ui(self):
         """Build the UI layout."""
@@ -150,8 +157,12 @@ class ProjectWindow(Adw.ApplicationWindow):
         content = self._build_content()
         self.paned.set_end_child(content)
 
-        # Set initial sidebar width
-        self.paned.set_position(240)
+        # Restore sidebar width from settings (default 370 = minimum width)
+        saved_position = self.settings.get("window.sidebar_width", 370)
+        self.paned.set_position(saved_position)
+
+        # Save sidebar position when changed
+        self.paned.connect("notify::position", self._on_paned_position_changed)
 
         main_box.append(self.paned)
 
@@ -360,7 +371,10 @@ class ProjectWindow(Adw.ApplicationWindow):
 
         # Wrap stack in scrolled window to allow shrinking
         scrolled = Gtk.ScrolledWindow()
-        scrolled.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
+        # NEVER for horizontal = force content to fit width, AUTOMATIC for vertical
+        scrolled.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        # IMPORTANT: Don't let content width inflate sidebar width
+        scrolled.set_propagate_natural_width(False)
         scrolled.set_vexpand(True)
         scrolled.set_child(self.sidebar_stack)
         box.append(scrolled)
@@ -648,9 +662,10 @@ class ProjectWindow(Adw.ApplicationWindow):
     def _on_sidebar_toggled(self, button):
         """Toggle sidebar visibility."""
         if button.get_active():
-            # Restore sidebar
+            # Restore sidebar from saved position or settings
             self.sidebar.set_visible(True)
-            self.paned.set_position(self._saved_pane_position if hasattr(self, '_saved_pane_position') else 280)
+            default_width = self.settings.get("window.sidebar_width", 370)
+            self.paned.set_position(self._saved_pane_position if hasattr(self, '_saved_pane_position') else default_width)
         else:
             # Hide sidebar
             self._saved_pane_position = self.paned.get_position()

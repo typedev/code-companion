@@ -249,11 +249,13 @@ class ProblemsDetailView(Gtk.Box):
         # Font
         font_family = settings.get("editor.font_family", "Monospace")
         font_size = settings.get("editor.font_size", 12)
+        line_height = settings.get("editor.line_height", 1.4)
         css_provider = Gtk.CssProvider()
         css_provider.load_from_data(f"""
             textview {{
                 font-family: "{font_family}";
                 font-size: {font_size}pt;
+                line-height: {line_height};
             }}
         """.encode())
         self.source_view.get_style_context().add_provider(

@@ -150,6 +150,8 @@ class GitChangesPanel(Gtk.Box):
         self.branch_label = Gtk.Label()
         self.branch_label.set_xalign(0)
         self.branch_label.add_css_class("heading")
+        self.branch_label.set_ellipsize(2)  # PANGO_ELLIPSIZE_MIDDLE
+        self.branch_label.set_max_width_chars(30)
         branch_content.append(self.branch_label)
 
         dropdown_icon = Gtk.Image.new_from_icon_name("pan-down-symbolic")
@@ -201,21 +203,23 @@ class GitChangesPanel(Gtk.Box):
         self.commit_entry.connect("activate", self._on_commit_clicked)
         actions_box.append(self.commit_entry)
 
-        # Buttons row
+        # Buttons row - use hexpand instead of homogeneous for flexible sizing
         buttons_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-        buttons_box.set_homogeneous(True)
 
         self.commit_btn = Gtk.Button(label="Commit")
         self.commit_btn.add_css_class("suggested-action")
         self.commit_btn.set_sensitive(False)
+        self.commit_btn.set_hexpand(True)
         self.commit_btn.connect("clicked", self._on_commit_clicked)
         buttons_box.append(self.commit_btn)
 
         self.push_btn = Gtk.Button(label="Push")
+        self.push_btn.set_hexpand(True)
         self.push_btn.connect("clicked", self._on_push_clicked)
         buttons_box.append(self.push_btn)
 
         self.pull_btn = Gtk.Button(label="Pull")
+        self.pull_btn.set_hexpand(True)
         self.pull_btn.connect("clicked", self._on_pull_clicked)
         buttons_box.append(self.pull_btn)
 

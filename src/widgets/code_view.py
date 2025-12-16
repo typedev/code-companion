@@ -188,29 +188,35 @@ class DiffView(Gtk.Box):
 
     def _setup_css(self):
         """Set up CSS for diff colors."""
-        css = b"""
-        .diff-view {
-            font-family: monospace;
-            font-size: 10pt;
-        }
-        .diff-added {
+        settings = SettingsService.get_instance()
+        font_family = settings.get("editor.font_family", "Monospace")
+        font_size = settings.get("editor.font_size", 12)
+        line_height = settings.get("editor.line_height", 1.4)
+
+        css = f"""
+        .diff-view {{
+            font-family: "{font_family}";
+            font-size: {font_size}pt;
+            line-height: {line_height};
+        }}
+        .diff-added {{
             background-color: rgba(46, 204, 113, 0.2);
             color: #2ecc71;
-        }
-        .diff-removed {
+        }}
+        .diff-removed {{
             background-color: rgba(231, 76, 60, 0.2);
             color: #e74c3c;
-        }
-        .diff-hunk {
+        }}
+        .diff-hunk {{
             background-color: rgba(52, 152, 219, 0.15);
             color: #3498db;
-        }
-        .diff-context {
+        }}
+        .diff-context {{
             color: @theme_fg_color;
-        }
+        }}
         """
         provider = Gtk.CssProvider()
-        provider.load_from_data(css)
+        provider.load_from_string(css)
         Gtk.StyleContext.add_provider_for_display(
             self.get_display(),
             provider,
