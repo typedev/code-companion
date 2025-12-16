@@ -10,6 +10,7 @@ from gi.repository import Gtk, GtkSource, GLib, GObject, Pango
 
 from .code_view import get_language_for_file
 from .script_toolbar import ScriptToolbar
+from .markdown_preview import MarkdownPreview
 from ..services import ToastService, SettingsService
 
 
@@ -29,6 +30,8 @@ class FileEditor(Gtk.Box):
         self.file_path = file_path
         self._modified = False
         self._save_timeout_id: int | None = None
+        self._is_markdown = Path(file_path).suffix.lower() == ".md"
+        self._preview_active = False
 
         self._build_ui()
         self._load_file()
@@ -38,14 +41,16 @@ class FileEditor(Gtk.Box):
         # Get settings
         self.settings = SettingsService.get_instance()
 
-        # Script toolbar for .py/.sh files
+        # Script toolbar for .py/.sh/.md files
         self.script_toolbar = None
         ext = Path(self.file_path).suffix.lower()
-        if ext in (".py", ".sh"):
+        if ext in (".py", ".sh", ".md"):
             self.script_toolbar = ScriptToolbar(self.file_path)
             self.script_toolbar.connect("run-script", self._on_run_script)
             self.script_toolbar.connect("go-to-line", self._on_go_to_line)
             self.script_toolbar.set_cursor_line_callback(self._get_cursor_line)
+            if self._is_markdown:
+                self.script_toolbar.connect("toggle-preview", self._on_toggle_preview)
             self.append(self.script_toolbar)
 
         # Create source buffer and view
@@ -93,7 +98,24 @@ class FileEditor(Gtk.Box):
         scrolled.set_hexpand(True)
         scrolled.set_child(self.source_view)
 
-        self.append(scrolled)
+        # For markdown files, use a Stack to switch between editor and preview
+        if self._is_markdown:
+            self.stack = Gtk.Stack()
+            self.stack.set_transition_type(Gtk.StackTransitionType.CROSSFADE)
+            self.stack.set_vexpand(True)
+            self.stack.set_hexpand(True)
+
+            self.stack.add_named(scrolled, "editor")
+
+            # Create preview widget
+            self.markdown_preview = MarkdownPreview()
+            self.stack.add_named(self.markdown_preview, "preview")
+
+            self.append(self.stack)
+        else:
+            self.stack = None
+            self.markdown_preview = None
+            self.append(scrolled)
 
     def _apply_settings(self):
         """Apply all settings to the editor."""
@@ -265,7 +287,8 @@ class FileEditor(Gtk.Box):
 
     def _update_outline(self):
         """Update outline in script toolbar."""
-        if self.script_toolbar and Path(self.file_path).suffix.lower() == ".py":
+        ext = Path(self.file_path).suffix.lower()
+        if self.script_toolbar and ext in (".py", ".md"):
             start = self.buffer.get_start_iter()
             end = self.buffer.get_end_iter()
             source = self.buffer.get_text(start, end, True)
@@ -281,6 +304,26 @@ class FileEditor(Gtk.Box):
     def _on_go_to_line(self, toolbar, line: int):
         """Handle go to line request from outline."""
         self.go_to_line(line)
+
+    def _on_toggle_preview(self, toolbar, is_preview: bool):
+        """Handle preview toggle for markdown files."""
+        if not self.stack:
+            return
+
+        self._preview_active = is_preview
+
+        if is_preview:
+            # Update preview content before showing
+            start = self.buffer.get_start_iter()
+            end = self.buffer.get_end_iter()
+            markdown_text = self.buffer.get_text(start, end, True)
+            base_path = f"file://{Path(self.file_path).parent}/"
+            self.markdown_preview.update_preview(markdown_text, base_path)
+            self.stack.set_visible_child_name("preview")
+        else:
+            self.stack.set_visible_child_name("editor")
+            # Focus editor when switching back
+            GLib.idle_add(self.source_view.grab_focus)
 
     def _get_cursor_line(self) -> int:
         """Return current cursor line number."""

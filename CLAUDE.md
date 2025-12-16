@@ -69,7 +69,8 @@ src/
 │   ├── snippets_bar.py  # Snippets buttons bar (right-click to delete)
 │   ├── problems_panel.py  # Problems sidebar (ruff/mypy file list)
 │   ├── problems_detail_view.py  # Problems detail (list + code preview)
-│   ├── script_toolbar.py  # Script toolbar (Run + Outline for .py/.sh files)
+│   ├── script_toolbar.py  # Script toolbar (Run + Outline for .py/.sh/.md files)
+│   ├── markdown_preview.py  # WebKit-based markdown preview with highlight.js
 │   └── ...
 ├── services/            # Business logic
 │   ├── history.py       # Claude session history reader
@@ -83,7 +84,8 @@ src/
 │   ├── file_monitor_service.py  # Centralized file monitoring (git, working tree, notes, tasks)
 │   ├── problems_service.py  # Linter runner (ruff, mypy) with JSON parsing
 │   ├── icon_cache.py    # Material Design icons cache (O(1) lookup)
-│   └── python_outline.py  # Python AST parser for code outline
+│   ├── python_outline.py  # Python AST parser for code outline
+│   └── markdown_outline.py  # Markdown heading parser for outline
 ├── resources/
 │   └── icons/           # Material Design SVG icons (from vscode-material-icon-theme)
 └── utils/               # Helpers (path encoding)
@@ -204,6 +206,12 @@ Session files are JSONL with event types: `user`, `assistant`, `tool_use`, `tool
   - Color coding: classes (`@accent_color`), methods (`@success_color`), functions (`@warning_color`)
   - Cursor sync: auto-select current element in outline based on cursor position
   - TODO: Save last used arguments per file
+- [x] v0.7.4: Markdown Support:
+  - Markdown outline navigation (headings # to ######)
+  - Markdown preview with WebKit (highlight.js for code blocks)
+  - Preview toggle button in toolbar for .md files
+  - Theme-aware preview (light/dark)
+  - TODO: Editor search/replace (see `docs/TODO-editor-search.md`)
 - [ ] v0.8: Packaging (Flatpak, .desktop file)
 - [ ] v1.0: Multi-agent orchestration with Git worktrees
 

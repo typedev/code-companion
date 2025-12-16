@@ -61,9 +61,10 @@ wheels = [
 
 [[package]]
 name = "claude-companion"
-version = "0.7.0"
+version = "0.7.4"
 source = { virtual = "." }
 dependencies = [
+    { name = "mistune" },
     { name = "pathspec" },
     { name = "pygit2" },
     { name = "pygobject" },
@@ -77,6 +78,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "mistune", specifier = ">=3.1.4" },
     { name = "pathspec", specifier = ">=0.12.0" },
     { name = "pygit2", specifier = ">=1.13.0" },
     { name = "pygobject", specifier = ">=3.46" },
@@ -138,6 +140,15 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/5d/7f/12a73ff17bca4351e73d585dd9ebf46723c4a8622c4af7fe11a2e2d011ff/librt-0.7.3-cp314-cp314t-win32.whl", hash = "sha256:d09f677693328503c9e492e33e9601464297c01f9ebd966ea8fc5308f3069bfd", size = 45586, upload-time = "2025-12-06T19:04:29.116Z" },
     { url = "https://files.pythonhosted.org/packages/e2/df/8decd032ac9b995e4f5606cde783711a71094128d88d97a52e397daf2c89/librt-0.7.3-cp314-cp314t-win_amd64.whl", hash = "sha256:25711f364c64cab2c910a0247e90b51421e45dbc8910ceeb4eac97a9e132fc6f", size = 53002, upload-time = "2025-12-06T19:04:30.173Z" },
     { url = "https://files.pythonhosted.org/packages/de/0c/6605b6199de8178afe7efc77ca1d8e6db00453bc1d3349d27605c0f42104/librt-0.7.3-cp314-cp314t-win_arm64.whl", hash = "sha256:a9f9b661f82693eb56beb0605156c7fca57f535704ab91837405913417d6990b", size = 45647, upload-time = "2025-12-06T19:04:31.302Z" },
+]
+
+[[package]]
+name = "mistune"
+version = "3.1.4"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/d7/02/a7fb8b21d4d55ac93cdcde9d3638da5dd0ebdd3a4fed76c7725e10b81cbe/mistune-3.1.4.tar.gz", hash = "sha256:b5a7f801d389f724ec702840c11d8fc48f2b33519102fc7ee739e8177b672164", size = 94588, upload-time = "2025-08-29T07:20:43.594Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/7a/f0/8282d9641415e9e33df173516226b404d367a0fc55e1a60424a152913abc/mistune-3.1.4-py3-none-any.whl", hash = "sha256:93691da911e5d9d2e23bc54472892aff676df27a75274962ff9edc210364266d", size = 53481, upload-time = "2025-08-29T07:20:42.218Z" },
 ]
 
 [[package]]

@@ -21,6 +21,7 @@ from .snippets_bar import SnippetsBar
 from .problems_panel import ProblemsPanel
 from .problems_detail_view import ProblemsDetailView
 from .script_toolbar import ScriptToolbar
+from .markdown_preview import MarkdownPreview
 
 __all__ = [
     "MessageRow",
@@ -47,4 +48,5 @@ __all__ = [
     "ProblemsPanel",
     "ProblemsDetailView",
     "ScriptToolbar",
+    "MarkdownPreview",
 ]

@@ -5,6 +5,7 @@ from pathlib import Path
 from gi.repository import Adw, Gtk, Gio, GObject, GLib
 
 from ..services.python_outline import parse_python_outline, OutlineItem
+from ..services.markdown_outline import parse_markdown_outline, MarkdownHeading
 
 
 # CSS for outline color coding using Adwaita semantic colors
@@ -18,6 +19,19 @@ OUTLINE_CSS = """
 .outline-function {
     color: @warning_color;
 }
+.outline-h1 {
+    color: @accent_color;
+    font-weight: bold;
+}
+.outline-h2 {
+    color: @accent_color;
+}
+.outline-h3 {
+    color: @success_color;
+}
+.outline-h4, .outline-h5, .outline-h6 {
+    color: @warning_color;
+}
 """
 
 
@@ -27,13 +41,15 @@ class ScriptToolbar(Gtk.Box):
     __gsignals__ = {
         "run-script": (GObject.SignalFlags.RUN_FIRST, None, (str,)),  # args string
         "go-to-line": (GObject.SignalFlags.RUN_FIRST, None, (int,)),  # line number
+        "toggle-preview": (GObject.SignalFlags.RUN_FIRST, None, (bool,)),  # is_preview_active
     }
 
     def __init__(self, file_path: str):
         super().__init__(orientation=Gtk.Orientation.HORIZONTAL)
         self.file_path = file_path
-        self._outline_items: list[OutlineItem] = []
+        self._outline_items: list[OutlineItem] | list[MarkdownHeading] = []
         self._get_cursor_line_func = None  # Callback to get current cursor line
+        self._file_ext = Path(file_path).suffix.lower()
 
         self.set_spacing(8)
         self.set_margin_start(8)
@@ -57,29 +73,28 @@ class ScriptToolbar(Gtk.Box):
 
     def _build_ui(self):
         """Build toolbar UI."""
-        ext = Path(self.file_path).suffix.lower()
+        # Run button (only for scripts, not markdown)
+        if self._file_ext in (".py", ".sh"):
+            run_menu = Gio.Menu()
+            run_menu.append("Run with arguments...", "toolbar.run-with-args")
 
-        # Run button (SplitButton with menu for "Run with arguments")
-        run_menu = Gio.Menu()
-        run_menu.append("Run with arguments...", "toolbar.run-with-args")
+            self.run_button = Adw.SplitButton()
+            self.run_button.set_label("Run")
+            self.run_button.set_icon_name("media-playback-start-symbolic")
+            self.run_button.set_menu_model(run_menu)
+            self.run_button.connect("clicked", self._on_run_clicked)
 
-        self.run_button = Adw.SplitButton()
-        self.run_button.set_label("Run")
-        self.run_button.set_icon_name("media-playback-start-symbolic")
-        self.run_button.set_menu_model(run_menu)
-        self.run_button.connect("clicked", self._on_run_clicked)
+            # Action for menu item
+            action_group = Gio.SimpleActionGroup()
+            run_with_args_action = Gio.SimpleAction.new("run-with-args", None)
+            run_with_args_action.connect("activate", self._on_run_with_args_clicked)
+            action_group.add_action(run_with_args_action)
+            self.insert_action_group("toolbar", action_group)
 
-        # Action for menu item
-        action_group = Gio.SimpleActionGroup()
-        run_with_args_action = Gio.SimpleAction.new("run-with-args", None)
-        run_with_args_action.connect("activate", self._on_run_with_args_clicked)
-        action_group.add_action(run_with_args_action)
-        self.insert_action_group("toolbar", action_group)
+            self.append(self.run_button)
 
-        self.append(self.run_button)
-
-        # Outline button (only for Python files)
-        if ext == ".py":
+        # Outline button (for Python and Markdown files)
+        if self._file_ext in (".py", ".md"):
             self.outline_button = Gtk.MenuButton()
             self.outline_button.set_label("Outline")
             self.outline_button.set_icon_name("view-list-symbolic")
@@ -90,9 +105,12 @@ class ScriptToolbar(Gtk.Box):
 
             # Scrolled window for outline list
             scrolled = Gtk.ScrolledWindow()
-            scrolled.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+            scrolled.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
+            scrolled.set_min_content_width(300)
+            scrolled.set_max_content_width(500)
             scrolled.set_max_content_height(400)
             scrolled.set_propagate_natural_height(True)
+            scrolled.set_propagate_natural_width(True)
 
             self.outline_list = Gtk.ListBox()
             self.outline_list.set_selection_mode(Gtk.SelectionMode.SINGLE)
@@ -108,6 +126,14 @@ class ScriptToolbar(Gtk.Box):
 
             self.outline_button.set_popover(self.outline_popover)
             self.append(self.outline_button)
+
+        # Preview toggle button (only for Markdown files)
+        if self._file_ext == ".md":
+            self.preview_button = Gtk.ToggleButton()
+            self.preview_button.set_label("Preview")
+            self.preview_button.set_icon_name("view-reveal-symbolic")
+            self.preview_button.connect("toggled", self._on_preview_toggled)
+            self.append(self.preview_button)
 
         # Spacer to push filename to the right
         spacer = Gtk.Box()
@@ -163,20 +189,32 @@ class ScriptToolbar(Gtk.Box):
             args = entry.get_text().strip()
             self.emit("run-script", args)
 
+    def _on_preview_toggled(self, button):
+        """Handle preview toggle button."""
+        is_active = button.get_active()
+        self.emit("toggle-preview", is_active)
+
     def update_outline(self, source: str):
         """Update the outline from source code."""
         if not hasattr(self, "outline_list"):
             return
 
-        # Parse outline
-        self._outline_items = parse_python_outline(source)
+        # Parse outline based on file type
+        if self._file_ext == ".py":
+            self._outline_items = parse_python_outline(source)
+            empty_message = "No classes or functions found"
+        elif self._file_ext == ".md":
+            self._outline_items = parse_markdown_outline(source)
+            empty_message = "No headings found"
+        else:
+            return
 
         # Clear and rebuild list
         self.outline_list.remove_all()
 
         if not self._outline_items:
             # Show empty state
-            label = Gtk.Label(label="No classes or functions found")
+            label = Gtk.Label(label=empty_message)
             label.add_css_class("dim-label")
             label.set_margin_top(12)
             label.set_margin_bottom(12)
@@ -186,11 +224,14 @@ class ScriptToolbar(Gtk.Box):
             return
 
         for item in self._outline_items:
-            row = self._create_outline_row(item)
+            if self._file_ext == ".py":
+                row = self._create_python_row(item)
+            else:
+                row = self._create_markdown_row(item)
             self.outline_list.append(row)
 
-    def _create_outline_row(self, item: OutlineItem) -> Gtk.ListBoxRow:
-        """Create a row for an outline item."""
+    def _create_python_row(self, item: OutlineItem) -> Gtk.ListBoxRow:
+        """Create a row for a Python outline item."""
         row = Gtk.ListBoxRow()
         row.item = item  # Store reference
 
@@ -215,6 +256,41 @@ class ScriptToolbar(Gtk.Box):
             label.add_css_class("outline-method")
         else:  # function
             label.add_css_class("outline-function")
+
+        box.append(label)
+
+        # Line number
+        line_label = Gtk.Label(label=f":{item.line}")
+        line_label.add_css_class("dim-label")
+        line_label.set_hexpand(True)
+        line_label.set_xalign(1)
+        box.append(line_label)
+
+        row.set_child(box)
+        return row
+
+    def _create_markdown_row(self, item: MarkdownHeading) -> Gtk.ListBoxRow:
+        """Create a row for a Markdown heading."""
+        row = Gtk.ListBoxRow()
+        row.item = item  # Store reference
+
+        box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        box.set_margin_end(8)
+        box.set_margin_top(6)
+        box.set_margin_bottom(6)
+
+        # Indent based on heading level (h1=8, h2=16, h3=24, etc.)
+        indent = 8 + (item.level - 1) * 12
+        box.set_margin_start(indent)
+
+        # Heading text with color coding
+        label = Gtk.Label(label=item.display_name)
+        label.set_xalign(0)
+        label.set_ellipsize(3)  # PANGO_ELLIPSIZE_END
+        label.set_max_width_chars(40)
+
+        # Add CSS class based on heading level
+        label.add_css_class(f"outline-h{item.level}")
 
         box.append(label)
 

@@ -1,6 +1,6 @@
 [project]
 name = "claude-companion"
-version = "0.7.0"
+version = "0.7.4"
 description = "GTK4/libadwaita desktop companion for Claude Code"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -8,6 +8,7 @@ dependencies = [
     "pygobject>=3.46",
     "pygit2>=1.13.0",
     "pathspec>=0.12.0",
+    "mistune>=3.1.4",
 ]
 license = "Apache-2.0"
 authors = [
