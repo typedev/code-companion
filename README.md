@@ -15,14 +15,14 @@ A native GTK4/libadwaita desktop application for working with [Claude Code](http
 
 ### Project Workspace
 
-**Sidebar with 4 tabs:**
+**Vertical toolbar with 5 tabs:**
 
-#### Files Tab
+#### Files Tab (F)
 - **File Tree** — Browse project files with Material Design icons and git status indicators
 - **Unified Search** — Search files by name and content, with find & replace
 - **Tasks Panel** — Run VSCode tasks from `.vscode/tasks.json`
 
-#### Git Tab
+#### Git Tab (G)
 - **Changes Panel:**
   - View staged and unstaged changes
   - Stage/unstage individual files or all at once
@@ -37,30 +37,40 @@ A native GTK4/libadwaita desktop application for working with [Claude Code](http
   - Create, switch, delete branches
   - Branch popover with quick access
 
-#### Claude Tab
+#### Claude Tab (C)
 - Browse past Claude Code sessions (lazy loading for performance)
 - Filter by preview text or date
 - View messages with tool calls, thinking blocks, code/diff display
 - One-click Claude Code session launch
 
-#### Notes Tab
+#### Notes Tab (N)
 - **My Notes** — Personal notes in `notes/` folder with New Note button
 - **Docs** — Documentation from `docs/` folder and `CLAUDE.md`
 - **TODOs** — Auto-extracted from code (`TODO:`, `FIXME:`, `HACK:`, `XXX:`, `NOTE:`)
 
+#### Problems Tab (P)
+- **Linter Integration** — Run ruff and mypy on project files
+- **File Grouping** — Problems grouped by file with error counts
+- **Code Preview** — View problem location with syntax highlighting
+- **Copy to Clipboard** — Copy single problem or all problems
+
 ### Main Area
 - **File Editor** — Syntax highlighting via GtkSourceView 5, autosave on focus loss, go-to-line
+- **Script Toolbar** — Run button with arguments dialog, code outline for .py/.sh/.md files
+- **Markdown Preview** — WebKit-based preview with syntax highlighting (highlight.js)
 - **Terminal Tabs** — Embedded VTE terminal with Dracula theme, left padding, auto `.venv` activation
 - **Session View** — Claude session content with Markdown support
 - **Commit Detail View** — Files list + commit message + unified diff
+- **Snippets Bar** — Quick-access text snippets
 
 ### Settings & Preferences
 - **Theme:** System/Light/Dark via libadwaita
 - **Syntax Scheme:** All GtkSourceView schemes available
 - **Font:** Family, size, line height (shared by editor + terminal)
-- **Editor:** Tab size, insert spaces
+- **Editor:** Tab size, insert spaces, word wrap
 - **File Tree:** Show/hide hidden files
-- **Window State:** Auto-saves size, position, maximized state
+- **Linters:** Enable/disable ruff and mypy, ignore specific codes
+- **Window State:** Auto-saves size, position, sidebar width, maximized state
 
 ## Screenshots
 
@@ -72,12 +82,14 @@ A native GTK4/libadwaita desktop application for working with [Claude Code](http
 
 **System dependencies (Fedora):**
 ```bash
-sudo dnf install gtk4-devel libadwaita-devel gtksourceview5-devel vte291-gtk4-devel python3-gobject libgit2-devel
+sudo dnf install gtk4-devel libadwaita-devel gtksourceview5-devel \
+    vte291-gtk4-devel python3-gobject libgit2-devel webkit2gtk5.0-devel
 ```
 
 **System dependencies (Ubuntu/Debian):**
 ```bash
-sudo apt install libgtk-4-dev libadwaita-1-dev libgtksourceview-5-dev libvte-2.91-gtk4-dev python3-gi libgit2-dev
+sudo apt install libgtk-4-dev libadwaita-1-dev libgtksourceview-5-dev \
+    libvte-2.91-gtk4-dev python3-gi libgit2-dev libwebkitgtk-6.0-dev
 ```
 
 ### Python Setup
@@ -91,19 +103,19 @@ cd claude-companion
 uv sync
 
 # Run the application
-uv run python main.py
+uv run python -m src.main
 ```
 
 ## Usage
 
 ### Open Project Manager
 ```bash
-uv run python main.py
+uv run python -m src.main
 ```
 
 ### Open a specific project directly
 ```bash
-uv run python main.py --project /path/to/your/project
+uv run python -m src.main --project /path/to/your/project
 ```
 
 ## Architecture
@@ -132,6 +144,11 @@ src/
 │   ├── branch_popover.py    # Branch management popover
 │   ├── tasks_panel.py       # VSCode tasks.json runner
 │   ├── notes_panel.py       # Notes panel (My Notes + Docs + TODOs)
+│   ├── problems_panel.py    # Problems sidebar (ruff/mypy)
+│   ├── problems_detail_view.py  # Problems detail with code preview
+│   ├── script_toolbar.py    # Run button + Outline for scripts
+│   ├── markdown_preview.py  # WebKit markdown preview
+│   ├── snippets_bar.py      # Quick-access snippets
 │   ├── preferences_dialog.py# Settings dialog
 │   └── ...
 ├── services/                # Business logic
@@ -142,8 +159,12 @@ src/
 │   ├── tasks_service.py     # tasks.json parser
 │   ├── toast_service.py     # Toast notifications singleton
 │   ├── settings_service.py  # App settings (JSON storage)
+│   ├── snippets_service.py  # Text snippets management
 │   ├── file_monitor_service.py  # Centralized file monitoring
-│   └── icon_cache.py        # Material Design icons cache
+│   ├── problems_service.py  # Linter runner (ruff/mypy)
+│   ├── icon_cache.py        # Material Design icons cache
+│   ├── python_outline.py    # Python AST parser for outline
+│   └── markdown_outline.py  # Markdown heading parser
 └── resources/
     └── icons/               # Material Design SVG icons
 ```
@@ -157,7 +178,7 @@ src/
 - **Claude data** — Reads session history from `~/.claude/projects/[encoded-path]/`
 - **Material Design Icons** — Pre-loaded SVG icons from vscode-material-icon-theme with O(1) lookup
 - **Centralized file monitoring** — `FileMonitorService` handles all file watching with debouncing
-- **Lazy loading** — Claude history loads only when needed (background thread)
+- **Lazy loading** — Claude history and problems load only when needed (background thread)
 - **Git authentication** — HTTPS credentials dialog with git credential storage
 
 ## Roadmap
@@ -174,8 +195,18 @@ src/
 - [x] v0.6: Search & Notes (unified search, notes panel, filtering)
 - [x] v0.7: Settings & Preferences
 - [x] v0.7.1: Performance & UX (lazy loading, file monitoring, terminal enhancements, git auth)
-- [ ] v0.8: Packaging (Flatpak, .desktop file)
+- [x] v0.7.2: Problems Panel (ruff/mypy integration, vertical toolbar)
+- [x] v0.7.3: Script Toolbar (Run button, Python outline)
+- [x] v0.7.4: Markdown Support (outline, WebKit preview)
+- [ ] v0.8: Code Companion (multi-provider support, rename)
+- [ ] v0.9: Packaging (Flatpak, .desktop file)
 - [ ] v1.0: Multi-agent orchestration with Git worktrees
+
+## Third-Party Credits
+
+- **Icons:** [Material Icon Theme](https://github.com/material-extensions/vscode-material-icon-theme) (MIT License)
+- **Markdown:** [mistune](https://github.com/lepture/mistune) (BSD-3 License)
+- **Syntax Highlighting:** [highlight.js](https://highlightjs.org) (BSD-3 License)
 
 ## License
 

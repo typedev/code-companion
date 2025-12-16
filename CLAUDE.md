@@ -212,7 +212,14 @@ Session files are JSONL with event types: `user`, `assistant`, `tool_use`, `tool
   - Preview toggle button in toolbar for .md files
   - Theme-aware preview (light/dark)
   - TODO: Editor search/replace (see `docs/TODO-editor-search.md`)
-- [ ] v0.8: Packaging (Flatpak, .desktop file)
+- [ ] v0.8: Code Companion Refactor:
+  - Rename to "Code Companion"
+  - Abstract HistoryService into interface + adapters
+  - ClaudeHistoryAdapter for ~/.claude/
+  - AI provider selection in Settings
+  - Prepare for future Gemini/Codex adapters
+  - See `docs/plan-code-companion-refactor.md`
+- [ ] v0.9: Packaging (Flatpak, .desktop file)
 - [ ] v1.0: Multi-agent orchestration with Git worktrees
 
 ## GTK4/libadwaita Gotchas
@@ -311,6 +318,7 @@ def on_setting_changed(settings, key, value):
 | `editor.word_wrap` | `true` | Wrap long lines at word boundaries |
 | `window.width/height` | `1200/800` | Window size |
 | `window.maximized` | `false` | Maximized state |
+| `window.sidebar_width` | `370` | Sidebar pane width |
 | `linters.ruff_enabled` | `true` | Enable ruff linter |
 | `linters.mypy_enabled` | `true` | Enable mypy type checker |
 | `linters.ignored_codes` | `""` | Comma-separated codes to ignore (e.g. "import-untyped, E402") |

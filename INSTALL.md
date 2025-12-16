@@ -10,14 +10,16 @@
 
 ```bash
 sudo dnf install gtk4-devel libadwaita-devel gtksourceview5-devel \
-    vte291-gtk4-devel python3-gobject pygobject3-devel
+    vte291-gtk4-devel python3-gobject pygobject3-devel \
+    libgit2-devel webkit2gtk5.0-devel
 ```
 
 ### System Dependencies (Ubuntu/Debian)
 
 ```bash
 sudo apt install libgtk-4-dev libadwaita-1-dev libgtksourceview-5-dev \
-    libvte-2.91-gtk4-dev python3-gi python3-gi-cairo gir1.2-gtk-4.0
+    libvte-2.91-gtk4-dev python3-gi python3-gi-cairo gir1.2-gtk-4.0 \
+    libgit2-dev libwebkitgtk-6.0-dev
 ```
 
 ---
@@ -175,11 +177,11 @@ Run directly without installation:
 
 ```bash
 cd claude-companion
-uv run python main.py
+uv run python -m src.main
 ```
 
 Or with a specific project:
 
 ```bash
-uv run python main.py --project /path/to/project
+uv run python -m src.main --project /path/to/project
 ```
