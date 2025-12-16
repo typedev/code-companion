@@ -3,20 +3,40 @@
 from gi.repository import Gtk, GLib
 
 from ..models import Session, Message
-from ..services import HistoryService
+from ..services import HistoryAdapter
 from .message_row import MessageRow
 
 
 class SessionView(Gtk.Box):
     """A scrollable view of session messages."""
 
-    def __init__(self, history_service: HistoryService):
+    def __init__(self, adapter: HistoryAdapter):
         super().__init__(orientation=Gtk.Orientation.VERTICAL)
 
-        self.history_service = history_service
+        self.adapter = adapter
         self.current_session: Session | None = None
 
+        self._setup_css()
         self._build_ui()
+
+    def _setup_css(self):
+        """Set up CSS for session view."""
+        css = b"""
+        .system-message {
+            background: alpha(@warning_color, 0.1);
+            border: 1px dashed alpha(@warning_color, 0.4);
+        }
+        .system-message .heading {
+            color: @warning_color;
+        }
+        """
+        provider = Gtk.CssProvider()
+        provider.load_from_data(css)
+        Gtk.StyleContext.add_provider_for_display(
+            self.get_display(),
+            provider,
+            Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
+        )
 
     def _build_ui(self):
         """Build the session view UI."""
@@ -47,7 +67,7 @@ class SessionView(Gtk.Box):
             self.message_list.remove(child)
 
         # Load session content
-        messages = self.history_service.load_session_content(session)
+        messages = self.adapter.load_session_content(session)
 
         if not messages:
             self._show_empty_state()

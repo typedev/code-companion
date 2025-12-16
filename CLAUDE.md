@@ -20,7 +20,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Claude Companion is a native GTK4/libadwaita desktop application for working with Claude Code. It provides session history viewing, active session management, Git integration, and project notes. The app reads Claude Code data from `~/.claude/` (projects, sessions, JSONL files).
+Code Companion is a native GTK4/libadwaita desktop application for working with AI coding assistants (starting with Claude Code). It provides session history viewing, active session management, Git integration, and project notes. The app uses an adapter pattern to support multiple AI CLI tools.
 
 ## Tech Stack
 
@@ -80,7 +80,7 @@ src/
 │   ├── tasks_service.py # VSCode tasks.json parser
 │   ├── toast_service.py # Toast notifications singleton
 │   ├── settings_service.py  # App settings singleton (JSON storage)
-│   ├── snippets_service.py  # Text snippets management (files in ~/.config/claude-companion/snippets/)
+│   ├── snippets_service.py  # Text snippets management (files in ~/.config/code-companion/snippets/)
 │   ├── file_monitor_service.py  # Centralized file monitoring (git, working tree, notes, tasks)
 │   ├── problems_service.py  # Linter runner (ruff, mypy) with JSON parsing
 │   ├── icon_cache.py    # Material Design icons cache (O(1) lookup)
@@ -122,8 +122,8 @@ src/
 
 Key patterns:
 - **Multi-process**: Each project runs in separate process (`Gio.ApplicationFlags.NON_UNIQUE`)
-- **Lock files**: `/tmp/claude-companion-locks/` prevents opening same project twice
-- **Project registry**: `~/.config/claude-companion/projects.json` stores user's projects
+- **Lock files**: `/tmp/code-companion-locks/` prevents opening same project twice
+- **Project registry**: `~/.config/code-companion/projects.json` stores user's projects
 - **Resizable pane**: `Gtk.Paned` for sidebar/content split (min 370px sidebar)
 - **Vertical toolbar**: Left sidebar with F/G/C/N/P toggle buttons for tab switching
 - **Unified search**: Single search box for both filenames and content (ripgrep/grep)
@@ -132,7 +132,7 @@ Key patterns:
 - **Centralized file monitoring**: `FileMonitorService` handles all file watching (git, working tree, notes, tasks) with debouncing
 - **Toast notifications**: `ToastService` singleton for app-wide feedback
 - **Selection preservation**: Lists preserve selection across refresh (git history, claude sessions)
-- **Settings service**: `SettingsService` singleton with JSON storage at `~/.config/claude-companion/settings.json`
+- **Settings service**: `SettingsService` singleton with JSON storage at `~/.config/code-companion/settings.json`
 - **Lazy loading**: Claude history panel loads sessions only when tab is shown (background thread)
 - **Git authentication**: HTTPS credentials dialog with git credential storage
 - **Terminal enhancements**: Left padding for readability, auto `.venv` activation on launch

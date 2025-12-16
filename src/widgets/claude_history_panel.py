@@ -6,11 +6,11 @@ from pathlib import Path
 from gi.repository import Gtk, GLib, GObject
 
 from ..models import Session
-from ..services import HistoryService
+from ..services import HistoryAdapter
 
 
 class ClaudeHistoryPanel(Gtk.Box):
-    """Panel displaying Claude session history in sidebar.
+    """Panel displaying AI CLI session history in sidebar.
 
     Uses lazy loading - sessions are only parsed when the tab is shown.
     """
@@ -19,11 +19,11 @@ class ClaudeHistoryPanel(Gtk.Box):
         "session-activated": (GObject.SignalFlags.RUN_FIRST, None, (object,)),  # Session object
     }
 
-    def __init__(self, project_path: Path, history_service: HistoryService):
+    def __init__(self, project_path: Path, adapter: HistoryAdapter):
         super().__init__(orientation=Gtk.Orientation.VERTICAL)
 
         self.project_path = project_path
-        self.history_service = history_service
+        self.adapter = adapter
         self._all_sessions = []  # Cache sessions for filtering
         self._filter_text = ""
         self._loaded = False  # Lazy loading flag
@@ -156,7 +156,7 @@ class ClaudeHistoryPanel(Gtk.Box):
         # Load in background thread
         def load_sessions():
             try:
-                sessions = self.history_service.get_sessions_for_path(self.project_path)
+                sessions = self.adapter.get_sessions_for_path(self.project_path)
                 GLib.idle_add(self._on_sessions_loaded, sessions, None)
             except Exception as e:
                 GLib.idle_add(self._on_sessions_loaded, [], str(e))

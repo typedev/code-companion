@@ -5,7 +5,7 @@ import os
 import signal
 from pathlib import Path
 
-LOCK_DIR = Path("/tmp/claude-companion-locks")
+LOCK_DIR = Path("/tmp/code-companion-locks")
 
 
 class ManagerLock:
@@ -99,7 +99,7 @@ class ManagerLock:
             cmdline_path = Path(f"/proc/{pid}/cmdline")
             if cmdline_path.exists():
                 cmdline = cmdline_path.read_text()
-                if "python" in cmdline and ("claude-companion" in cmdline or "src.main" in cmdline):
+                if "python" in cmdline and ("code-companion" in cmdline or "src.main" in cmdline):
                     return True
                 return False
             return True
@@ -112,7 +112,7 @@ class ProjectLock:
 
     def __init__(self, project_path: str):
         self.project_path = str(Path(project_path).resolve())
-        self.lock_dir = Path("/tmp/claude-companion-locks")
+        self.lock_dir = Path("/tmp/code-companion-locks")
         self.lock_file = self._get_lock_file_path()
         self._pid = os.getpid()
 
@@ -235,7 +235,7 @@ class ProjectLock:
             if cmdline_path.exists():
                 cmdline = cmdline_path.read_text()
                 # Check if it's python running our app
-                if "python" in cmdline and "claude-companion" in cmdline:
+                if "python" in cmdline and "code-companion" in cmdline:
                     return True
                 elif "python" in cmdline and "main.py" in cmdline:
                     return True

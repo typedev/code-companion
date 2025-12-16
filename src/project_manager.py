@@ -48,7 +48,7 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
 
     def _setup_window(self):
         """Configure window properties."""
-        self.set_title("Claude Companion")
+        self.set_title("Code Companion")
         self.set_default_size(500, 600)
 
     def _build_ui(self):
@@ -252,7 +252,7 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         box.set_valign(Gtk.Align.CENTER)
 
-        title = Gtk.Label(label="Claude Companion")
+        title = Gtk.Label(label="Code Companion")
         title.add_css_class("title")
 
         subtitle = Gtk.Label(label=f"v{__version__}")
@@ -267,9 +267,9 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
         info = get_version_info()
 
         about = Adw.AboutDialog()
-        about.set_application_name("Claude Companion")
+        about.set_application_name("Code Companion")
         about.set_version(info["version"])
-        about.set_comments("Native GTK4 companion app for Claude Code")
+        about.set_comments("Native GTK4 companion app for AI coding assistants")
 
         # License
         about.set_license_type(Gtk.License.APACHE_2_0)
@@ -277,7 +277,7 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
 
         # Links
         about.set_website("https://github.com/typedev")
-        about.set_issue_url("https://github.com/typedev/claude-companion/issues")
+        about.set_issue_url("https://github.com/typedev/code-companion/issues")
 
         # Credits
         about.set_developer_name("Alexander Lubovenko")

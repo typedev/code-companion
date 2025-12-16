@@ -10,6 +10,8 @@ gi.require_version("GObject", "2.0")
 
 from gi.repository import GObject
 
+from .config_path import get_config_dir
+
 
 # Default settings
 DEFAULT_SETTINGS = {
@@ -62,7 +64,7 @@ class SettingsService(GObject.Object):
 
     def __init__(self):
         super().__init__()
-        self.config_dir = Path.home() / ".config" / "claude-companion"
+        self.config_dir = get_config_dir()
         self.config_file = self.config_dir / "settings.json"
         self._settings: dict = {}
         self._ensure_config_dir()

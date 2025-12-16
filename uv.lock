@@ -60,8 +60,8 @@ wheels = [
 ]
 
 [[package]]
-name = "claude-companion"
-version = "0.7.4"
+name = "code-companion"
+version = "0.8.0"
 source = { virtual = "." }
 dependencies = [
     { name = "mistune" },

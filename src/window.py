@@ -32,7 +32,7 @@ class MainWindow(Adw.ApplicationWindow):
 
     def _setup_window(self):
         """Configure window properties."""
-        self.set_title("Claude Companion")
+        self.set_title("Code Companion")
         self.set_default_size(1100, 700)
 
     def _build_ui(self):
@@ -135,7 +135,7 @@ class MainWindow(Adw.ApplicationWindow):
 
         # Wrap in NavigationPage
         page = Adw.NavigationPage()
-        page.set_title("Claude Companion")
+        page.set_title("Code Companion")
         page.set_child(content_box)
 
         return page

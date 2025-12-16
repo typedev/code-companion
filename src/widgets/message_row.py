@@ -25,6 +25,10 @@ class MessageRow(Gtk.Box):
         self.set_margin_top(6)
         self.set_margin_bottom(6)
 
+        # Special styling for system messages
+        if self.message.role == MessageRole.SYSTEM:
+            self.add_css_class("system-message")
+
         # Inner padding
         inner_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
         inner_box.set_margin_start(12)
@@ -51,6 +55,9 @@ class MessageRow(Gtk.Box):
         if self.message.role == MessageRole.USER:
             icon = Gtk.Label(label="👤")
             role_label = Gtk.Label(label="User")
+        elif self.message.role == MessageRole.SYSTEM:
+            icon = Gtk.Label(label="⚙️")
+            role_label = Gtk.Label(label="System")
         else:
             icon = Gtk.Label(label="🤖")
             role_label = Gtk.Label(label="Claude")
@@ -84,8 +91,28 @@ class MessageRow(Gtk.Box):
                 tool_output=block.tool_output,
                 tool_is_error=block.tool_is_error,
             )
+        elif block.type == ContentType.SYSTEM:
+            return self._build_system_block(block.text)
         return None
 
     def _build_text_block(self, text: str) -> Gtk.Widget:
         """Build a text content widget with markdown rendering."""
         return MarkdownView(text)
+
+    def _build_system_block(self, text: str) -> Gtk.Widget:
+        """Build a system notification widget."""
+        box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        box.set_halign(Gtk.Align.CENTER)
+
+        # Warning icon
+        icon = Gtk.Image.new_from_icon_name("dialog-warning-symbolic")
+        icon.add_css_class("warning")
+        box.append(icon)
+
+        # System text
+        label = Gtk.Label(label=text)
+        label.add_css_class("dim-label")
+        label.set_wrap(True)
+        box.append(label)
+
+        return box

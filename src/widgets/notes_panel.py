@@ -9,6 +9,7 @@ from gi.repository import Gtk, Gdk, GLib, GObject, Adw
 
 from ..services import SnippetsService, RulesService, ToastService, GitService, FileStatus, FileMonitorService
 from ..services.icon_cache import IconCache
+from ..services.config_path import get_config_dir
 
 
 # CSS classes for git status colors (same as file_tree.py)
@@ -154,9 +155,9 @@ class NotesPanel(Gtk.Box):
         self.content_box.append(self.docs_expander)
 
         # Config directory for snippets and rules
-        config_dir = Path.home() / ".config" / "claude-companion"
+        config_dir = get_config_dir()
 
-        # Snippets section (~/.config/claude-companion/snippets/*.md)
+        # Snippets section (~/.config/code-companion/snippets/*.md)
         snippets_dir = config_dir / "snippets"
         self.snippets_expander, self.snippets_header, self.snippets_list = self._create_file_section(
             "Snippets", self._on_add_snippet_clicked, snippets_dir
@@ -164,7 +165,7 @@ class NotesPanel(Gtk.Box):
         self.snippets_expander.set_margin_top(8)
         self.content_box.append(self.snippets_expander)
 
-        # Rules section (~/.config/claude-companion/rules/*.md)
+        # Rules section (~/.config/code-companion/rules/*.md)
         rules_dir = config_dir / "rules"
         self.rules_expander, self.rules_header, self.rules_list = self._create_file_section(
             "Rules", self._on_add_rule_clicked, rules_dir

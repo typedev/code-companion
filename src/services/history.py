@@ -155,7 +155,7 @@ class HistoryService:
                     timestamp = self._parse_timestamp(event.get("timestamp"))
 
                     if event_type == "user":
-                        msg = self._parse_user_message(event, timestamp)
+                        msg = self._parse_user_message(event, timestamp, pending_tool_blocks)
                         if msg:
                             messages.append(msg)
 
@@ -164,8 +164,10 @@ class HistoryService:
                         if msg:
                             messages.append(msg)
 
-                    elif event_type == "tool_result":
-                        self._handle_tool_result(event, pending_tool_blocks)
+                    elif event_type == "system":
+                        msg = self._parse_system_message(event, timestamp)
+                        if msg:
+                            messages.append(msg)
 
         except (OSError, IOError):
             pass
@@ -183,18 +185,43 @@ class HistoryService:
         except (ValueError, TypeError):
             return None
 
-    def _parse_user_message(self, event: dict, timestamp: datetime | None) -> Message | None:
+    def _parse_user_message(
+        self, event: dict, timestamp: datetime | None, pending_tool_blocks: dict
+    ) -> Message | None:
         """Parse a user message event."""
         msg_data = event.get("message", {})
         content = msg_data.get("content", "")
 
         blocks = []
+        has_tool_result = False
+
         if isinstance(content, str):
             blocks.append(ContentBlock(type=ContentType.TEXT, text=content))
         elif isinstance(content, list):
             for item in content:
-                if isinstance(item, dict) and item.get("type") == "text":
+                if not isinstance(item, dict):
+                    continue
+
+                item_type = item.get("type", "")
+
+                if item_type == "text":
                     blocks.append(ContentBlock(type=ContentType.TEXT, text=item.get("text", "")))
+
+                elif item_type == "tool_result":
+                    # Tool results come as user messages with tool_result content blocks
+                    tool_id = item.get("tool_use_id", "")
+                    result_content = item.get("content", "")
+                    is_error = item.get("is_error", False)
+
+                    if tool_id and tool_id in pending_tool_blocks:
+                        block = pending_tool_blocks[tool_id]
+                        block.tool_output = str(result_content) if result_content else ""
+                        block.tool_is_error = is_error
+                        has_tool_result = True
+
+        # Don't create message if it only contains tool results (they're attached to tool_use)
+        if has_tool_result and not blocks:
+            return None
 
         if not blocks:
             return None
@@ -244,10 +271,26 @@ class HistoryService:
 
         return Message(role=MessageRole.ASSISTANT, timestamp=timestamp, content_blocks=blocks)
 
-    def _handle_tool_result(self, event: dict, pending_tool_blocks: dict) -> None:
-        """Handle tool result event by updating the corresponding content block."""
-        tool_id = event.get("tool_use_id", "")
-        if tool_id in pending_tool_blocks:
-            block = pending_tool_blocks[tool_id]
-            block.tool_output = str(event.get("content", ""))
-            block.tool_is_error = event.get("is_error", False)
+    def _parse_system_message(self, event: dict, timestamp: datetime | None) -> Message | None:
+        """Parse a system event (compaction, etc.)."""
+        subtype = event.get("subtype", "")
+        content = event.get("content", "")
+
+        # Only show compact_boundary events for now
+        if subtype != "compact_boundary":
+            return None
+
+        # Extract useful metadata
+        metadata = event.get("compactMetadata", {})
+        trigger = metadata.get("trigger", "")
+        pre_tokens = metadata.get("preTokens", 0)
+
+        # Build display text
+        text = content or "Conversation compacted"
+        if pre_tokens:
+            text = f"{text} ({pre_tokens:,} tokens)"
+        if trigger:
+            text = f"{text} [{trigger}]"
+
+        block = ContentBlock(type=ContentType.SYSTEM, text=text)
+        return Message(role=MessageRole.SYSTEM, timestamp=timestamp, content_blocks=[block])

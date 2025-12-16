@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Entry point for Claude Companion."""
+"""Entry point for Code Companion."""
 
 from src.main import main
 

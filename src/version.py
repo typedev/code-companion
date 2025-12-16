@@ -1,10 +1,10 @@
-"""Version management for Claude Companion."""
+"""Version management for Code Companion."""
 
 import subprocess
 from pathlib import Path
 
 # Base version (update manually at milestones)
-__version_base__ = "0.7"
+__version_base__ = "0.8"
 
 
 def get_version() -> str:

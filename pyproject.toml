@@ -1,7 +1,7 @@
 [project]
-name = "claude-companion"
-version = "0.7.4"
-description = "GTK4/libadwaita desktop companion for Claude Code"
+name = "code-companion"
+version = "0.8.0"
+description = "GTK4/libadwaita desktop companion for AI coding assistants"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
@@ -16,7 +16,7 @@ authors = [
 ]
 
 [project.scripts]
-claude-companion = "src.main:main"
+code-companion = "src.main:main"
 
 [dependency-groups]
 dev = [

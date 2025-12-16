@@ -3,12 +3,14 @@
 import json
 from pathlib import Path
 
+from .config_path import get_config_dir
+
 
 class ProjectRegistry:
     """Manages the list of manually registered projects."""
 
     def __init__(self):
-        self.config_dir = Path.home() / ".config" / "claude-companion"
+        self.config_dir = get_config_dir()
         self.config_file = self.config_dir / "projects.json"
         self._ensure_config_dir()
 

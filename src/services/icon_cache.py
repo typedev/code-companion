@@ -776,13 +776,38 @@ class IconCache:
         else:
             return self.get_file_gicon(path)
 
-    def get_claude_texture(self) -> Gdk.Texture | None:
-        """Get Gdk.Texture for Claude icon."""
-        return self._cache.get("claude")
+    def get_provider_texture(self, icon_name: str) -> Gdk.Texture | None:
+        """Get Gdk.Texture for AI provider icon.
 
-    def get_claude_gicon(self) -> Gio.Icon | None:
-        """Get Gio.Icon for Claude icon."""
-        icon_path = self._icons_dir / "claude.svg"
+        Args:
+            icon_name: Icon name (e.g., "claude", "gemini", "codex")
+
+        Returns:
+            Gdk.Texture for the icon, or None if not found
+        """
+        return self._cache.get(icon_name)
+
+    def get_provider_gicon(self, icon_name: str) -> Gio.Icon | None:
+        """Get Gio.Icon for AI provider icon.
+
+        Args:
+            icon_name: Icon name (e.g., "claude", "gemini", "codex")
+
+        Returns:
+            Gio.FileIcon pointing to the SVG, or None if not found
+        """
+        if not icon_name:
+            return None
+        icon_path = self._icons_dir / f"{icon_name}.svg"
         if icon_path.exists():
             return Gio.FileIcon.new(Gio.File.new_for_path(str(icon_path)))
         return None
+
+    # Backward compatible aliases
+    def get_claude_texture(self) -> Gdk.Texture | None:
+        """Get Gdk.Texture for Claude icon (deprecated, use get_provider_texture)."""
+        return self.get_provider_texture("claude")
+
+    def get_claude_gicon(self) -> Gio.Icon | None:
+        """Get Gio.Icon for Claude icon (deprecated, use get_provider_gicon)."""
+        return self.get_provider_gicon("claude")

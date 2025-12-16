@@ -5,7 +5,7 @@ from pathlib import Path
 from gi.repository import Adw, Gtk, GLib, Gio
 
 from .models import Session
-from .services import HistoryService, ProjectLock, ProjectRegistry, GitService, IconCache, ToastService, SettingsService, FileMonitorService
+from .services import get_adapter, ProjectLock, ProjectRegistry, GitService, IconCache, ToastService, SettingsService, FileMonitorService
 from .widgets import SessionView, TerminalView, FileTree, FileEditor, TasksPanel, GitChangesPanel, GitHistoryPanel, DiffView, CommitDetailView, ClaudeHistoryPanel, FileSearchDialog, UnifiedSearch, NotesPanel, PreferencesDialog, SnippetsBar, ProblemsPanel, ProblemsDetailView
 
 
@@ -23,7 +23,6 @@ class ProjectWindow(Adw.ApplicationWindow):
         self.project_path = Path(project_path).resolve()
         self.project_name = self.project_path.name
 
-        self.history_service = HistoryService()
         self.registry = ProjectRegistry()
         self.lock = ProjectLock(str(self.project_path))
         self.file_monitor_service = FileMonitorService(self.project_path)
@@ -65,8 +64,12 @@ class ProjectWindow(Adw.ApplicationWindow):
         # Get settings service (needed by _build_ui)
         self.settings = SettingsService.get_instance()
 
+        # Get AI adapter based on settings
+        provider = self.settings.get("ai.provider", "claude")
+        self.adapter = get_adapter(provider)
+
         # Initial title without branch (git service not ready yet)
-        self.set_title(f"{self.project_name} - Claude Companion")
+        self.set_title(f"{self.project_name} - Code Companion")
 
         # Apply theme
         self._apply_theme()
@@ -98,7 +101,7 @@ class ProjectWindow(Adw.ApplicationWindow):
         else:
             title = self.project_name
 
-        self.set_title(f"{title} - Claude Companion")
+        self.set_title(f"{title} - Code Companion")
 
         # Also update header title widget if available
         if hasattr(self, "window_title"):
@@ -196,24 +199,24 @@ class ProjectWindow(Adw.ApplicationWindow):
         sidebar_btn.connect("toggled", self._on_sidebar_toggled)
         header.pack_start(sidebar_btn)
 
-        # Claude button with Material Design icon
+        # AI CLI button with Material Design icon
         self.claude_btn = Gtk.Button()
-        self.claude_btn.set_tooltip_text("Start Claude session")
+        self.claude_btn.set_tooltip_text(f"Start {self.adapter.name} session")
         self.claude_btn.add_css_class("suggested-action")
         self.claude_btn.connect("clicked", self._on_claude_clicked)
 
         claude_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
 
-        # Use Claude icon from cache
+        # Use provider icon from cache (dynamically based on adapter)
         icon_cache = IconCache()
-        claude_texture = icon_cache.get_claude_texture()
-        if claude_texture:
-            claude_icon = Gtk.Image.new_from_paintable(claude_texture)
+        provider_texture = icon_cache.get_provider_texture(self.adapter.icon_name)
+        if provider_texture:
+            claude_icon = Gtk.Image.new_from_paintable(provider_texture)
             claude_icon.set_pixel_size(16)
         else:
             claude_icon = Gtk.Image.new_from_icon_name("utilities-terminal-symbolic")
 
-        claude_label = Gtk.Label(label="Claude")
+        claude_label = Gtk.Label(label=self.adapter.name)
         claude_box.append(claude_icon)
         claude_box.append(claude_label)
         self.claude_btn.set_child(claude_box)
@@ -606,7 +609,7 @@ class ProjectWindow(Adw.ApplicationWindow):
         # Claude history panel
         self.claude_history_panel = ClaudeHistoryPanel(
             self.project_path,
-            self.history_service
+            self.adapter
         )
         self.claude_history_panel.connect("session-activated", self._on_session_activated)
         box.append(self.claude_history_panel)
@@ -649,7 +652,7 @@ class ProjectWindow(Adw.ApplicationWindow):
             return
 
         # Create new session detail view
-        self.session_detail_view = SessionView(self.history_service)
+        self.session_detail_view = SessionView(self.adapter)
         self.session_detail_view.load_session(session)
 
         # Add tab
@@ -682,10 +685,10 @@ class ProjectWindow(Adw.ApplicationWindow):
         container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         container.set_vexpand(True)
 
-        # Create Claude terminal in project directory with claude command
+        # Create AI CLI terminal in project directory
         terminal = TerminalView(
             working_directory=str(self.project_path),
-            run_command="claude"
+            run_command=self.adapter.cli_command
         )
         terminal.set_vexpand(True)
         container.append(terminal)
@@ -700,12 +703,12 @@ class ProjectWindow(Adw.ApplicationWindow):
 
         # Add tab with Claude icon
         page = self.tab_view.append(container)
-        page.set_title("Claude")
+        page.set_title(self.adapter.name)
 
-        # Use Claude icon from cache
+        # Use provider icon from cache (dynamically based on adapter)
         icon_cache = IconCache()
-        claude_gicon = icon_cache.get_claude_gicon()
-        page.set_icon(claude_gicon or Gio.ThemedIcon.new("utilities-terminal-symbolic"))
+        provider_gicon = icon_cache.get_provider_gicon(self.adapter.icon_name)
+        page.set_icon(provider_gicon or Gio.ThemedIcon.new("utilities-terminal-symbolic"))
 
         self.claude_tab_page = page
         self.claude_terminal = terminal
@@ -1088,11 +1091,11 @@ class ProjectWindow(Adw.ApplicationWindow):
 
     def _on_tab_close_requested(self, tab_view, page) -> bool:
         """Handle tab close request."""
-        # Claude tab - show warning if active
+        # AI CLI tab - show warning if active
         if page == self.claude_tab_page:
             dialog = Adw.AlertDialog()
-            dialog.set_heading("Close Claude Session?")
-            dialog.set_body("The Claude session may still be active. Close anyway?")
+            dialog.set_heading(f"Close {self.adapter.name} Session?")
+            dialog.set_body(f"The {self.adapter.name} session may still be active. Close anyway?")
             dialog.add_response("cancel", "Cancel")
             dialog.add_response("close", "Close")
             dialog.set_response_appearance("close", Adw.ResponseAppearance.DESTRUCTIVE)

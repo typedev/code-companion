@@ -1,4 +1,4 @@
-"""Claude Companion - GTK4/libadwaita application for Claude Code."""
+"""Code Companion - GTK4/libadwaita application for AI coding assistants."""
 
 import argparse
 import sys
@@ -20,7 +20,7 @@ class Application(Adw.Application):
 
     def __init__(self, project_path: str | None = None):
         super().__init__(
-            application_id="dev.typedev.ClaudeCompanion",
+            application_id="dev.typedev.CodeCompanion",
             flags=Gio.ApplicationFlags.NON_UNIQUE,
         )
         self.project_path = project_path
@@ -38,7 +38,7 @@ class Application(Adw.Application):
 
 def main():
     """Application entry point."""
-    parser = argparse.ArgumentParser(description="Claude Companion")
+    parser = argparse.ArgumentParser(description="Code Companion")
     parser.add_argument(
         "--project", "-p",
         type=str,

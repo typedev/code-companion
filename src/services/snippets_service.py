@@ -1,6 +1,6 @@
 """Snippets service for quick text templates.
 
-Snippets are stored as individual .md files in ~/.config/claude-companion/snippets/
+Snippets are stored as individual .md files in ~/.config/code-companion/snippets/
 - Filename (without .md) = label (spaces allowed)
 - File content = text to insert
 """
@@ -12,6 +12,8 @@ import gi
 gi.require_version("GObject", "2.0")
 
 from gi.repository import GObject, Gio
+
+from .config_path import get_config_dir
 
 
 # Default snippets (filename: content)
@@ -26,7 +28,7 @@ DEFAULT_SNIPPETS = {
 class SnippetsService(GObject.Object):
     """Singleton service for managing text snippets.
 
-    Snippets are stored as .md files in ~/.config/claude-companion/snippets/
+    Snippets are stored as .md files in ~/.config/code-companion/snippets/
 
     Usage:
         snippets = SnippetsService.get_instance()
@@ -52,7 +54,7 @@ class SnippetsService(GObject.Object):
 
     def __init__(self):
         super().__init__()
-        self.config_dir = Path.home() / ".config" / "claude-companion"
+        self.config_dir = get_config_dir()
         self.snippets_dir = self.config_dir / "snippets"
         self._ensure_snippets_dir()
         self._setup_file_monitor()

@@ -1,4 +1,8 @@
 from .history import HistoryService
+from .history_adapter import HistoryAdapter
+from .adapter_registry import get_adapter, get_available_adapters, get_all_adapters
+from .adapters import ClaudeHistoryAdapter
+from .config_path import get_config_dir, migrate_config_if_needed
 from .project_registry import ProjectRegistry
 from .project_lock import ProjectLock
 from .tasks_service import TasksService, Task, TaskInput
@@ -15,6 +19,13 @@ from .markdown_outline import parse_markdown_outline, MarkdownHeading
 
 __all__ = [
     "HistoryService",
+    "HistoryAdapter",
+    "get_adapter",
+    "get_available_adapters",
+    "get_all_adapters",
+    "ClaudeHistoryAdapter",
+    "get_config_dir",
+    "migrate_config_if_needed",
     "ProjectRegistry",
     "ProjectLock",
     "TasksService",

@@ -9,6 +9,7 @@ class MessageRole(Enum):
     """Role of the message sender."""
     USER = "user"
     ASSISTANT = "assistant"
+    SYSTEM = "system"  # System events like conversation compaction
 
 
 class ContentType(Enum):
@@ -17,6 +18,7 @@ class ContentType(Enum):
     THINKING = "thinking"
     TOOL_USE = "tool_use"
     TOOL_RESULT = "tool_result"
+    SYSTEM = "system"  # System notifications (compaction, etc.)
 
 
 @dataclass

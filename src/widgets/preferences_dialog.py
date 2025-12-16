@@ -7,7 +7,7 @@ gi.require_version("GtkSource", "5")
 
 from gi.repository import Adw, Gtk, GtkSource
 
-from ..services import SettingsService
+from ..services import SettingsService, get_all_adapters
 
 
 class PreferencesDialog(Adw.PreferencesDialog):
@@ -24,6 +24,7 @@ class PreferencesDialog(Adw.PreferencesDialog):
         self._build_appearance_page()
         self._build_editor_page()
         self._build_linters_page()
+        self._build_ai_page()
 
     def _build_appearance_page(self):
         """Build the Appearance preferences page."""
@@ -216,6 +217,56 @@ class PreferencesDialog(Adw.PreferencesDialog):
         page.add(filters_group)
         self.add(page)
 
+    def _build_ai_page(self):
+        """Build the AI preferences page."""
+        page = Adw.PreferencesPage()
+        page.set_title("AI")
+        page.set_icon_name("computer-symbolic")
+
+        # Provider group
+        provider_group = Adw.PreferencesGroup()
+        provider_group.set_title("AI Provider")
+        provider_group.set_description("Select which AI CLI tool to use for sessions")
+
+        # Provider selector
+        provider_row = Adw.ComboRow()
+        provider_row.set_title("Provider")
+        provider_row.set_subtitle("AI CLI tool for code assistance")
+
+        # Get all adapters
+        adapters = get_all_adapters()
+        self._provider_ids = [adapter_id for adapter_id, _ in adapters]
+        provider_names = [name for _, name in adapters]
+
+        provider_model = Gtk.StringList.new(provider_names)
+        provider_row.set_model(provider_model)
+
+        # Set current value
+        current_provider = self.settings.get("ai.provider", "claude")
+        try:
+            provider_index = self._provider_ids.index(current_provider)
+            provider_row.set_selected(provider_index)
+        except ValueError:
+            provider_row.set_selected(0)
+
+        provider_row.connect("notify::selected", self._on_provider_changed)
+        provider_group.add(provider_row)
+
+        # Info label
+        info_label = Gtk.Label()
+        info_label.set_markup(
+            '<span size="small" alpha="60%">'
+            'More providers coming soon (Gemini CLI, Codex CLI, etc.)'
+            '</span>'
+        )
+        info_label.set_xalign(0)
+        info_label.set_margin_start(12)
+        info_label.set_margin_top(8)
+        provider_group.add(info_label)
+
+        page.add(provider_group)
+        self.add(page)
+
     # Signal handlers
 
     def _on_theme_changed(self, row, pspec):
@@ -265,3 +316,9 @@ class PreferencesDialog(Adw.PreferencesDialog):
     def _on_ignored_codes_changed(self, row):
         """Handle ignored codes change."""
         self.settings.set("linters.ignored_codes", row.get_text())
+
+    def _on_provider_changed(self, row, pspec):
+        """Handle AI provider selection change."""
+        selected = row.get_selected()
+        if 0 <= selected < len(self._provider_ids):
+            self.settings.set("ai.provider", self._provider_ids[selected])

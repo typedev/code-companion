@@ -2,7 +2,7 @@
   "version": "2.0.0",
   "tasks": [
     {
-      "label": "Run Claude Companion",
+      "label": "Run Code Companion",
       "type": "shell",
       "command": "uv",
       "args": ["run", "python", "main.py"],

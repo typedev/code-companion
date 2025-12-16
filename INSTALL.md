@@ -28,8 +28,8 @@ sudo apt install libgtk-4-dev libadwaita-1-dev libgtksourceview-5-dev \
 
 ```bash
 # Clone the repository
-git clone https://github.com/typedev/claude-companion.git
-cd claude-companion
+git clone https://github.com/typedev/code-companion.git
+cd code-companion
 
 # Run installation script
 chmod +x install.sh
@@ -38,7 +38,7 @@ chmod +x install.sh
 
 This will:
 - Install Python dependencies via uv
-- Create `/usr/local/bin/claude-companion` symlink
+- Create `/usr/local/bin/code-companion` symlink
 - Install app icon to `~/.local/share/icons/`
 - Install .desktop file to `~/.local/share/applications/`
 
@@ -50,29 +50,29 @@ This will:
 
 ```bash
 # Open Project Manager (select/add projects)
-claude-companion
+code-companion
 
 # Open specific project directly
-claude-companion --project /path/to/your/project
+code-companion --project /path/to/your/project
 ```
 
 ### From App Menu
 
-Search for "Claude Companion" in your desktop environment's application menu.
+Search for "Code Companion" in your desktop environment's application menu.
 
 ---
 
 ## Update
 
 ```bash
-cd /path/to/claude-companion
+cd /path/to/code-companion
 ./install.sh update
 ```
 
 Or manually:
 
 ```bash
-cd /path/to/claude-companion
+cd /path/to/code-companion
 git pull
 uv sync
 ```
@@ -84,15 +84,15 @@ Since the app is installed via symlink, changes take effect immediately.
 ## Uninstall
 
 ```bash
-cd /path/to/claude-companion
+cd /path/to/code-companion
 ./install.sh uninstall
 ```
 
 This will:
-- Remove `/usr/local/bin/claude-companion` symlink
+- Remove `/usr/local/bin/code-companion` symlink
 - Remove app icon
 - Remove .desktop file
-- Optionally remove settings (`~/.config/claude-companion/`)
+- Optionally remove settings (`~/.config/code-companion/`)
 
 The source code directory is **not** deleted.
 
@@ -105,28 +105,28 @@ If you prefer not to use the install script:
 ### 1. Install Dependencies
 
 ```bash
-cd claude-companion
+cd code-companion
 uv sync
 ```
 
 ### 2. Create Launcher Script
 
 ```bash
-sudo ln -sf $(pwd)/bin/claude-companion /usr/local/bin/claude-companion
-chmod +x bin/claude-companion
+sudo ln -sf $(pwd)/bin/code-companion /usr/local/bin/code-companion
+chmod +x bin/code-companion
 ```
 
 ### 3. Install Icon
 
 ```bash
 mkdir -p ~/.local/share/icons/hicolor/scalable/apps
-cp src/resources/icons/claude.svg ~/.local/share/icons/hicolor/scalable/apps/claude-companion.svg
+cp src/resources/icons/app.svg ~/.local/share/icons/hicolor/scalable/apps/dev.typedev.CodeCompanion.svg
 ```
 
 ### 4. Install .desktop File
 
 ```bash
-cp data/claude-companion.desktop ~/.local/share/applications/
+cp data/dev.typedev.CodeCompanion.desktop ~/.local/share/applications/
 update-desktop-database ~/.local/share/applications/
 ```
 
@@ -134,7 +134,7 @@ update-desktop-database ~/.local/share/applications/
 
 ## Configuration
 
-Settings are stored in `~/.config/claude-companion/`:
+Settings are stored in `~/.config/code-companion/`:
 
 | File | Description |
 |------|-------------|
@@ -176,7 +176,7 @@ echo $PATH | grep -q /usr/local/bin && echo "OK" || echo "Add /usr/local/bin to 
 Run directly without installation:
 
 ```bash
-cd claude-companion
+cd code-companion
 uv run python -m src.main
 ```
 

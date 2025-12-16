@@ -1,6 +1,8 @@
-# Claude Companion
+# Code Companion
 
-A native GTK4/libadwaita desktop application for working with [Claude Code](https://claude.ai/code). Provides a visual IDE-like environment with session history, file editing, terminal, Git integration, and project notes.
+A native GTK4/libadwaita desktop application for working with AI coding assistants like [Claude Code](https://claude.ai/code). Provides a visual IDE-like environment with session history, file editing, terminal, Git integration, and project notes.
+
+> **v0.8** introduces multi-provider architecture. While currently supporting Claude Code, the codebase is designed to support additional AI CLI tools (Gemini CLI, Codex CLI, etc.) in future versions.
 
 ![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)
 ![Python](https://img.shields.io/badge/python-3.12+-green.svg)
@@ -37,11 +39,12 @@ A native GTK4/libadwaita desktop application for working with [Claude Code](http
   - Create, switch, delete branches
   - Branch popover with quick access
 
-#### Claude Tab (C)
-- Browse past Claude Code sessions (lazy loading for performance)
+#### AI Sessions Tab (C)
+- Browse past AI CLI sessions (lazy loading for performance)
 - Filter by preview text or date
 - View messages with tool calls, thinking blocks, code/diff display
-- One-click Claude Code session launch
+- One-click AI CLI session launch
+- Provider selection in Settings (currently: Claude Code)
 
 #### Notes Tab (N)
 - **My Notes** — Personal notes in `notes/` folder with New Note button
@@ -96,8 +99,8 @@ sudo apt install libgtk-4-dev libadwaita-1-dev libgtksourceview-5-dev \
 
 ```bash
 # Clone the repository
-git clone https://github.com/typedev/claude-companion.git
-cd claude-companion
+git clone https://github.com/typedev/code-companion.git
+cd code-companion
 
 # Install Python dependencies with uv
 uv sync
@@ -152,7 +155,11 @@ src/
 │   ├── preferences_dialog.py# Settings dialog
 │   └── ...
 ├── services/                # Business logic
-│   ├── history.py           # Claude session reader
+│   ├── history_adapter.py   # Abstract base for AI CLI adapters
+│   ├── adapter_registry.py  # Adapter registration and lookup
+│   ├── adapters/            # AI CLI provider adapters
+│   │   └── claude_adapter.py    # Claude Code adapter
+│   ├── history.py           # Claude session reader (low-level)
 │   ├── project_registry.py  # Registered projects storage
 │   ├── project_lock.py      # Lock files for single-instance per project
 │   ├── git_service.py       # Git operations via pygit2 (with HTTPS auth)
@@ -172,13 +179,13 @@ src/
 ### Key Design Decisions
 
 - **Multi-process architecture** — Each project opens in a separate process (`Gio.ApplicationFlags.NON_UNIQUE`)
-- **Lock files** — `/tmp/claude-companion-locks/` prevents duplicate project instances
-- **Project registry** — `~/.config/claude-companion/projects.json` stores registered projects
-- **Settings** — `~/.config/claude-companion/settings.json` stores user preferences
-- **Claude data** — Reads session history from `~/.claude/projects/[encoded-path]/`
+- **Lock files** — `/tmp/code-companion-locks/` prevents duplicate project instances
+- **Project registry** — `~/.config/code-companion/projects.json` stores registered projects
+- **Settings** — `~/.config/code-companion/settings.json` stores user preferences
+- **AI Provider abstraction** — `HistoryAdapter` interface for multi-provider support
 - **Material Design Icons** — Pre-loaded SVG icons from vscode-material-icon-theme with O(1) lookup
 - **Centralized file monitoring** — `FileMonitorService` handles all file watching with debouncing
-- **Lazy loading** — Claude history and problems load only when needed (background thread)
+- **Lazy loading** — AI history and problems load only when needed (background thread)
 - **Git authentication** — HTTPS credentials dialog with git credential storage
 
 ## Roadmap
@@ -198,7 +205,7 @@ src/
 - [x] v0.7.2: Problems Panel (ruff/mypy integration, vertical toolbar)
 - [x] v0.7.3: Script Toolbar (Run button, Python outline)
 - [x] v0.7.4: Markdown Support (outline, WebKit preview)
-- [ ] v0.8: Code Companion (multi-provider support, rename)
+- [x] v0.8: Code Companion (multi-provider architecture, AI settings page)
 - [ ] v0.9: Packaging (Flatpak, .desktop file)
 - [ ] v1.0: Multi-agent orchestration with Git worktrees
 

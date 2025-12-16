@@ -1,6 +1,6 @@
 """Rules service for CLAUDE.md guidelines.
 
-Rules are stored as individual .md files in ~/.config/claude-companion/rules/
+Rules are stored as individual .md files in ~/.config/code-companion/rules/
 - Filename (without .md) = rule name
 - File content = rule text for copying into CLAUDE.md
 """
@@ -12,6 +12,8 @@ import gi
 gi.require_version("GObject", "2.0")
 
 from gi.repository import GObject, Gio
+
+from .config_path import get_config_dir
 
 
 # Default rules (filename: content)
@@ -52,7 +54,7 @@ Before implementing new features:
 class RulesService(GObject.Object):
     """Singleton service for managing CLAUDE.md rules/guidelines.
 
-    Rules are stored as .md files in ~/.config/claude-companion/rules/
+    Rules are stored as .md files in ~/.config/code-companion/rules/
 
     Usage:
         rules = RulesService.get_instance()
@@ -78,7 +80,7 @@ class RulesService(GObject.Object):
 
     def __init__(self):
         super().__init__()
-        self.config_dir = Path.home() / ".config" / "claude-companion"
+        self.config_dir = get_config_dir()
         self.rules_dir = self.config_dir / "rules"
         self._ensure_rules_dir()
         self._setup_file_monitor()
