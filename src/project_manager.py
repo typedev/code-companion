@@ -283,6 +283,53 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
         about.set_developer_name("Alexander Lubovenko")
         about.set_developers(["Alexander Lubovenko <lubovenko@gmail.com>"])
 
+        # Third-party links (clickable on Details page)
+        about.add_link(
+            "Material Icon Theme",
+            "https://github.com/material-extensions/vscode-material-icon-theme"
+        )
+        about.add_link(
+            "mistune - Markdown parser",
+            "https://github.com/lepture/mistune"
+        )
+        about.add_link(
+            "highlight.js - Syntax highlighting",
+            "https://highlightjs.org"
+        )
+
+        # Third-party credits
+        about.add_credit_section(
+            "Icons",
+            ["Material Icon Theme by Material Extensions"]
+        )
+        about.add_credit_section(
+            "Libraries",
+            [
+                "mistune by Hsiaoming Yang",
+                "highlight.js by Ivan Sagalaev",
+            ]
+        )
+
+        # Legal notices for third-party components
+        about.add_legal_section(
+            "Material Icon Theme",
+            "© 2025 Material Extensions",
+            Gtk.License.MIT_X11,
+            None
+        )
+        about.add_legal_section(
+            "mistune",
+            "© Hsiaoming Yang",
+            Gtk.License.BSD_3,
+            None
+        )
+        about.add_legal_section(
+            "highlight.js",
+            "© 2006 Ivan Sagalaev and highlight.js contributors",
+            Gtk.License.BSD_3,
+            None
+        )
+
         # Debug info with commit
         if info["commit"]:
             commit_info = info["commit"]
