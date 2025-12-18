@@ -20,6 +20,86 @@ info() { echo -e "${GREEN}[INFO]${NC} $1"; }
 warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
 error() { echo -e "${RED}[ERROR]${NC} $1"; exit 1; }
 
+install_system_deps() {
+    info "Checking system dependencies..."
+
+    # Detect package manager and install dependencies
+    if command -v dnf &> /dev/null; then
+        # Fedora/RHEL
+        PACKAGES="cairo-devel cairo-gobject-devel gobject-introspection-devel gtk4-devel libadwaita-devel gtksourceview5-devel vte291-gtk4-devel python3-devel meson ninja-build"
+
+        # Check if packages are installed
+        MISSING=""
+        for pkg in $PACKAGES; do
+            if ! rpm -q "$pkg" &> /dev/null; then
+                MISSING="$MISSING $pkg"
+            fi
+        done
+
+        if [ -n "$MISSING" ]; then
+            info "Installing missing system packages:$MISSING"
+            sudo dnf install -y $MISSING || error "Failed to install system dependencies"
+        else
+            info "All system dependencies are already installed"
+        fi
+
+    elif command -v apt-get &> /dev/null; then
+        # Debian/Ubuntu
+        PACKAGES="libcairo2-dev libgirepository1.0-dev libgtk-4-dev libadwaita-1-dev libgtksourceview-5-dev libvte-2.91-gtk4-dev python3-dev meson ninja-build"
+
+        # Check if packages are installed
+        MISSING=""
+        for pkg in $PACKAGES; do
+            if ! dpkg -s "$pkg" &> /dev/null 2>&1; then
+                MISSING="$MISSING $pkg"
+            fi
+        done
+
+        if [ -n "$MISSING" ]; then
+            info "Installing missing system packages:$MISSING"
+            sudo apt-get update
+            sudo apt-get install -y $MISSING || error "Failed to install system dependencies"
+        else
+            info "All system dependencies are already installed"
+        fi
+
+    elif command -v pacman &> /dev/null; then
+        # Arch Linux
+        PACKAGES="cairo gobject-introspection gtk4 libadwaita gtksourceview5 vte4 python meson ninja"
+
+        # Check if packages are installed
+        MISSING=""
+        for pkg in $PACKAGES; do
+            if ! pacman -Q "$pkg" &> /dev/null 2>&1; then
+                MISSING="$MISSING $pkg"
+            fi
+        done
+
+        if [ -n "$MISSING" ]; then
+            info "Installing missing system packages:$MISSING"
+            sudo pacman -S --noconfirm $MISSING || error "Failed to install system dependencies"
+        else
+            info "All system dependencies are already installed"
+        fi
+
+    else
+        warn "Unknown package manager. Please install these dependencies manually:"
+        warn "  - cairo development files"
+        warn "  - gobject-introspection development files"
+        warn "  - gtk4 development files"
+        warn "  - libadwaita development files"
+        warn "  - gtksourceview5 development files"
+        warn "  - vte (gtk4 variant) development files"
+        warn "  - python3 development files"
+        warn "  - meson and ninja build tools"
+        read -p "Continue anyway? [y/N] " -n 1 -r
+        echo
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            exit 1
+        fi
+    fi
+}
+
 install() {
     info "Installing Code Companion..."
 
@@ -32,10 +112,13 @@ install() {
     [ -f "$DESKTOP_DIR/dev.typedev.ClaudeCompanion.desktop" ] && rm "$DESKTOP_DIR/dev.typedev.ClaudeCompanion.desktop"
     [ -f "$ICON_DIR/dev.typedev.ClaudeCompanion.svg" ] && rm "$ICON_DIR/dev.typedev.ClaudeCompanion.svg"
 
-    # Check dependencies
+    # Check uv
     if ! command -v uv &> /dev/null; then
         error "uv is not installed. Install it first: curl -LsSf https://astral.sh/uv/install.sh | sh"
     fi
+
+    # Install system dependencies (cairo, gtk4, etc.)
+    install_system_deps
 
     # Install Python dependencies
     info "Installing Python dependencies..."
@@ -95,6 +178,9 @@ update() {
     else
         warn "Not a git repository, skipping git pull"
     fi
+
+    # Check/install system dependencies
+    install_system_deps
 
     # Update dependencies
     info "Updating Python dependencies..."
