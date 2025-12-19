@@ -88,7 +88,7 @@ class GitService:
         """Get current branch name or HEAD commit if detached."""
         try:
             if self.repo.head_is_detached:
-                return self.repo.head.target.hex[:7]
+                return str(self.repo.head.target)[:7]
             return self.repo.head.shorthand
         except pygit2.GitError:
             return "unknown"
