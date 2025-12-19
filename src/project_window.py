@@ -558,6 +558,8 @@ class ProjectWindow(Adw.ApplicationWindow):
         self.file_tree = FileTree(str(self.project_path), self.file_monitor_service)
         self.file_tree.connect("file-activated", self._on_file_activated)
         self.file_tree.connect("selection-changed", self._on_file_selection_changed)
+        self.file_tree.connect("rename-requested", self._on_rename_requested)
+        self.file_tree.connect("delete-requested", self._on_delete_requested)
         box.append(self.file_tree)
 
         # Tasks panel (below file tree)
@@ -935,6 +937,122 @@ class ProjectWindow(Adw.ApplicationWindow):
 
         for page in pages_to_close:
             self.tab_view.close_page(page)
+
+    def _save_and_close_tabs_for_path(self, target_path: Path):
+        """Save and close any tabs that reference the target path."""
+        pages_to_close = []
+        for i in range(self.tab_view.get_n_pages()):
+            page = self.tab_view.get_nth_page(i)
+            child = page.get_child()
+            if hasattr(child, "file_path"):
+                child_path = Path(child.file_path)
+                # Check if the file is the target path or inside target folder
+                if child_path == target_path or target_path in child_path.parents:
+                    # Save if modified
+                    if isinstance(child, FileEditor) and child._modified:
+                        child.save()
+                    pages_to_close.append(page)
+
+        for page in pages_to_close:
+            self.tab_view.close_page(page)
+
+    def _on_rename_requested(self, file_tree, old_path_str: str, new_name: str):
+        """Handle rename request from file tree."""
+        old_path = Path(old_path_str)
+        new_path = old_path.parent / new_name
+
+        # Validate
+        if new_path.exists():
+            ToastService.show_error(f"'{new_name}' already exists")
+            return
+
+        # Save and close affected tabs
+        self._save_and_close_tabs_for_path(old_path)
+
+        # Perform rename
+        try:
+            old_path.rename(new_path)
+            item_type = "Folder" if new_path.is_dir() else "File"
+            ToastService.show(f"{item_type} renamed to '{new_name}'")
+        except OSError as e:
+            ToastService.show_error(f"Failed to rename: {e}")
+
+    def _on_delete_requested(self, file_tree, paths: list):
+        """Handle delete request from file tree (via context menu or Delete key)."""
+        if not paths:
+            return
+
+        # Convert to Path objects
+        path_objects = [Path(p) for p in paths]
+
+        # Build confirmation message
+        if len(path_objects) == 1:
+            path = path_objects[0]
+            item_type = "folder" if path.is_dir() else "file"
+            relative_path = path.relative_to(self.project_path) if path.is_relative_to(self.project_path) else path
+
+            if path.is_dir():
+                body = f"Are you sure you want to delete the folder '{relative_path}' and all its contents?\n\nThis action cannot be undone."
+            else:
+                body = f"Are you sure you want to delete '{relative_path}'?\n\nThis action cannot be undone."
+            heading = f"Delete {item_type}?"
+        else:
+            # Multiple items
+            folder_count = sum(1 for p in path_objects if p.is_dir())
+            file_count = len(path_objects) - folder_count
+
+            parts = []
+            if file_count > 0:
+                parts.append(f"{file_count} file{'s' if file_count > 1 else ''}")
+            if folder_count > 0:
+                parts.append(f"{folder_count} folder{'s' if folder_count > 1 else ''}")
+
+            heading = f"Delete {len(path_objects)} items?"
+            body = f"Are you sure you want to delete {' and '.join(parts)}?\n\nThis action cannot be undone."
+
+        dialog = Adw.AlertDialog()
+        dialog.set_heading(heading)
+        dialog.set_body(body)
+
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("delete", "Delete")
+        dialog.set_response_appearance("delete", Adw.ResponseAppearance.DESTRUCTIVE)
+        dialog.set_default_response("cancel")
+
+        dialog.connect("response", self._on_multi_delete_response, path_objects)
+        dialog.present(self)
+
+    def _on_multi_delete_response(self, dialog, response, paths: list[Path]):
+        """Handle multi-delete dialog response."""
+        if response != "delete":
+            return
+
+        import shutil
+
+        deleted_count = 0
+        errors = []
+
+        for path in paths:
+            try:
+                # Save and close tabs first
+                self._save_and_close_tabs_for_path(path)
+
+                if path.is_dir():
+                    shutil.rmtree(path)
+                else:
+                    path.unlink()
+                deleted_count += 1
+            except OSError as e:
+                errors.append(f"{path.name}: {e}")
+
+        if deleted_count > 0:
+            if deleted_count == 1:
+                ToastService.show(f"Deleted: {paths[0].name}")
+            else:
+                ToastService.show(f"Deleted {deleted_count} items")
+
+        if errors:
+            ToastService.show_error(f"Failed to delete: {errors[0]}")
 
     def _on_git_file_clicked(self, git_panel, path: str, staged: bool):
         """Handle git file click - open diff view (reuses tab for same file)."""

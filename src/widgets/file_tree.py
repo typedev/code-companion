@@ -3,7 +3,7 @@
 from pathlib import Path
 
 import pathspec
-from gi.repository import Gtk, Gio, GLib, GObject, Pango, Gdk
+from gi.repository import Adw, Gtk, Gio, GLib, GObject, Pango, Gdk
 
 from ..services import GitService, FileStatus, IconCache, ToastService, SettingsService, FileMonitorService
 
@@ -25,6 +25,8 @@ class FileTree(Gtk.Box):
     __gsignals__ = {
         "file-activated": (GObject.SignalFlags.RUN_FIRST, None, (str,)),
         "selection-changed": (GObject.SignalFlags.RUN_FIRST, None, (bool,)),  # has_selection
+        "rename-requested": (GObject.SignalFlags.RUN_FIRST, None, (str, str)),  # old_path, new_name
+        "delete-requested": (GObject.SignalFlags.RUN_FIRST, None, (object,)),  # list of paths
     }
 
     # Folders to always hide (not toggleable)
@@ -126,16 +128,25 @@ class FileTree(Gtk.Box):
 
         # List box for tree items
         self.list_box = Gtk.ListBox()
-        self.list_box.set_selection_mode(Gtk.SelectionMode.SINGLE)
+        self.list_box.set_selection_mode(Gtk.SelectionMode.NONE)  # We handle selection manually
         self.list_box.add_css_class("navigation-sidebar")
         self.list_box.connect("row-activated", self._on_row_activated)
-        self.list_box.connect("row-selected", self._on_row_selected)
+
+        # Track selection manually for multi-select support
+        self._selected_rows: set[Gtk.ListBoxRow] = set()
+        self._last_clicked_row: Gtk.ListBoxRow | None = None
+
+        # Left-click for selection (with Ctrl/Shift support)
+        left_click = Gtk.GestureClick()
+        left_click.set_button(1)  # Left click
+        left_click.connect("pressed", self._on_left_click)
+        self.list_box.add_controller(left_click)
 
         # Right-click context menu
-        click_controller = Gtk.GestureClick()
-        click_controller.set_button(3)  # Right click
-        click_controller.connect("pressed", self._on_right_click)
-        self.list_box.add_controller(click_controller)
+        right_click = Gtk.GestureClick()
+        right_click.set_button(3)  # Right click
+        right_click.connect("pressed", self._on_right_click)
+        self.list_box.add_controller(right_click)
 
         # Keyboard shortcuts
         key_controller = Gtk.EventControllerKey()
@@ -149,7 +160,7 @@ class FileTree(Gtk.Box):
         self._create_context_menu()
 
     def _setup_css(self):
-        """Set up CSS for git status colors."""
+        """Set up CSS for git status colors and selection."""
         css = b"""
         .git-modified { color: #f1c40f; }
         .git-added { color: #2ecc71; }
@@ -158,6 +169,12 @@ class FileTree(Gtk.Box):
         .git-indicator {
             font-size: 8px;
             margin-left: 4px;
+        }
+        .file-selected {
+            background-color: alpha(@accent_color, 0.3);
+        }
+        .file-selected:hover {
+            background-color: alpha(@accent_color, 0.4);
         }
         """
         provider = Gtk.CssProvider()
@@ -171,8 +188,18 @@ class FileTree(Gtk.Box):
     def _create_context_menu(self):
         """Create the right-click context menu."""
         menu = Gio.Menu()
-        menu.append("Copy Path", "filetree.copy-path")
-        menu.append("Copy Relative Path", "filetree.copy-relative-path")
+
+        # Copy section
+        copy_section = Gio.Menu()
+        copy_section.append("Copy Path", "filetree.copy-path")
+        copy_section.append("Copy Relative Path", "filetree.copy-relative-path")
+        menu.append_section(None, copy_section)
+
+        # Edit section
+        edit_section = Gio.Menu()
+        edit_section.append("Rename…", "filetree.rename")
+        edit_section.append("Delete", "filetree.delete")
+        menu.append_section(None, edit_section)
 
         self.context_menu = Gtk.PopoverMenu.new_from_model(menu)
         self.context_menu.set_parent(self.list_box)
@@ -189,17 +216,59 @@ class FileTree(Gtk.Box):
         copy_rel_path_action.connect("activate", self._on_copy_relative_path)
         action_group.add_action(copy_rel_path_action)
 
+        rename_action = Gio.SimpleAction.new("rename", None)
+        rename_action.connect("activate", self._on_rename_action)
+        action_group.add_action(rename_action)
+        self._rename_action = rename_action
+
+        delete_action = Gio.SimpleAction.new("delete", None)
+        delete_action.connect("activate", self._on_delete_action)
+        action_group.add_action(delete_action)
+        self._delete_action = delete_action
+
         self.list_box.insert_action_group("filetree", action_group)
+
+    def _on_left_click(self, gesture, n_press, x, y):
+        """Handle left-click for selection with Ctrl/Shift support."""
+        row = self.list_box.get_row_at_y(int(y))
+        if not row or not hasattr(row, "path"):
+            return
+
+        # Get modifier state
+        state = gesture.get_current_event_state()
+        ctrl_pressed = state & Gdk.ModifierType.CONTROL_MASK
+        shift_pressed = state & Gdk.ModifierType.SHIFT_MASK
+
+        if ctrl_pressed:
+            # Ctrl+Click: toggle selection
+            if row in self._selected_rows:
+                self._deselect_row(row)
+            else:
+                self._select_row(row)
+            self._last_clicked_row = row
+        elif shift_pressed and self._last_clicked_row:
+            # Shift+Click: select range
+            self._select_range(self._last_clicked_row, row)
+        else:
+            # Normal click: select only this row
+            self._clear_selection()
+            self._select_row(row)
+            self._last_clicked_row = row
+
+        # Emit selection changed signal
+        self.emit("selection-changed", len(self._selected_rows) > 0)
 
     def _on_right_click(self, gesture, n_press, x, y):
         """Handle right-click to show context menu."""
-        # Get row at position
         row = self.list_box.get_row_at_y(int(y))
         if row and hasattr(row, "path"):
-            # Select the row if not already selected
-            if not row.is_selected():
-                self.list_box.unselect_all()
-                self.list_box.select_row(row)
+            # Add to selection if not already selected
+            if row not in self._selected_rows:
+                self._select_row(row)
+                self.emit("selection-changed", True)
+
+        # Update menu items based on selection
+        self._update_context_menu_sensitivity()
 
         # Position and show menu
         rect = Gdk.Rectangle()
@@ -210,6 +279,51 @@ class FileTree(Gtk.Box):
         self.context_menu.set_pointing_to(rect)
         self.context_menu.popup()
 
+    def _select_row(self, row: Gtk.ListBoxRow):
+        """Add a row to selection."""
+        if row not in self._selected_rows:
+            self._selected_rows.add(row)
+            row.add_css_class("file-selected")
+
+    def _deselect_row(self, row: Gtk.ListBoxRow):
+        """Remove a row from selection."""
+        if row in self._selected_rows:
+            self._selected_rows.discard(row)
+            row.remove_css_class("file-selected")
+
+    def _clear_selection(self):
+        """Clear all selection."""
+        for row in list(self._selected_rows):
+            row.remove_css_class("file-selected")
+        self._selected_rows.clear()
+
+    def _select_range(self, start_row: Gtk.ListBoxRow, end_row: Gtk.ListBoxRow):
+        """Select all rows between start and end (inclusive)."""
+        # Get indices
+        start_idx = start_row.get_index()
+        end_idx = end_row.get_index()
+
+        if start_idx > end_idx:
+            start_idx, end_idx = end_idx, start_idx
+
+        # Clear existing selection and select range
+        self._clear_selection()
+        for i in range(start_idx, end_idx + 1):
+            row = self.list_box.get_row_at_index(i)
+            if row:
+                self._select_row(row)
+
+    def _select_all(self):
+        """Select all visible rows."""
+        i = 0
+        while True:
+            row = self.list_box.get_row_at_index(i)
+            if row is None:
+                break
+            self._select_row(row)
+            i += 1
+        self.emit("selection-changed", len(self._selected_rows) > 0)
+
     def _on_key_pressed(self, controller, keyval, keycode, state):
         """Handle keyboard shortcuts."""
         ctrl_pressed = state & Gdk.ModifierType.CONTROL_MASK
@@ -219,12 +333,31 @@ class FileTree(Gtk.Box):
             self._copy_selected_paths(relative=True)
             return True
 
+        if ctrl_pressed and keyval == Gdk.KEY_a:
+            # Ctrl+A - select all visible rows
+            self._select_all()
+            return True
+
+        if keyval == Gdk.KEY_F2:
+            # F2 - rename selected (single selection only)
+            paths = self.get_selected_paths()
+            if len(paths) == 1:
+                self._show_rename_dialog(paths[0])
+            return True
+
+        if keyval == Gdk.KEY_Delete:
+            # Delete - delete selected
+            paths = self.get_selected_paths()
+            if paths:
+                self.emit("delete-requested", [str(p) for p in paths])
+            return True
+
         return False
 
     def get_selected_paths(self) -> list[Path]:
         """Get list of selected paths."""
         paths = []
-        for row in self.list_box.get_selected_rows():
+        for row in self._selected_rows:
             if hasattr(row, "path"):
                 paths.append(row.path)
         return paths
@@ -251,6 +384,90 @@ class FileTree(Gtk.Box):
         clipboard = Gdk.Display.get_default().get_clipboard()
         clipboard.set(text)
 
+    def _update_context_menu_sensitivity(self):
+        """Update context menu items based on current selection."""
+        paths = self.get_selected_paths()
+        has_selection = len(paths) > 0
+        single_selection = len(paths) == 1
+
+        # Rename only works for single selection
+        if hasattr(self, "_rename_action"):
+            self._rename_action.set_enabled(single_selection)
+
+        # Delete works for any selection
+        if hasattr(self, "_delete_action"):
+            self._delete_action.set_enabled(has_selection)
+
+    def _on_rename_action(self, action, param):
+        """Handle rename menu action."""
+        paths = self.get_selected_paths()
+        if len(paths) != 1:
+            return
+        self._show_rename_dialog(paths[0])
+
+    def _on_delete_action(self, action, param):
+        """Handle delete menu action."""
+        paths = self.get_selected_paths()
+        if paths:
+            self.emit("delete-requested", [str(p) for p in paths])
+
+    def _show_rename_dialog(self, path: Path):
+        """Show dialog to rename a file or folder."""
+        dialog = Adw.AlertDialog()
+        dialog.set_heading("Rename")
+
+        item_type = "folder" if path.is_dir() else "file"
+        dialog.set_body(f"Enter new name for {item_type}:")
+
+        # Entry for new name
+        entry = Gtk.Entry()
+        entry.set_text(path.name)
+        entry.set_hexpand(True)
+        # Select filename without extension for files
+        if not path.is_dir() and "." in path.name:
+            # Select only the name part, not extension
+            name_without_ext = path.stem
+            GLib.idle_add(lambda: entry.select_region(0, len(name_without_ext)))
+
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        box.set_margin_start(12)
+        box.set_margin_end(12)
+        box.append(entry)
+
+        dialog.set_extra_child(box)
+
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("rename", "Rename")
+        dialog.set_response_appearance("rename", Adw.ResponseAppearance.SUGGESTED)
+        dialog.set_default_response("rename")
+        dialog.set_close_response("cancel")
+
+        dialog.connect("response", self._on_rename_dialog_response, entry, path)
+
+        # Get the toplevel window for presenting the dialog
+        root = self.get_root()
+        dialog.present(root)
+
+    def _on_rename_dialog_response(self, dialog, response, entry, old_path: Path):
+        """Handle rename dialog response."""
+        if response != "rename":
+            return
+
+        new_name = entry.get_text().strip()
+        if not new_name:
+            return
+
+        # Validate name
+        if "/" in new_name or "\\" in new_name or "\0" in new_name:
+            ToastService.show_error("Invalid characters in name")
+            return
+
+        if new_name == old_path.name:
+            return  # No change
+
+        # Emit signal for ProjectWindow to handle
+        self.emit("rename-requested", str(old_path), new_name)
+
     def _populate_tree(self):
         """Initial population of the tree (without recreating list_box)."""
         # Update git status
@@ -268,11 +485,11 @@ class FileTree(Gtk.Box):
         vadj = self.scrolled.get_vadjustment()
         scroll_pos = vadj.get_value()
 
-        # Save selected path
-        selected_path: str | None = None
-        selected_rows = self.list_box.get_selected_rows()
-        if selected_rows and hasattr(selected_rows[0], "path"):
-            selected_path = str(selected_rows[0].path)
+        # Save selected paths for restoration
+        selected_paths: set[str] = set()
+        for row in self._selected_rows:
+            if hasattr(row, "path"):
+                selected_paths.add(str(row.path))
 
         # Update git status
         if self._is_git_repo:
@@ -286,16 +503,25 @@ class FileTree(Gtk.Box):
 
         old_list_box = self.list_box
         self.list_box = Gtk.ListBox()
-        self.list_box.set_selection_mode(Gtk.SelectionMode.SINGLE)
+        self.list_box.set_selection_mode(Gtk.SelectionMode.NONE)
         self.list_box.add_css_class("navigation-sidebar")
         self.list_box.connect("row-activated", self._on_row_activated)
-        self.list_box.connect("row-selected", self._on_row_selected)
+
+        # Clear selection tracking (will restore after building tree)
+        self._selected_rows = set()
+        self._last_clicked_row = None
+
+        # Left-click for selection
+        left_click = Gtk.GestureClick()
+        left_click.set_button(1)
+        left_click.connect("pressed", self._on_left_click)
+        self.list_box.add_controller(left_click)
 
         # Right-click context menu
-        click_controller = Gtk.GestureClick()
-        click_controller.set_button(3)
-        click_controller.connect("pressed", self._on_right_click)
-        self.list_box.add_controller(click_controller)
+        right_click = Gtk.GestureClick()
+        right_click.set_button(3)
+        right_click.connect("pressed", self._on_right_click)
+        self.list_box.add_controller(right_click)
 
         # Keyboard shortcuts
         key_controller = Gtk.EventControllerKey()
@@ -314,15 +540,14 @@ class FileTree(Gtk.Box):
         # Restore selection and scroll position after UI updates
         def restore_state():
             # Restore selection
-            if selected_path:
+            if selected_paths:
                 i = 0
                 while True:
                     row = self.list_box.get_row_at_index(i)
                     if row is None:
                         break
-                    if hasattr(row, "path") and str(row.path) == selected_path:
-                        self.list_box.select_row(row)
-                        break
+                    if hasattr(row, "path") and str(row.path) in selected_paths:
+                        self._select_row(row)
                     i += 1
             # Restore scroll
             vadj.set_value(scroll_pos)
@@ -432,11 +657,6 @@ class FileTree(Gtk.Box):
             return str(path.relative_to(self.root_path))
         except ValueError:
             return str(path)
-
-    def _on_row_selected(self, list_box, row):
-        """Handle row selection change."""
-        has_selection = row is not None and hasattr(row, "path")
-        self.emit("selection-changed", has_selection)
 
     def _on_row_activated(self, list_box, row):
         """Handle row activation."""
