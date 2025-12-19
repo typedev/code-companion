@@ -17,6 +17,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
    - **Direct Read/Grep**: Only when you know exactly which file you need
 4. **Documentation**: Always search and verify against December 2025 docs.
 5. **Package manager**: Always use `uv` for Python dependencies and running scripts.
+6. **Commits**: Don't try to create your own commit without my approval of the changes.
 
 ## Project Overview
 

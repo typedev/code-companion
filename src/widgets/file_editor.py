@@ -6,7 +6,7 @@ import gi
 
 gi.require_version("GtkSource", "5")
 
-from gi.repository import Gtk, GtkSource, GLib, GObject, Pango, Adw
+from gi.repository import Gtk, GtkSource, GLib, GObject, Pango, Adw, Gdk
 
 from .code_view import get_language_for_file
 from .script_toolbar import ScriptToolbar
@@ -33,28 +33,31 @@ class FileEditor(Gtk.Box):
         self._is_markdown = Path(file_path).suffix.lower() == ".md"
         self._preview_active = False
 
+        # Search state
+        self._search_context = None
+        self._search_settings = None
+
         self._build_ui()
         self._load_file()
+        self._setup_search()
 
     def _build_ui(self):
         """Build the editor UI."""
         # Get settings
         self.settings = SettingsService.get_instance()
 
-        # File toolbar with refresh button (for all files)
-        self._build_file_toolbar()
-
-        # Script toolbar for .py/.sh/.md files
-        self.script_toolbar = None
+        # Script toolbar (for all files - has refresh, run/outline for scripts)
         ext = Path(self.file_path).suffix.lower()
-        if ext in (".py", ".sh", ".md"):
-            self.script_toolbar = ScriptToolbar(self.file_path)
+        self.script_toolbar = ScriptToolbar(self.file_path)
+        self.script_toolbar.connect("refresh-requested", self._on_refresh_requested)
+        if ext in (".py", ".sh"):
             self.script_toolbar.connect("run-script", self._on_run_script)
+        if ext in (".py", ".md"):
             self.script_toolbar.connect("go-to-line", self._on_go_to_line)
             self.script_toolbar.set_cursor_line_callback(self._get_cursor_line)
-            if self._is_markdown:
-                self.script_toolbar.connect("toggle-preview", self._on_toggle_preview)
-            self.append(self.script_toolbar)
+        if self._is_markdown:
+            self.script_toolbar.connect("toggle-preview", self._on_toggle_preview)
+        self.append(self.script_toolbar)
 
         # Create source buffer and view
         self.buffer = GtkSource.Buffer()
@@ -120,31 +123,182 @@ class FileEditor(Gtk.Box):
             self.markdown_preview = None
             self.append(scrolled)
 
-    def _build_file_toolbar(self):
-        """Build file toolbar with refresh button."""
-        toolbar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
-        toolbar.add_css_class("toolbar")
-        toolbar.set_margin_start(6)
-        toolbar.set_margin_end(6)
-        toolbar.set_margin_top(2)
-        toolbar.set_margin_bottom(2)
+        # Search bar (hidden by default)
+        self._build_search_bar()
 
-        # Spacer to push buttons to the right
-        spacer = Gtk.Box()
-        spacer.set_hexpand(True)
-        toolbar.append(spacer)
+        # Keyboard shortcuts
+        self._setup_shortcuts()
 
-        # Refresh button
-        refresh_btn = Gtk.Button()
-        refresh_btn.set_icon_name("view-refresh-symbolic")
-        refresh_btn.add_css_class("flat")
-        refresh_btn.set_tooltip_text("Reload file from disk (discard changes)")
-        refresh_btn.connect("clicked", self._on_refresh_clicked)
-        toolbar.append(refresh_btn)
+    def _build_search_bar(self):
+        """Build the search/replace bar."""
+        self.search_bar = Gtk.Revealer()
+        self.search_bar.set_reveal_child(False)
 
-        self.append(toolbar)
+        search_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        search_box.add_css_class("search-bar")
+        search_box.set_margin_start(8)
+        search_box.set_margin_end(8)
+        search_box.set_margin_top(4)
+        search_box.set_margin_bottom(4)
 
-    def _on_refresh_clicked(self, button):
+        # Search row
+        search_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+
+        # Search entry
+        self.search_entry = Gtk.SearchEntry()
+        self.search_entry.set_hexpand(True)
+        self.search_entry.set_placeholder_text("Find...")
+        self.search_entry.connect("search-changed", self._on_search_changed)
+        self.search_entry.connect("activate", self._on_search_next)
+        self.search_entry.connect("next-match", self._on_search_next)
+        self.search_entry.connect("previous-match", self._on_search_prev)
+        search_row.append(self.search_entry)
+
+        # Match count label
+        self.match_label = Gtk.Label(label="")
+        self.match_label.add_css_class("dim-label")
+        self.match_label.set_width_chars(8)
+        search_row.append(self.match_label)
+
+        # Navigation buttons
+        prev_btn = Gtk.Button()
+        prev_btn.set_icon_name("go-up-symbolic")
+        prev_btn.set_tooltip_text("Previous match (Shift+Enter)")
+        prev_btn.add_css_class("flat")
+        prev_btn.connect("clicked", lambda b: self._on_search_prev())
+        search_row.append(prev_btn)
+
+        next_btn = Gtk.Button()
+        next_btn.set_icon_name("go-down-symbolic")
+        next_btn.set_tooltip_text("Next match (Enter)")
+        next_btn.add_css_class("flat")
+        next_btn.connect("clicked", lambda b: self._on_search_next())
+        search_row.append(next_btn)
+
+        # Toggle buttons
+        self.case_btn = Gtk.ToggleButton()
+        self.case_btn.set_icon_name("font-x-generic-symbolic")
+        self.case_btn.set_tooltip_text("Match case")
+        self.case_btn.add_css_class("flat")
+        self.case_btn.connect("toggled", self._on_search_options_changed)
+        search_row.append(self.case_btn)
+
+        self.regex_btn = Gtk.ToggleButton()
+        self.regex_btn.set_label(".*")
+        self.regex_btn.set_tooltip_text("Regular expression")
+        self.regex_btn.add_css_class("flat")
+        self.regex_btn.connect("toggled", self._on_search_options_changed)
+        search_row.append(self.regex_btn)
+
+        # Expand/collapse replace
+        self.replace_toggle = Gtk.ToggleButton()
+        self.replace_toggle.set_icon_name("edit-find-replace-symbolic")
+        self.replace_toggle.set_tooltip_text("Show replace")
+        self.replace_toggle.add_css_class("flat")
+        self.replace_toggle.connect("toggled", self._on_replace_toggled)
+        search_row.append(self.replace_toggle)
+
+        # Close button
+        close_btn = Gtk.Button()
+        close_btn.set_icon_name("window-close-symbolic")
+        close_btn.set_tooltip_text("Close (Escape)")
+        close_btn.add_css_class("flat")
+        close_btn.connect("clicked", lambda b: self.hide_search())
+        search_row.append(close_btn)
+
+        search_box.append(search_row)
+
+        # Replace row (hidden by default)
+        self.replace_revealer = Gtk.Revealer()
+        self.replace_revealer.set_reveal_child(False)
+
+        replace_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+
+        self.replace_entry = Gtk.Entry()
+        self.replace_entry.set_hexpand(True)
+        self.replace_entry.set_placeholder_text("Replace with...")
+        replace_row.append(self.replace_entry)
+
+        replace_btn = Gtk.Button(label="Replace")
+        replace_btn.add_css_class("flat")
+        replace_btn.connect("clicked", lambda b: self._on_replace())
+        replace_row.append(replace_btn)
+
+        replace_all_btn = Gtk.Button(label="All")
+        replace_all_btn.add_css_class("flat")
+        replace_all_btn.connect("clicked", lambda b: self._on_replace_all())
+        replace_row.append(replace_all_btn)
+
+        self.replace_revealer.set_child(replace_row)
+        search_box.append(self.replace_revealer)
+
+        self.search_bar.set_child(search_box)
+        self.append(self.search_bar)
+
+    def _setup_shortcuts(self):
+        """Set up keyboard shortcuts for the editor."""
+        key_controller = Gtk.EventControllerKey()
+        key_controller.connect("key-pressed", self._on_key_pressed)
+        self.source_view.add_controller(key_controller)
+
+    def _on_key_pressed(self, controller, keyval, keycode, state):
+        """Handle keyboard shortcuts."""
+        ctrl = state & Gdk.ModifierType.CONTROL_MASK
+
+        if ctrl and keyval == Gdk.KEY_f:
+            self.show_search()
+            return True
+        elif keyval == Gdk.KEY_Escape:
+            if self.search_bar.get_reveal_child():
+                self.hide_search()
+                return True
+        return False
+
+    def show_search(self, replace: bool = False):
+        """Show the search bar."""
+        self.search_bar.set_reveal_child(True)
+        self.search_entry.grab_focus()
+        if replace:
+            self.replace_toggle.set_active(True)
+        # Select current word if no selection
+        if not self.buffer.get_has_selection():
+            self._select_current_word()
+        # Copy selection to search entry
+        if self.buffer.get_has_selection():
+            start, end = self.buffer.get_selection_bounds()
+            text = self.buffer.get_text(start, end, False)
+            if "\n" not in text:  # Single line only
+                self.search_entry.set_text(text)
+                self.search_entry.select_region(0, -1)
+
+    def hide_search(self):
+        """Hide the search bar and clear highlights."""
+        self.search_bar.set_reveal_child(False)
+        if self._search_context:
+            self._search_settings.set_search_text("")
+        self.source_view.grab_focus()
+
+    def _select_current_word(self):
+        """Select the word at cursor."""
+        mark = self.buffer.get_insert()
+        iter_at_cursor = self.buffer.get_iter_at_mark(mark)
+
+        start = iter_at_cursor.copy()
+        if not start.starts_word():
+            start.backward_word_start()
+
+        end = iter_at_cursor.copy()
+        if not end.ends_word():
+            end.forward_word_end()
+
+        if start.compare(end) < 0:
+            self.buffer.select_range(start, end)
+
+    def _on_replace_toggled(self, button):
+        """Toggle replace row visibility."""
+        self.replace_revealer.set_reveal_child(button.get_active())
+
+    def _on_refresh_requested(self, toolbar=None):
         """Handle refresh button click."""
         if self._modified:
             # Ask user to confirm discarding changes
@@ -176,18 +330,123 @@ class FileEditor(Gtk.Box):
         self._load_file()
 
         # Restore cursor position (if possible)
-        new_iter = self.buffer.get_iter_at_line_offset(line, 0)
-        line_end = new_iter.copy()
-        if not line_end.ends_line():
-            line_end.forward_to_line_end()
-        max_offset = line_end.get_line_offset()
-        if offset <= max_offset:
-            new_iter.set_line_offset(offset)
-        else:
-            new_iter = line_end
-        self.buffer.place_cursor(new_iter)
+        success, new_iter = self.buffer.get_iter_at_line_offset(line, 0)
+        if success:
+            line_end = new_iter.copy()
+            if not line_end.ends_line():
+                line_end.forward_to_line_end()
+            max_offset = line_end.get_line_offset()
+            if offset <= max_offset:
+                new_iter.set_line_offset(offset)
+            else:
+                new_iter = line_end
+            self.buffer.place_cursor(new_iter)
 
         ToastService.show("File reloaded")
+
+    # --- Search functionality ---
+
+    def _setup_search(self):
+        """Set up search context and settings."""
+        self._search_settings = GtkSource.SearchSettings()
+        self._search_settings.set_wrap_around(True)
+        self._search_context = GtkSource.SearchContext(
+            buffer=self.buffer, settings=self._search_settings
+        )
+        self._search_context.set_highlight(True)
+
+    def _on_search_changed(self, entry):
+        """Handle search text changes."""
+        text = entry.get_text()
+        self._search_settings.set_search_text(text)
+        self._update_match_count()
+
+        # Jump to first match if text entered
+        if text:
+            self._on_search_next()
+
+    def _on_search_options_changed(self, button):
+        """Handle search option toggle."""
+        self._search_settings.set_case_sensitive(self.case_btn.get_active())
+        self._search_settings.set_regex_enabled(self.regex_btn.get_active())
+        self._update_match_count()
+
+    def _on_search_next(self, *args):
+        """Find next match."""
+        if not self._search_context:
+            return
+
+        mark = self.buffer.get_insert()
+        start_iter = self.buffer.get_iter_at_mark(mark)
+
+        found, match_start, match_end, wrapped = self._search_context.forward(start_iter)
+        if found:
+            self.buffer.select_range(match_start, match_end)
+            self.source_view.scroll_to_mark(self.buffer.get_insert(), 0.2, False, 0, 0)
+        self._update_match_count()
+
+    def _on_search_prev(self, *args):
+        """Find previous match."""
+        if not self._search_context:
+            return
+
+        mark = self.buffer.get_insert()
+        start_iter = self.buffer.get_iter_at_mark(mark)
+
+        found, match_start, match_end, wrapped = self._search_context.backward(start_iter)
+        if found:
+            self.buffer.select_range(match_start, match_end)
+            self.source_view.scroll_to_mark(self.buffer.get_insert(), 0.2, False, 0, 0)
+        self._update_match_count()
+
+    def _update_match_count(self):
+        """Update the match count label."""
+        count = self._search_context.get_occurrences_count()
+        if count == -1:
+            # Still counting
+            self.match_label.set_text("...")
+        elif count == 0:
+            self.match_label.set_text("No results")
+            self.search_entry.add_css_class("error")
+        else:
+            self.match_label.set_text(f"{count} found")
+            self.search_entry.remove_css_class("error")
+
+    def _on_replace(self):
+        """Replace current match."""
+        if not self.buffer.get_has_selection():
+            self._on_search_next()
+            return
+
+        replace_text = self.replace_entry.get_text()
+        start, end = self.buffer.get_selection_bounds()
+
+        # Verify selection matches search
+        selected = self.buffer.get_text(start, end, False)
+        search_text = self.search_entry.get_text()
+
+        if self.regex_btn.get_active():
+            import re
+            flags = 0 if self.case_btn.get_active() else re.IGNORECASE
+            if re.fullmatch(search_text, selected, flags):
+                self._search_context.replace(start, end, replace_text, len(replace_text))
+                self._on_search_next()
+        else:
+            if self.case_btn.get_active():
+                matches = selected == search_text
+            else:
+                matches = selected.lower() == search_text.lower()
+            if matches:
+                self._search_context.replace(start, end, replace_text, len(replace_text))
+                self._on_search_next()
+
+    def _on_replace_all(self):
+        """Replace all matches."""
+        replace_text = self.replace_entry.get_text()
+        count = self._search_context.replace_all(replace_text, len(replace_text))
+        if count > 0:
+            ToastService.show(f"Replaced {count} occurrences")
+        self._update_match_count()
 
     def _apply_settings(self):
         """Apply all settings to the editor."""

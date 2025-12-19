@@ -42,6 +42,7 @@ class ScriptToolbar(Gtk.Box):
         "run-script": (GObject.SignalFlags.RUN_FIRST, None, (str,)),  # args string
         "go-to-line": (GObject.SignalFlags.RUN_FIRST, None, (int,)),  # line number
         "toggle-preview": (GObject.SignalFlags.RUN_FIRST, None, (bool,)),  # is_preview_active
+        "refresh-requested": (GObject.SignalFlags.RUN_FIRST, None, ()),  # reload file
     }
 
     def __init__(self, file_path: str):
@@ -145,6 +146,14 @@ class ScriptToolbar(Gtk.Box):
         label = Gtk.Label(label=filename)
         label.add_css_class("dim-label")
         self.append(label)
+
+        # Refresh button
+        refresh_btn = Gtk.Button()
+        refresh_btn.set_icon_name("view-refresh-symbolic")
+        refresh_btn.add_css_class("flat")
+        refresh_btn.set_tooltip_text("Reload file from disk")
+        refresh_btn.connect("clicked", lambda b: self.emit("refresh-requested"))
+        self.append(refresh_btn)
 
     def _on_run_clicked(self, button):
         """Handle Run button click - run without arguments."""

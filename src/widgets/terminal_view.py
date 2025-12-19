@@ -104,10 +104,123 @@ class TerminalView(Gtk.Box):
 
         self.append(hbox)
 
+        # Search bar (hidden by default)
+        self._build_search_bar()
+
+    def _build_search_bar(self):
+        """Build the search bar for terminal."""
+        self.search_bar = Gtk.Revealer()
+        self.search_bar.set_reveal_child(False)
+
+        search_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+        search_box.add_css_class("search-bar")
+        search_box.set_margin_start(8)
+        search_box.set_margin_end(8)
+        search_box.set_margin_top(4)
+        search_box.set_margin_bottom(4)
+
+        # Search entry
+        self.search_entry = Gtk.SearchEntry()
+        self.search_entry.set_hexpand(True)
+        self.search_entry.set_placeholder_text("Find in terminal...")
+        self.search_entry.connect("search-changed", self._on_search_changed)
+        self.search_entry.connect("activate", self._on_search_next)
+        self.search_entry.connect("next-match", self._on_search_next)
+        self.search_entry.connect("previous-match", self._on_search_prev)
+        search_box.append(self.search_entry)
+
+        # Navigation buttons
+        prev_btn = Gtk.Button()
+        prev_btn.set_icon_name("go-up-symbolic")
+        prev_btn.set_tooltip_text("Previous match (Shift+Enter)")
+        prev_btn.add_css_class("flat")
+        prev_btn.connect("clicked", lambda b: self._on_search_prev())
+        search_box.append(prev_btn)
+
+        next_btn = Gtk.Button()
+        next_btn.set_icon_name("go-down-symbolic")
+        next_btn.set_tooltip_text("Next match (Enter)")
+        next_btn.add_css_class("flat")
+        next_btn.connect("clicked", lambda b: self._on_search_next())
+        search_box.append(next_btn)
+
+        # Case sensitive toggle
+        self.case_btn = Gtk.ToggleButton()
+        self.case_btn.set_icon_name("font-x-generic-symbolic")
+        self.case_btn.set_tooltip_text("Match case")
+        self.case_btn.add_css_class("flat")
+        self.case_btn.connect("toggled", self._on_search_changed)
+        search_box.append(self.case_btn)
+
+        # Close button
+        close_btn = Gtk.Button()
+        close_btn.set_icon_name("window-close-symbolic")
+        close_btn.set_tooltip_text("Close (Escape)")
+        close_btn.add_css_class("flat")
+        close_btn.connect("clicked", lambda b: self.hide_search())
+        search_box.append(close_btn)
+
+        self.search_bar.set_child(search_box)
+        self.append(self.search_bar)
+
+    def show_search(self):
+        """Show the search bar."""
+        self.search_bar.set_reveal_child(True)
+        self.search_entry.grab_focus()
+
+    def hide_search(self):
+        """Hide the search bar."""
+        self.search_bar.set_reveal_child(False)
+        self.terminal.search_set_regex(None, 0)
+        self.terminal.grab_focus()
+
+    def _on_search_changed(self, *args):
+        """Handle search text or options change."""
+        text = self.search_entry.get_text()
+        if not text:
+            self.terminal.search_set_regex(None, 0)
+            return
+
+        # Build regex flags
+        import re
+        flags = 0
+        if not self.case_btn.get_active():
+            flags |= GLib.RegexCompileFlags.CASELESS
+
+        try:
+            # Escape special regex characters for literal search
+            escaped = GLib.Regex.escape_string(text, len(text))
+            regex = GLib.Regex.new(escaped, flags, 0)
+            self.terminal.search_set_regex(regex, 0)
+            self.search_entry.remove_css_class("error")
+        except GLib.Error:
+            self.search_entry.add_css_class("error")
+
+    def _on_search_next(self, *args):
+        """Find next match."""
+        self.terminal.search_find_next()
+
+    def _on_search_prev(self, *args):
+        """Find previous match."""
+        self.terminal.search_find_previous()
+
     def _on_key_pressed(self, controller, keyval, keycode, state):
-        """Handle key press events for copy/paste."""
+        """Handle key press events for copy/paste and search."""
         ctrl_pressed = state & Gdk.ModifierType.CONTROL_MASK
         shift_pressed = state & Gdk.ModifierType.SHIFT_MASK
+
+        # Ctrl+Shift+F - show search
+        if ctrl_pressed and shift_pressed:
+            key_name = Gdk.keyval_name(keyval)
+            if key_name in ("F", "f", "Cyrillic_A", "Cyrillic_a"):
+                self.show_search()
+                return True
+
+        # Escape - hide search
+        if keyval == Gdk.KEY_Escape:
+            if self.search_bar.get_reveal_child():
+                self.hide_search()
+                return True
 
         if ctrl_pressed:
             # Get key name for layout-independent matching
