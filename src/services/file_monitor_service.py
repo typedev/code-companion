@@ -136,11 +136,35 @@ class FileMonitorService(GObject.Object):
         """Set up monitor for VSCode tasks."""
         vscode_dir = self.project_path / ".vscode"
         if vscode_dir.exists():
+            self._add_vscode_monitor(vscode_dir)
+        else:
+            # Monitor project root for .vscode creation
             self._add_monitor(
-                vscode_dir,
+                self.project_path,
                 is_file=False,
-                callback=self._on_tasks_changed
+                callback=self._on_project_root_changed
             )
+
+    def _add_vscode_monitor(self, vscode_dir: Path):
+        """Add monitor for .vscode directory."""
+        self._add_monitor(
+            vscode_dir,
+            is_file=False,
+            callback=self._on_tasks_changed
+        )
+        self._vscode_monitored = True
+
+    def _on_project_root_changed(self, monitor, file, other_file, event_type):
+        """Handle project root changes - watch for .vscode creation."""
+        if event_type != Gio.FileMonitorEvent.CREATED:
+            return
+
+        if file and file.get_basename() == ".vscode":
+            vscode_dir = self.project_path / ".vscode"
+            if vscode_dir.is_dir() and not getattr(self, '_vscode_monitored', False):
+                self._add_vscode_monitor(vscode_dir)
+                # Emit tasks-changed so panel refreshes
+                self._schedule_signal("tasks-changed", self.DEBOUNCE_TASKS)
 
     def _add_monitor(self, path: Path, is_file: bool, callback):
         """Add a file or directory monitor."""

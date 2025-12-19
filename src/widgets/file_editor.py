@@ -6,7 +6,7 @@ import gi
 
 gi.require_version("GtkSource", "5")
 
-from gi.repository import Gtk, GtkSource, GLib, GObject, Pango
+from gi.repository import Gtk, GtkSource, GLib, GObject, Pango, Adw
 
 from .code_view import get_language_for_file
 from .script_toolbar import ScriptToolbar
@@ -40,6 +40,9 @@ class FileEditor(Gtk.Box):
         """Build the editor UI."""
         # Get settings
         self.settings = SettingsService.get_instance()
+
+        # File toolbar with refresh button (for all files)
+        self._build_file_toolbar()
 
         # Script toolbar for .py/.sh/.md files
         self.script_toolbar = None
@@ -116,6 +119,75 @@ class FileEditor(Gtk.Box):
             self.stack = None
             self.markdown_preview = None
             self.append(scrolled)
+
+    def _build_file_toolbar(self):
+        """Build file toolbar with refresh button."""
+        toolbar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+        toolbar.add_css_class("toolbar")
+        toolbar.set_margin_start(6)
+        toolbar.set_margin_end(6)
+        toolbar.set_margin_top(2)
+        toolbar.set_margin_bottom(2)
+
+        # Spacer to push buttons to the right
+        spacer = Gtk.Box()
+        spacer.set_hexpand(True)
+        toolbar.append(spacer)
+
+        # Refresh button
+        refresh_btn = Gtk.Button()
+        refresh_btn.set_icon_name("view-refresh-symbolic")
+        refresh_btn.add_css_class("flat")
+        refresh_btn.set_tooltip_text("Reload file from disk (discard changes)")
+        refresh_btn.connect("clicked", self._on_refresh_clicked)
+        toolbar.append(refresh_btn)
+
+        self.append(toolbar)
+
+    def _on_refresh_clicked(self, button):
+        """Handle refresh button click."""
+        if self._modified:
+            # Ask user to confirm discarding changes
+            dialog = Adw.AlertDialog()
+            dialog.set_heading("Discard Changes?")
+            dialog.set_body("The file has unsaved changes. Reload from disk and discard them?")
+            dialog.add_response("cancel", "Cancel")
+            dialog.add_response("discard", "Discard & Reload")
+            dialog.set_response_appearance("discard", Adw.ResponseAppearance.DESTRUCTIVE)
+            dialog.connect("response", self._on_reload_response)
+            dialog.present(self.get_root())
+        else:
+            self.reload()
+
+    def _on_reload_response(self, dialog, response):
+        """Handle reload confirmation dialog response."""
+        if response == "discard":
+            self.reload()
+
+    def reload(self):
+        """Reload file content from disk."""
+        # Save cursor position
+        mark = self.buffer.get_insert()
+        iter_at_cursor = self.buffer.get_iter_at_mark(mark)
+        line = iter_at_cursor.get_line()
+        offset = iter_at_cursor.get_line_offset()
+
+        # Reload content
+        self._load_file()
+
+        # Restore cursor position (if possible)
+        new_iter = self.buffer.get_iter_at_line_offset(line, 0)
+        line_end = new_iter.copy()
+        if not line_end.ends_line():
+            line_end.forward_to_line_end()
+        max_offset = line_end.get_line_offset()
+        if offset <= max_offset:
+            new_iter.set_line_offset(offset)
+        else:
+            new_iter = line_end
+        self.buffer.place_cursor(new_iter)
+
+        ToastService.show("File reloaded")
 
     def _apply_settings(self):
         """Apply all settings to the editor."""
