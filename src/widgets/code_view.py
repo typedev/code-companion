@@ -340,3 +340,25 @@ class DiffView(Gtk.Box):
         text_view.get_style_context().add_provider(
             css_provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
         )
+
+    def update(self, old_text: str, new_text: str):
+        """Update diff view with new content.
+
+        Args:
+            old_text: Original text (for generating diff)
+            new_text: New text (for generating diff)
+        """
+        # Remove existing content
+        child = self.get_first_child()
+        while child:
+            next_child = child.get_next_sibling()
+            self.remove(child)
+            child = next_child
+
+        # Update content
+        self.old_text = old_text
+        self.new_text = new_text
+        self.raw_diff = None  # Force regeneration from texts
+
+        # Rebuild UI
+        self._build_ui()

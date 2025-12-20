@@ -640,8 +640,9 @@ class ProjectWindow(Adw.ApplicationWindow):
 
     def _load_project(self):
         """Load project data and create initial tabs."""
-        # No pinned tabs needed - history is in sidebar now
-        pass
+        # Subscribe to file changes to update open diff views
+        self.file_monitor_service.connect("working-tree-changed", self._on_working_tree_changed)
+        self.file_monitor_service.connect("git-status-changed", self._on_git_status_changed_for_diff)
 
     def _on_session_activated(self, panel, session: Session):
         """Handle session activation - show in main area, reuse single tab."""
@@ -1056,10 +1057,13 @@ class ProjectWindow(Adw.ApplicationWindow):
 
     def _on_git_file_clicked(self, git_panel, path: str, staged: bool):
         """Handle git file click - open diff view (reuses tab for same file)."""
-        # If same file already open - just switch to it
+        # If same file already open - refresh and switch to it
         if (self.git_diff_page is not None and
             self.git_diff_path == path and
             self.git_diff_staged == staged):
+            # Refresh the diff content
+            old_content, new_content = self.git_service.get_diff(path, staged)
+            self.git_diff_view.update(old_content, new_content)
             self.tab_view.set_selected_page(self.git_diff_page)
             return
 
@@ -1087,6 +1091,33 @@ class ProjectWindow(Adw.ApplicationWindow):
     def _on_branch_changed(self, git_panel):
         """Handle branch change - update window title."""
         self._update_window_title()
+
+    def _on_working_tree_changed(self, service, path: str):
+        """Handle working tree file change - update open diff view if applicable."""
+        # Check if we have an open diff view for an unstaged file
+        if (self.git_diff_view is not None and
+            self.git_diff_path is not None and
+            not self.git_diff_staged):
+            # Check if the changed path matches or is related to the open diff
+            # path can be empty string for general refresh signals
+            if not path or path == self.git_diff_path:
+                # Refresh the diff view
+                old_content, new_content = self.git_service.get_diff(
+                    self.git_diff_path, staged=False
+                )
+                self.git_diff_view.update(old_content, new_content)
+
+    def _on_git_status_changed_for_diff(self, service):
+        """Handle git status change (stage/unstage) - update open diff view."""
+        # Check if we have an open staged diff view
+        if (self.git_diff_view is not None and
+            self.git_diff_path is not None and
+            self.git_diff_staged):
+            # Refresh the staged diff view
+            old_content, new_content = self.git_service.get_diff(
+                self.git_diff_path, staged=True
+            )
+            self.git_diff_view.update(old_content, new_content)
 
     def _on_commit_view_diff(self, history_panel, commit_hash: str):
         """Handle commit diff view request - reuse single commit tab."""
