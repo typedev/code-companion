@@ -1,4 +1,4 @@
-"""Editable file view with syntax highlighting and autosave."""
+"""Editable file view with syntax highlighting."""
 
 from pathlib import Path
 
@@ -29,7 +29,6 @@ class FileEditor(Gtk.Box):
 
         self.file_path = file_path
         self._modified = False
-        self._save_timeout_id: int | None = None
         self._is_markdown = Path(file_path).suffix.lower() == ".md"
         self._preview_active = False
 
@@ -46,10 +45,11 @@ class FileEditor(Gtk.Box):
         # Get settings
         self.settings = SettingsService.get_instance()
 
-        # Script toolbar (for all files - has refresh, run/outline for scripts)
+        # Script toolbar (for all files - has refresh, save, run/outline for scripts)
         ext = Path(self.file_path).suffix.lower()
         self.script_toolbar = ScriptToolbar(self.file_path)
         self.script_toolbar.connect("refresh-requested", self._on_refresh_requested)
+        self.script_toolbar.connect("save-requested", self._on_save_requested)
         if ext in (".py", ".sh"):
             self.script_toolbar.connect("run-script", self._on_run_script)
         if ext in (".py", ".md"):
@@ -91,11 +91,6 @@ class FileEditor(Gtk.Box):
 
         # Connect signals
         self.buffer.connect("changed", self._on_buffer_changed)
-
-        # Focus controller for autosave
-        focus_controller = Gtk.EventControllerFocus()
-        focus_controller.connect("leave", self._on_focus_leave)
-        self.source_view.add_controller(focus_controller)
 
         # Wrap in scrolled window
         scrolled = Gtk.ScrolledWindow()
@@ -244,9 +239,22 @@ class FileEditor(Gtk.Box):
     def _on_key_pressed(self, controller, keyval, keycode, state):
         """Handle keyboard shortcuts."""
         ctrl = state & Gdk.ModifierType.CONTROL_MASK
+        shift = state & Gdk.ModifierType.SHIFT_MASK
 
         if ctrl and keyval == Gdk.KEY_f:
             self.show_search()
+            return True
+        elif ctrl and keyval == Gdk.KEY_s:
+            self.save()
+            return True
+        elif ctrl and keyval == Gdk.KEY_z:
+            if shift:
+                self.redo()
+            else:
+                self.undo()
+            return True
+        elif ctrl and keyval == Gdk.KEY_y:
+            self.redo()
             return True
         elif keyval == Gdk.KEY_Escape:
             if self.search_bar.get_reveal_child():
@@ -521,23 +529,12 @@ class FileEditor(Gtk.Box):
         is_modified = buffer.get_modified()
         if is_modified != self._modified:
             self._modified = is_modified
+            self.script_toolbar.set_modified(is_modified)
             self.emit("modified-changed", is_modified)
 
-    def _on_focus_leave(self, controller):
-        """Handle focus leave - schedule autosave."""
-        if self._modified:
-            # Cancel any pending save
-            if self._save_timeout_id:
-                GLib.source_remove(self._save_timeout_id)
-            # Schedule save with short delay
-            self._save_timeout_id = GLib.timeout_add(100, self._do_autosave)
-
-    def _do_autosave(self) -> bool:
-        """Perform autosave."""
-        self._save_timeout_id = None
-        if self._modified:
-            self.save()
-        return False  # Don't repeat
+    def _on_save_requested(self, toolbar):
+        """Handle save request from toolbar."""
+        self.save()
 
     def save(self) -> bool:
         """Save the file. Returns True on success."""
@@ -551,7 +548,9 @@ class FileEditor(Gtk.Box):
 
             self.buffer.set_modified(False)
             self._modified = False
+            self.script_toolbar.set_modified(False)
             self.emit("modified-changed", False)
+            ToastService.show("File saved")
             return True
 
         except OSError as e:

@@ -53,7 +53,8 @@ class ProjectWindow(Adw.ApplicationWindow):
         self._build_ui()
         self._load_project()
 
-        # Connect destroy signal to release lock
+        # Connect window signals
+        self.connect("close-request", self._on_close_request)
         self.connect("destroy", self._on_destroy)
 
         # Setup keyboard shortcuts
@@ -1240,6 +1241,24 @@ class ProjectWindow(Adw.ApplicationWindow):
 
     def _on_tab_close_requested(self, tab_view, page) -> bool:
         """Handle tab close request."""
+        # Get the child widget
+        child = page.get_child()
+
+        # File editor with unsaved changes - show warning
+        if isinstance(child, FileEditor) and child.is_modified:
+            dialog = Adw.AlertDialog()
+            dialog.set_heading("Unsaved Changes")
+            dialog.set_body(f"'{Path(child.file_path).name}' has unsaved changes. What do you want to do?")
+            dialog.add_response("cancel", "Cancel")
+            dialog.add_response("discard", "Discard")
+            dialog.add_response("save", "Save")
+            dialog.set_response_appearance("discard", Adw.ResponseAppearance.DESTRUCTIVE)
+            dialog.set_response_appearance("save", Adw.ResponseAppearance.SUGGESTED)
+            dialog.set_default_response("save")
+            dialog.connect("response", self._on_unsaved_close_response, page, child)
+            dialog.present(self)
+            return True  # Prevent immediate close
+
         # AI CLI tab - show warning if active
         if page == self.claude_tab_page:
             dialog = Adw.AlertDialog()
@@ -1277,6 +1296,19 @@ class ProjectWindow(Adw.ApplicationWindow):
 
         return False  # Allow close
 
+    def _on_unsaved_close_response(self, dialog, response, page, editor: FileEditor):
+        """Handle unsaved file close dialog response."""
+        if response == "cancel":
+            # User cancelled - don't close
+            return
+        elif response == "save":
+            # Save then close
+            editor.save()
+            self.tab_view.close_page_finish(page, True)
+        elif response == "discard":
+            # Discard changes and close
+            self.tab_view.close_page_finish(page, True)
+
     def _on_claude_close_response(self, dialog, response, page):
         """Handle Claude close dialog response."""
         if response == "close":
@@ -1284,6 +1316,56 @@ class ProjectWindow(Adw.ApplicationWindow):
             self.claude_tab_page = None
             self.claude_terminal = None
             self.claude_btn.set_sensitive(True)
+
+    def _on_close_request(self, window) -> bool:
+        """Handle window close request - check for unsaved changes."""
+        # Collect unsaved files
+        unsaved_files = []
+        n_pages = self.tab_view.get_n_pages()
+        for i in range(n_pages):
+            page = self.tab_view.get_nth_page(i)
+            child = page.get_child()
+            if isinstance(child, FileEditor) and child.is_modified:
+                unsaved_files.append((page, child))
+
+        if not unsaved_files:
+            return False  # Allow close
+
+        # Show warning dialog
+        file_names = [Path(editor.file_path).name for _, editor in unsaved_files]
+        if len(file_names) == 1:
+            body = f"'{file_names[0]}' has unsaved changes."
+        else:
+            body = f"{len(file_names)} files have unsaved changes:\n• " + "\n• ".join(file_names)
+
+        dialog = Adw.AlertDialog()
+        dialog.set_heading("Unsaved Changes")
+        dialog.set_body(body)
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("discard", "Discard All")
+        dialog.add_response("save", "Save All")
+        dialog.set_response_appearance("discard", Adw.ResponseAppearance.DESTRUCTIVE)
+        dialog.set_response_appearance("save", Adw.ResponseAppearance.SUGGESTED)
+        dialog.set_default_response("save")
+        dialog.connect("response", self._on_window_close_response, unsaved_files)
+        dialog.present(self)
+        return True  # Prevent close, dialog will handle it
+
+    def _on_window_close_response(self, dialog, response, unsaved_files):
+        """Handle window close dialog response."""
+        if response == "cancel":
+            return
+        elif response == "save":
+            # Save all files then close
+            for _, editor in unsaved_files:
+                editor.save()
+            self.close()
+        elif response == "discard":
+            # Mark files as not modified to prevent dialogs on close
+            for _, editor in unsaved_files:
+                editor._modified = False
+                editor.buffer.set_modified(False)
+            self.close()
 
     def _on_destroy(self, window):
         """Clean up on window destroy."""
@@ -1374,17 +1456,10 @@ class ProjectWindow(Adw.ApplicationWindow):
         GLib.idle_add(lambda: self.unified_search.grab_focus() or False)
 
     def _close_current_tab(self):
-        """Close current tab with autosave if it's a modified file."""
+        """Close current tab (shows warning for unsaved files)."""
         page = self.tab_view.get_selected_page()
         if page is None:
             return
 
-        # Get the child widget
-        child = page.get_child()
-
-        # If it's a FileEditor with unsaved changes, save first
-        if isinstance(child, FileEditor) and child._modified:
-            child.save()
-
-        # Close the page (this will trigger close-page signal for cleanup)
+        # Close the page - close-page signal handler will check for unsaved changes
         self.tab_view.close_page(page)

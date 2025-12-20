@@ -43,6 +43,7 @@ class ScriptToolbar(Gtk.Box):
         "go-to-line": (GObject.SignalFlags.RUN_FIRST, None, (int,)),  # line number
         "toggle-preview": (GObject.SignalFlags.RUN_FIRST, None, (bool,)),  # is_preview_active
         "refresh-requested": (GObject.SignalFlags.RUN_FIRST, None, ()),  # reload file
+        "save-requested": (GObject.SignalFlags.RUN_FIRST, None, ()),  # save file
     }
 
     def __init__(self, file_path: str):
@@ -143,9 +144,18 @@ class ScriptToolbar(Gtk.Box):
 
         # Filename label
         filename = Path(self.file_path).name
-        label = Gtk.Label(label=filename)
-        label.add_css_class("dim-label")
-        self.append(label)
+        self.filename_label = Gtk.Label(label=filename)
+        self.filename_label.add_css_class("dim-label")
+        self.append(self.filename_label)
+
+        # Save button
+        self.save_btn = Gtk.Button()
+        self.save_btn.set_icon_name("document-save-symbolic")
+        self.save_btn.add_css_class("flat")
+        self.save_btn.set_tooltip_text("Save (Ctrl+S)")
+        self.save_btn.set_sensitive(False)  # Disabled until modified
+        self.save_btn.connect("clicked", lambda b: self.emit("save-requested"))
+        self.append(self.save_btn)
 
         # Refresh button
         refresh_btn = Gtk.Button()
@@ -375,3 +385,14 @@ class ScriptToolbar(Gtk.Box):
                 adj.set_value(row_y + row_height - visible_height)
 
         return False  # Don't repeat
+
+    def set_modified(self, is_modified: bool):
+        """Update toolbar to reflect modified state."""
+        filename = Path(self.file_path).name
+        if is_modified:
+            self.filename_label.set_text(f"● {filename}")
+            self.filename_label.remove_css_class("dim-label")
+        else:
+            self.filename_label.set_text(filename)
+            self.filename_label.add_css_class("dim-label")
+        self.save_btn.set_sensitive(is_modified)
