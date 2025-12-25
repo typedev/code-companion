@@ -75,27 +75,7 @@ class ScriptToolbar(Gtk.Box):
 
     def _build_ui(self):
         """Build toolbar UI."""
-        # Run button (only for scripts, not markdown)
-        if self._file_ext in (".py", ".sh"):
-            run_menu = Gio.Menu()
-            run_menu.append("Run with arguments...", "toolbar.run-with-args")
-
-            self.run_button = Adw.SplitButton()
-            self.run_button.set_label("Run")
-            self.run_button.set_icon_name("media-playback-start-symbolic")
-            self.run_button.set_menu_model(run_menu)
-            self.run_button.connect("clicked", self._on_run_clicked)
-
-            # Action for menu item
-            action_group = Gio.SimpleActionGroup()
-            run_with_args_action = Gio.SimpleAction.new("run-with-args", None)
-            run_with_args_action.connect("activate", self._on_run_with_args_clicked)
-            action_group.add_action(run_with_args_action)
-            self.insert_action_group("toolbar", action_group)
-
-            self.append(self.run_button)
-
-        # Outline button (for Python and Markdown files)
+        # Outline button (for Python and Markdown files) - LEFT side
         if self._file_ext in (".py", ".md"):
             self.outline_button = Gtk.MenuButton()
             self.outline_button.set_label("Outline")
@@ -137,7 +117,7 @@ class ScriptToolbar(Gtk.Box):
             self.preview_button.connect("toggled", self._on_preview_toggled)
             self.append(self.preview_button)
 
-        # Spacer to push filename to the right
+        # Spacer to push buttons to the right
         spacer = Gtk.Box()
         spacer.set_hexpand(True)
         self.append(spacer)
@@ -147,6 +127,26 @@ class ScriptToolbar(Gtk.Box):
         self.filename_label = Gtk.Label(label=filename)
         self.filename_label.add_css_class("dim-label")
         self.append(self.filename_label)
+
+        # Run button (only for scripts, not markdown) - RIGHT side
+        if self._file_ext in (".py", ".sh"):
+            run_menu = Gio.Menu()
+            run_menu.append("Run with arguments...", "toolbar.run-with-args")
+
+            self.run_button = Adw.SplitButton()
+            self.run_button.set_label("Run")
+            self.run_button.set_icon_name("media-playback-start-symbolic")
+            self.run_button.set_menu_model(run_menu)
+            self.run_button.connect("clicked", self._on_run_clicked)
+
+            # Action for menu item
+            action_group = Gio.SimpleActionGroup()
+            run_with_args_action = Gio.SimpleAction.new("run-with-args", None)
+            run_with_args_action.connect("activate", self._on_run_with_args_clicked)
+            action_group.add_action(run_with_args_action)
+            self.insert_action_group("toolbar", action_group)
+
+            self.append(self.run_button)
 
         # Save button
         self.save_btn = Gtk.Button()
