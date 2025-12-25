@@ -2,6 +2,11 @@
 
 A native GTK4/libadwaita desktop application for working with AI coding assistants like [Claude Code](https://claude.ai/code). Provides a visual IDE-like environment with session history, file editing, terminal, Git integration, and project notes.
 
+## Screenshots
+
+![Code Companion](images/cc-pict.jpg)
+
+
 > **v0.8** introduces multi-provider architecture. While currently supporting Claude Code, the codebase is designed to support additional AI CLI tools (Gemini CLI, Codex CLI, etc.) in future versions.
 
 ![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)
@@ -75,9 +80,7 @@ A native GTK4/libadwaita desktop application for working with AI coding assistan
 - **Linters:** Enable/disable ruff and mypy, ignore specific codes
 - **Window State:** Auto-saves size, position, sidebar width, maximized state
 
-## Screenshots
 
-*Coming soon*
 
 ## Installation
 
