@@ -18,6 +18,7 @@ from .unified_search import UnifiedSearch
 from .notes_panel import NotesPanel
 from .preferences_dialog import PreferencesDialog
 from .snippets_bar import SnippetsBar
+from .query_editor import QueryEditor
 from .problems_panel import ProblemsPanel
 from .problems_detail_view import ProblemsDetailView
 from .script_toolbar import ScriptToolbar
@@ -45,6 +46,7 @@ __all__ = [
     "NotesPanel",
     "PreferencesDialog",
     "SnippetsBar",
+    "QueryEditor",
     "ProblemsPanel",
     "ProblemsDetailView",
     "ScriptToolbar",

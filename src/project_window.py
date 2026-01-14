@@ -6,7 +6,7 @@ from gi.repository import Adw, Gtk, GLib, Gio
 
 from .models import Session
 from .services import get_adapter, ProjectLock, ProjectRegistry, GitService, IconCache, ToastService, SettingsService, FileMonitorService
-from .widgets import SessionView, TerminalView, FileTree, FileEditor, TasksPanel, GitChangesPanel, GitHistoryPanel, DiffView, CommitDetailView, ClaudeHistoryPanel, FileSearchDialog, UnifiedSearch, NotesPanel, PreferencesDialog, SnippetsBar, ProblemsPanel, ProblemsDetailView
+from .widgets import SessionView, TerminalView, FileTree, FileEditor, TasksPanel, GitChangesPanel, GitHistoryPanel, DiffView, CommitDetailView, ClaudeHistoryPanel, FileSearchDialog, UnifiedSearch, NotesPanel, PreferencesDialog, SnippetsBar, QueryEditor, ProblemsPanel, ProblemsDetailView
 
 
 def escape_markup(text: str) -> str:
@@ -685,7 +685,7 @@ class ProjectWindow(Adw.ApplicationWindow):
             self.tab_view.set_selected_page(self.claude_tab_page)
             return
 
-        # Create container for terminal + snippets bar
+        # Create container for terminal + query editor + snippets bar
         container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         container.set_vexpand(True)
 
@@ -697,7 +697,12 @@ class ProjectWindow(Adw.ApplicationWindow):
         terminal.set_vexpand(True)
         container.append(terminal)
 
-        # Add snippets bar below terminal
+        # Add query editor below terminal
+        query_editor = QueryEditor()
+        query_editor.connect("send-requested", self._on_query_send)
+        container.append(query_editor)
+
+        # Add snippets bar below query editor
         snippets_bar = SnippetsBar()
         snippets_bar.connect("snippet-clicked", self._on_snippet_clicked)
         container.append(snippets_bar)
@@ -726,6 +731,21 @@ class ProjectWindow(Adw.ApplicationWindow):
         if self.claude_terminal:
             self.claude_terminal.terminal.feed_child(text.encode("utf-8"))
             self.claude_terminal.terminal.grab_focus()
+
+    def _on_query_send(self, query_editor, text: str):
+        """Handle query editor send - paste text into Claude terminal."""
+        if self.claude_terminal and text.strip():
+            # Send text to terminal
+            self.claude_terminal.terminal.feed_child(text.encode("utf-8"))
+            # Send Enter separately after short delay
+            GLib.timeout_add(50, self._send_enter_to_terminal)
+
+    def _send_enter_to_terminal(self):
+        """Send Enter key to terminal."""
+        if self.claude_terminal:
+            self.claude_terminal.terminal.feed_child(b"\n")
+            self.claude_terminal.terminal.grab_focus()
+        return False  # Don't repeat
 
     def _on_claude_exited(self, terminal, status):
         """Handle Claude shell exit - close tab and re-enable button."""
