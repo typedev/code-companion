@@ -23,6 +23,8 @@ from .problems_panel import ProblemsPanel
 from .problems_detail_view import ProblemsDetailView
 from .script_toolbar import ScriptToolbar
 from .markdown_preview import MarkdownPreview
+from .image_viewer import ImageViewer
+from .svg_editor import SvgEditor
 
 __all__ = [
     "MessageRow",
@@ -51,4 +53,6 @@ __all__ = [
     "ProblemsDetailView",
     "ScriptToolbar",
     "MarkdownPreview",
+    "ImageViewer",
+    "SvgEditor",
 ]

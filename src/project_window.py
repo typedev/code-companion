@@ -6,7 +6,7 @@ from gi.repository import Adw, Gtk, GLib, Gio
 
 from .models import Session
 from .services import get_adapter, ProjectLock, ProjectRegistry, GitService, IconCache, ToastService, SettingsService, FileMonitorService
-from .widgets import SessionView, TerminalView, FileTree, FileEditor, TasksPanel, GitChangesPanel, GitHistoryPanel, DiffView, CommitDetailView, ClaudeHistoryPanel, FileSearchDialog, UnifiedSearch, NotesPanel, PreferencesDialog, SnippetsBar, QueryEditor, ProblemsPanel, ProblemsDetailView
+from .widgets import SessionView, TerminalView, FileTree, FileEditor, TasksPanel, GitChangesPanel, GitHistoryPanel, DiffView, CommitDetailView, ClaudeHistoryPanel, FileSearchDialog, UnifiedSearch, NotesPanel, PreferencesDialog, SnippetsBar, QueryEditor, ProblemsPanel, ProblemsDetailView, ImageViewer, SvgEditor
 
 
 def escape_markup(text: str) -> str:
@@ -973,7 +973,7 @@ class ProjectWindow(Adw.ApplicationWindow):
                 # Check if the file is the target path or inside target folder
                 if child_path == target_path or target_path in child_path.parents:
                     # Save if modified
-                    if isinstance(child, FileEditor) and child._modified:
+                    if isinstance(child, (FileEditor, SvgEditor)) and child._modified:
                         child.save()
                     pages_to_close.append(page)
 
@@ -1191,21 +1191,25 @@ class ProjectWindow(Adw.ApplicationWindow):
                 self.tab_view.set_selected_page(page)
                 return
 
-        # Create file editor
+        # Route by file extension
+        ext = Path(file_path).suffix.lower()
+
         try:
-            editor = FileEditor(file_path)
+            if ext in ImageViewer.EXTENSIONS:
+                widget = ImageViewer(file_path)
+            elif ext == ".svg":
+                widget = SvgEditor(file_path)
+                widget.connect("modified-changed", self._on_editor_modified_changed)
+            else:
+                widget = FileEditor(file_path)
+                widget.connect("modified-changed", self._on_editor_modified_changed)
+                widget.connect("run-requested", self._on_run_requested)
         except Exception as e:
             ToastService.show_error(f"Error opening file: {e}")
             return
 
-        # Track modifications for tab title
-        editor.connect("modified-changed", self._on_editor_modified_changed)
-
-        # Track run requests for script files
-        editor.connect("run-requested", self._on_run_requested)
-
         # Add tab with appropriate file icon
-        page = self.tab_view.append(editor)
+        page = self.tab_view.append(widget)
         file_name = Path(file_path).name
         page.set_title(file_name)
         page.set_tooltip(file_path)
@@ -1215,11 +1219,11 @@ class ProjectWindow(Adw.ApplicationWindow):
         gicon = icon_cache.get_file_gicon(Path(file_path))
         page.set_icon(gicon or Gio.ThemedIcon.new("text-x-generic-symbolic"))
 
-        # Store page reference in editor for later lookup
-        editor._tab_page = page
+        # Store page reference in widget for later lookup
+        widget._tab_page = page
 
         self.tab_view.set_selected_page(page)
-        editor.grab_focus()
+        widget.grab_focus()
 
     def _on_editor_modified_changed(self, editor, is_modified):
         """Handle editor modification state change - update tab title."""
@@ -1267,7 +1271,7 @@ class ProjectWindow(Adw.ApplicationWindow):
         child = page.get_child()
 
         # File editor with unsaved changes - show warning
-        if isinstance(child, FileEditor) and child.is_modified:
+        if isinstance(child, (FileEditor, SvgEditor)) and child.is_modified:
             dialog = Adw.AlertDialog()
             dialog.set_heading("Unsaved Changes")
             dialog.set_body(f"'{Path(child.file_path).name}' has unsaved changes. What do you want to do?")
@@ -1318,7 +1322,7 @@ class ProjectWindow(Adw.ApplicationWindow):
 
         return False  # Allow close
 
-    def _on_unsaved_close_response(self, dialog, response, page, editor: FileEditor):
+    def _on_unsaved_close_response(self, dialog, response, page, editor):
         """Handle unsaved file close dialog response."""
         if response == "cancel":
             # User cancelled - don't close
@@ -1347,7 +1351,7 @@ class ProjectWindow(Adw.ApplicationWindow):
         for i in range(n_pages):
             page = self.tab_view.get_nth_page(i)
             child = page.get_child()
-            if isinstance(child, FileEditor) and child.is_modified:
+            if isinstance(child, (FileEditor, SvgEditor)) and child.is_modified:
                 unsaved_files.append((page, child))
 
         if not unsaved_files:
