@@ -60,8 +60,8 @@ class GitService:
     def is_git_repo(self) -> bool:
         """Check if path is inside a git repository."""
         try:
-            pygit2.discover_repository(str(self.repo_path))
-            return True
+            result = pygit2.discover_repository(str(self.repo_path))
+            return result is not None
         except pygit2.GitError:
             return False
 

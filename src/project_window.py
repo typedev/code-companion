@@ -46,6 +46,9 @@ class ProjectWindow(Adw.ApplicationWindow):
             self.close()
             return
 
+        # Connect destroy handler early so lock is always released on crash
+        self.connect("destroy", self._on_destroy)
+
         # Register project if not already
         self.registry.register_project(str(self.project_path))
 
@@ -55,7 +58,6 @@ class ProjectWindow(Adw.ApplicationWindow):
 
         # Connect window signals
         self.connect("close-request", self._on_close_request)
-        self.connect("destroy", self._on_destroy)
 
         # Setup keyboard shortcuts
         self._setup_shortcuts()
@@ -1389,8 +1391,8 @@ class ProjectWindow(Adw.ApplicationWindow):
 
     def _on_destroy(self, window):
         """Clean up on window destroy."""
-        # Save window size (only if not maximized)
-        if not self.is_maximized():
+        # Save window size (only if not maximized and settings initialized)
+        if hasattr(self, "settings") and not self.is_maximized():
             width, height = self.get_default_size()
             # get_default_size returns -1 if not set, use actual size
             if width <= 0 or height <= 0:
@@ -1400,7 +1402,8 @@ class ProjectWindow(Adw.ApplicationWindow):
             self.settings.set("window.height", height)
 
         # Shutdown file monitor service
-        self.file_monitor_service.shutdown()
+        if hasattr(self, "file_monitor_service"):
+            self.file_monitor_service.shutdown()
 
         self.lock.release()
 
