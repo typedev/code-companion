@@ -13,6 +13,8 @@ gi.require_version("GdkPixbuf", "2.0")
 
 from gi.repository import Gtk, Gdk, GdkPixbuf, Gio, GLib, GObject, Graphene
 
+from ..services import SettingsService
+
 
 # Checkerboard CSS for transparency visualization
 CHECKERBOARD_CSS = """
@@ -170,6 +172,13 @@ class ImageViewer(Gtk.Box):
         self._zoom = 1.0
         self._fit_mode = True
 
+        # Restore saved zoom level
+        self._settings = SettingsService.get_instance()
+        saved_zoom = self._settings.get("viewer.zoom", 0)
+        if saved_zoom > 0:
+            self._zoom = saved_zoom
+            self._fit_mode = False
+
         self._setup_css()
         self._build_ui()
         self._load_image()
@@ -239,9 +248,21 @@ class ImageViewer(Gtk.Box):
         toolbar.append(zoom_in_btn)
 
         # Zoom percentage label
-        self._zoom_label = Gtk.Label(label="Fit")
+        initial_label = "Fit" if self._fit_mode else f"{int(self._zoom * 100)}%"
+        self._zoom_label = Gtk.Label(label=initial_label)
         self._zoom_label.set_width_chars(6)
         toolbar.append(self._zoom_label)
+
+        # System scale indicator (shown after widget is realized)
+        self._scale_label = Gtk.Label(label="")
+        self._scale_label.add_css_class("dim-label")
+        self._scale_label.set_margin_start(4)
+        self._scale_label.set_tooltip_text(
+            "System display scale. For true 1:1 device pixels, "
+            "set zoom to 100%. Logical 1:1 = 100% ÷ scale."
+        )
+        toolbar.append(self._scale_label)
+        self.connect("realize", self._on_realize)
 
         self.append(toolbar)
 
@@ -265,7 +286,7 @@ class ImageViewer(Gtk.Box):
         self._scrolled.set_child(self._image_box)
         self.append(self._scrolled)
 
-        # Start in fit mode
+        # Always start in fit mode for clean initial layout
         self._apply_fit_mode()
 
         # Ctrl+scroll zoom
@@ -279,6 +300,25 @@ class ImageViewer(Gtk.Box):
         key_controller = Gtk.EventControllerKey()
         key_controller.connect("key-pressed", self._on_key_pressed)
         self.add_controller(key_controller)
+
+    def _on_realize(self, widget):
+        """Update scale indicator and apply saved zoom once display scale is available."""
+        scale = _get_display_scale(self)
+        if scale != 1.0:
+            pct = round(scale * 100)
+            self._scale_label.set_text(f"@{pct}%")
+        else:
+            self._scale_label.set_text("")
+
+        # Defer saved zoom application so display scale is fully settled
+        if not self._fit_mode and self._cairo_surface:
+            GLib.idle_add(self._apply_saved_zoom)
+
+    def _apply_saved_zoom(self):
+        """Apply saved zoom level (one-shot, called from idle after realize)."""
+        if not self._fit_mode and self._cairo_surface:
+            self._apply_zoom()
+        return False
 
     def _load_image(self):
         """Load the image file."""
@@ -294,6 +334,7 @@ class ImageViewer(Gtk.Box):
             self._info_label.set_text(
                 f"{self._img_width}\u00d7{self._img_height} \u00b7 {_format_file_size(file_size)}"
             )
+
         except Exception as e:
             self._info_label.set_text(f"Error: {e}")
 
@@ -302,6 +343,7 @@ class ImageViewer(Gtk.Box):
         self._fit_mode = True
         self._apply_fit_mode()
         self._zoom_label.set_text("Fit")
+        self._settings.set("viewer.zoom", 0)
 
     def _apply_fit_mode(self):
         """Apply fit mode settings."""
@@ -323,6 +365,7 @@ class ImageViewer(Gtk.Box):
         self._fit_mode = False
         self._apply_zoom()
         self._zoom_label.set_text(f"{int(zoom * 100)}%")
+        self._settings.set("viewer.zoom", round(zoom, 2))
 
     def _apply_zoom(self):
         """Apply current zoom level with pixel-perfect Cairo rendering."""
