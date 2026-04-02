@@ -2,7 +2,8 @@
 
 from pathlib import Path
 
-from gi.repository import Adw, Gtk, GLib, Gio
+import threading
+from gi.repository import Adw, Gtk, GLib, Gdk, Gio
 
 from .models import Session
 from .services import get_adapter, ProjectLock, ProjectRegistry, GitService, IconCache, ToastService, SettingsService, FileMonitorService
@@ -145,6 +146,7 @@ class ProjectWindow(Adw.ApplicationWindow):
 
         # Vertical toolbar on the left
         self.vertical_toolbar = self._build_vertical_toolbar()
+        self._setup_badge_css()
         main_box.append(self.vertical_toolbar)
 
         # Main horizontal split with resizable pane
@@ -269,13 +271,18 @@ class ProjectWindow(Adw.ApplicationWindow):
         btn.add_css_class("flat")
         btn.set_size_request(36, 36)
 
-        # Load icon from resources
+        # Load icon from resources — wrap in Overlay for badge support
+        overlay = Gtk.Overlay()
+        overlay.set_size_request(36, 36)
+
         icon_path = Path(__file__).parent / "resources" / "icons" / f"{icon_name}.svg"
         if icon_path.exists():
             gicon = Gio.FileIcon.new(Gio.File.new_for_path(str(icon_path)))
             image = Gtk.Image.new_from_gicon(gicon)
             image.set_pixel_size(20)
-            btn.set_child(image)
+            overlay.set_child(image)
+
+        btn.set_child(overlay)
 
         btn.connect("toggled", self._on_tab_toggled, tab_name)
         return btn
@@ -331,6 +338,94 @@ class ProjectWindow(Adw.ApplicationWindow):
         container.append(separator)
 
         return container
+
+    def _setup_badge_css(self):
+        """Setup CSS for toolbar badge indicators."""
+        css = """
+        .toolbar-badge {
+            font-size: 8px;
+            font-weight: bold;
+            min-width: 14px;
+            min-height: 14px;
+            padding: 0 3px;
+            border-radius: 8px;
+            color: white;
+            margin-end: 1px;
+            margin-top: 1px;
+        }
+        .toolbar-badge-red {
+            background-color: #e33;
+        }
+        .toolbar-badge-yellow {
+            background-color: #e9a100;
+            color: alpha(black, 0.85);
+        }
+        """
+        provider = Gtk.CssProvider()
+        provider.load_from_data(css.encode())
+        Gtk.StyleContext.add_provider_for_display(
+            Gdk.Display.get_default(),
+            provider,
+            Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION,
+        )
+
+    def _set_button_badge(self, btn: Gtk.ToggleButton, count: int, color: str):
+        """Set or update a badge on a toolbar button.
+
+        Args:
+            btn: The toggle button (must have Gtk.Overlay as child).
+            count: Number to display. 0 hides the badge.
+            color: 'red' or 'yellow'.
+        """
+        overlay = btn.get_child()
+        if not isinstance(overlay, Gtk.Overlay):
+            return
+
+        # Remove existing badge
+        badge_attr = f"_badge_{id(btn)}"
+        old_badge = getattr(self, badge_attr, None)
+        if old_badge is not None:
+            overlay.remove_overlay(old_badge)
+            setattr(self, badge_attr, None)
+
+        if count <= 0:
+            return
+
+        label = Gtk.Label(label=str(count) if count <= 99 else "99+")
+        label.add_css_class("toolbar-badge")
+        label.add_css_class(f"toolbar-badge-{color}")
+        label.set_halign(Gtk.Align.END)
+        label.set_valign(Gtk.Align.START)
+        overlay.add_overlay(label)
+        setattr(self, badge_attr, label)
+
+    def _update_git_badge(self):
+        """Update the Git toolbar button badge based on changes/ahead count."""
+        if not self._is_git_repo:
+            return
+
+        def _fetch():
+            try:
+                staged = self.git_service.get_staged_files()
+                unstaged = self.git_service.get_unstaged_files()
+                changes_count = len(staged) + len(unstaged)
+                ahead, _ = self.git_service.get_ahead_behind()
+            except Exception:
+                changes_count = 0
+                ahead = 0
+            GLib.idle_add(_apply, changes_count, ahead)
+
+        def _apply(changes_count, ahead):
+            if not hasattr(self, "_git_toolbar_btn"):
+                return
+            if changes_count > 0:
+                self._set_button_badge(self._git_toolbar_btn, changes_count, "red")
+            elif ahead > 0:
+                self._set_button_badge(self._git_toolbar_btn, ahead, "yellow")
+            else:
+                self._set_button_badge(self._git_toolbar_btn, 0, "red")
+
+        threading.Thread(target=_fetch, daemon=True).start()
 
     def _build_sidebar(self) -> Gtk.Box:
         """Build the sidebar with Files/Git/Claude tabs."""
@@ -646,6 +741,12 @@ class ProjectWindow(Adw.ApplicationWindow):
         # Subscribe to file changes to update open diff views
         self.file_monitor_service.connect("working-tree-changed", self._on_working_tree_changed)
         self.file_monitor_service.connect("git-status-changed", self._on_git_status_changed_for_diff)
+
+        # Git badge updates
+        if self._is_git_repo:
+            self.file_monitor_service.connect("git-status-changed", lambda _s: self._update_git_badge())
+            self.file_monitor_service.connect("git-history-changed", lambda _s: self._update_git_badge())
+            self._update_git_badge()  # Initial badge
 
     def _on_session_activated(self, panel, session: Session):
         """Handle session activation - show in main area, reuse single tab."""
