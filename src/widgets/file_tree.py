@@ -1,5 +1,7 @@
 """File tree widget for browsing project files."""
 
+import subprocess
+import threading
 from pathlib import Path
 
 import pathspec
@@ -57,6 +59,9 @@ class FileTree(Gtk.Box):
         self._is_git_repo = self._git_service.is_git_repo()
         if self._is_git_repo:
             self._git_service.open()
+
+        # Flag to skip redundant git status fetch after async load
+        self._git_status_fresh = False
 
         self._build_ui()
         self._setup_css()
@@ -469,15 +474,83 @@ class FileTree(Gtk.Box):
         self.emit("rename-requested", str(old_path), new_name)
 
     def _populate_tree(self):
-        """Initial population of the tree (without recreating list_box)."""
-        # Update git status
-        if self._is_git_repo:
-            self._git_status = self._git_service.get_file_status_map()
-        else:
+        """Populate the tree, always loading git status asynchronously."""
+        if not self._is_git_repo:
             self._git_status = {}
 
-        # Build tree from root
+        # Build tree from root using whatever git status we currently have
         self._add_directory_contents(self.root_path, 0)
+
+        # Always load git status async (subprocess avoids pygit2 GIL blocking)
+        if self._is_git_repo and not self._git_status_fresh:
+            self._load_git_status_async()
+        elif self._git_status_fresh:
+            self._git_status_fresh = False
+
+    def _load_git_status_async(self):
+        """Load git status in background thread using git CLI (avoids pygit2 GIL blocking)."""
+        root = str(self.root_path)
+
+        def _fetch():
+            try:
+                result = subprocess.run(
+                    ["git", "status", "--porcelain", "-z"],
+                    capture_output=True, cwd=root, timeout=30,
+                )
+                status = self._parse_porcelain_status(result.stdout)
+            except Exception:
+                status = {}
+            GLib.idle_add(self._apply_git_status, status)
+
+        threading.Thread(target=_fetch, daemon=True).start()
+
+    @staticmethod
+    def _parse_porcelain_status(data: bytes) -> dict[str, "FileStatus"]:
+        """Parse `git status --porcelain -z` output into {path: FileStatus} map."""
+        from ..services import FileStatus
+
+        status_map = {
+            "M": FileStatus.MODIFIED,
+            "A": FileStatus.ADDED,
+            "D": FileStatus.DELETED,
+            "R": FileStatus.RENAMED,
+            "T": FileStatus.TYPECHANGE,
+            "?": FileStatus.UNTRACKED,
+        }
+
+        result: dict[str, FileStatus] = {}
+        entries = data.split(b"\x00")
+        i = 0
+        while i < len(entries):
+            entry = entries[i]
+            if len(entry) < 4:  # Minimum: "XY path"
+                i += 1
+                continue
+
+            index_code = chr(entry[0])
+            wt_code = chr(entry[1])
+            path = entry[3:].decode("utf-8", errors="replace")
+
+            # Working tree status takes priority (more urgent)
+            if wt_code in status_map:
+                result[path] = status_map[wt_code]
+            elif index_code in status_map:
+                result[path] = status_map[index_code]
+
+            # Renames have an extra entry for the original path
+            if index_code == "R" or wt_code == "R":
+                i += 1  # Skip the original path entry
+
+            i += 1
+
+        return result
+
+    def _apply_git_status(self, status):
+        """Apply loaded git status and refresh tree."""
+        self._git_status = status
+        self._git_status_fresh = True
+        self.refresh()
+        return False
 
     def refresh(self):
         """Refresh the file tree."""
@@ -490,12 +563,6 @@ class FileTree(Gtk.Box):
         for row in self._selected_rows:
             if hasattr(row, "path"):
                 selected_paths.add(str(row.path))
-
-        # Update git status
-        if self._is_git_repo:
-            self._git_status = self._git_service.get_file_status_map()
-        else:
-            self._git_status = {}
 
         # Recreate list box to avoid GTK remove warnings
         if self.context_menu:
@@ -534,8 +601,14 @@ class FileTree(Gtk.Box):
         # Recreate context menu with new parent
         self._create_context_menu()
 
-        # Build tree from root
+        # Build tree from root (using current cached git status)
         self._add_directory_contents(self.root_path, 0)
+
+        # Refresh git status asynchronously (subprocess, no GIL blocking)
+        if self._is_git_repo and not self._git_status_fresh:
+            self._load_git_status_async()
+        elif self._git_status_fresh:
+            self._git_status_fresh = False
 
         # Restore selection and scroll position after UI updates
         def restore_state():

@@ -1,5 +1,7 @@
 """Git changes panel widget."""
 
+import subprocess
+import threading
 from pathlib import Path
 
 from gi.repository import Gtk, GLib, GObject, Adw
@@ -88,20 +90,8 @@ class GitChangesPanel(Gtk.Box):
             self._poll_timeout_id = None
 
     def _poll_git_status(self) -> bool:
-        """Poll git status and refresh if changed."""
-        try:
-            staged = self.service.get_staged_files()
-            unstaged = self.service.get_unstaged_files()
-            all_files = staged + unstaged
-            # Create a simple hash of current status
-            status_hash = str(sorted((f.path, f.status.name, f.staged) for f in all_files)) if all_files else ""
-
-            if status_hash != self._last_status_hash:
-                self._last_status_hash = status_hash
-                self.refresh()
-        except Exception:
-            pass  # Ignore errors during polling
-
+        """Poll git status via subprocess (avoids pygit2 GIL blocking)."""
+        self.refresh()
         return True  # Keep polling
 
     def _on_destroy(self, widget):
@@ -245,18 +235,114 @@ class GitChangesPanel(Gtk.Box):
         )
 
     def refresh(self):
-        """Refresh the changes list."""
+        """Refresh the changes list asynchronously via git CLI."""
         if not hasattr(self, "branch_label"):
             return  # Not a git repo
 
+        project_dir = str(self.project_path)
+
+        def _fetch():
+            try:
+                # Get branch name
+                r = subprocess.run(
+                    ["git", "branch", "--show-current"],
+                    capture_output=True, text=True, cwd=project_dir, timeout=10,
+                )
+                branch = r.stdout.strip() or "HEAD"
+
+                # Get ahead/behind
+                ahead, behind = 0, 0
+                r = subprocess.run(
+                    ["git", "rev-list", "--left-right", "--count", "@{upstream}...HEAD"],
+                    capture_output=True, text=True, cwd=project_dir, timeout=10,
+                )
+                if r.returncode == 0 and r.stdout.strip():
+                    parts = r.stdout.strip().split()
+                    if len(parts) == 2:
+                        behind, ahead = int(parts[0]), int(parts[1])
+
+                # Get status
+                r = subprocess.run(
+                    ["git", "status", "--porcelain", "-z"],
+                    capture_output=True, cwd=project_dir, timeout=30,
+                )
+                staged, unstaged = self._parse_porcelain_to_file_status(r.stdout)
+            except Exception:
+                branch, ahead, behind = "?", 0, 0
+                staged, unstaged = [], []
+
+            GLib.idle_add(self._apply_refresh, branch, ahead, behind, staged, unstaged)
+
+        threading.Thread(target=_fetch, daemon=True).start()
+
+    @staticmethod
+    def _parse_porcelain_to_file_status(data: bytes) -> tuple[list, list]:
+        """Parse `git status --porcelain -z` into (staged, unstaged) file lists."""
+        status_map = {
+            "M": FileStatus.MODIFIED,
+            "A": FileStatus.ADDED,
+            "D": FileStatus.DELETED,
+            "R": FileStatus.RENAMED,
+            "T": FileStatus.TYPECHANGE,
+            "?": FileStatus.UNTRACKED,
+        }
+
+        staged: list[GitFileStatus] = []
+        unstaged: list[GitFileStatus] = []
+        entries = data.split(b"\x00")
+        i = 0
+        while i < len(entries):
+            entry = entries[i]
+            if len(entry) < 4:
+                i += 1
+                continue
+
+            index_code = chr(entry[0])
+            wt_code = chr(entry[1])
+            path = entry[3:].decode("utf-8", errors="replace")
+
+            # Index (staged) status
+            if index_code in status_map and index_code != "?":
+                staged.append(GitFileStatus(path, status_map[index_code], staged=True))
+
+            # Working tree (unstaged) status
+            if wt_code in status_map:
+                unstaged.append(GitFileStatus(path, status_map[wt_code], staged=False))
+
+            # Renames have an extra entry for the original path
+            if index_code == "R" or wt_code == "R":
+                i += 1
+
+            i += 1
+
+        staged.sort(key=lambda x: x.path)
+        unstaged.sort(key=lambda x: x.path)
+        return staged, unstaged
+
+    def _apply_refresh(self, branch, ahead, behind, staged, unstaged):
+        """Apply fetched git data to the UI (runs on main thread)."""
+        if not hasattr(self, "branch_label"):
+            return False
+
         # Update branch name
-        branch = self.service.get_branch_name()
         self.branch_label.set_label(branch)
 
-        # Update Push/Pull buttons with ahead/behind counts
-        self._update_sync_buttons()
+        # Update Push/Pull buttons
+        if ahead > 0:
+            self.push_btn.set_label(f"Push ({ahead})")
+            self.push_btn.add_css_class("suggested-action")
+        else:
+            self.push_btn.set_label("Push")
+            self.push_btn.remove_css_class("suggested-action")
 
-        # Clear content - collect children first to avoid modification during iteration
+        if behind > 0:
+            self.pull_btn.set_label(f"Pull ({behind})")
+            self.pull_btn.add_css_class("suggested-action")
+        else:
+            self.pull_btn.set_label("Pull")
+            self.pull_btn.remove_css_class("suggested-action")
+
+        # Clear content
         children = []
         child = self.content_box.get_first_child()
         while child:
@@ -265,19 +351,14 @@ class GitChangesPanel(Gtk.Box):
         for child in children:
             self.content_box.remove(child)
 
-        # Get status
-        staged = self.service.get_staged_files()
-        unstaged = self.service.get_unstaged_files()
-
         if not staged and not unstaged:
-            # No changes
             label = Gtk.Label(label="No changes")
             label.add_css_class("dim-label")
             label.set_margin_top(24)
             self.content_box.append(label)
-            self._update_commit_button()
+            self._update_commit_button_with(staged)
             self._last_status_hash = ""
-            return
+            return False
 
         # Staged section
         if staged:
@@ -287,31 +368,18 @@ class GitChangesPanel(Gtk.Box):
         if unstaged:
             self._add_section("Changes", unstaged, is_staged=False)
 
-        self._update_commit_button()
+        self._update_commit_button_with(staged)
 
-        # Update status hash to avoid duplicate polling refreshes
+        # Update status hash
         all_files = staged + unstaged
         self._last_status_hash = str(sorted((f.path, f.status.name, f.staged) for f in all_files))
+        return False
 
-    def _update_sync_buttons(self):
-        """Update Push/Pull button labels with ahead/behind counts."""
-        ahead, behind = self.service.get_ahead_behind()
-
-        # Update Push button
-        if ahead > 0:
-            self.push_btn.set_label(f"Push ({ahead})")
-            self.push_btn.add_css_class("suggested-action")
-        else:
-            self.push_btn.set_label("Push")
-            self.push_btn.remove_css_class("suggested-action")
-
-        # Update Pull button
-        if behind > 0:
-            self.pull_btn.set_label(f"Pull ({behind})")
-            self.pull_btn.add_css_class("suggested-action")
-        else:
-            self.pull_btn.set_label("Pull")
-            self.pull_btn.remove_css_class("suggested-action")
+    def _update_commit_button_with(self, staged_files):
+        """Update commit button sensitivity with pre-fetched staged files."""
+        has_staged = bool(staged_files)
+        has_message = bool(self.commit_entry.get_text().strip())
+        self.commit_btn.set_sensitive(has_staged and has_message)
 
     def _group_files_by_directory(self, files: list[GitFileStatus]) -> dict[str, list[GitFileStatus]]:
         """Group files by their parent directory.
@@ -336,6 +404,7 @@ class GitChangesPanel(Gtk.Box):
         # Section header
         header_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
         header_box.set_margin_top(6)
+        header_box._section_name = title  # Tag for _update_commit_button lookup
 
         label = Gtk.Label(label=f"{title} ({len(files)})")
         label.set_xalign(0)
@@ -551,8 +620,18 @@ class GitChangesPanel(Gtk.Box):
         self._update_commit_button()
 
     def _update_commit_button(self):
-        """Update commit button sensitivity."""
-        has_staged = bool(self.service.get_staged_files())
+        """Update commit button sensitivity (uses cached staged status)."""
+        # Check if staged section exists in content_box (avoids pygit2 call)
+        has_staged = self._last_status_hash != "" and self._last_status_hash is not None
+        # More precise: check if any staged files were in last refresh
+        child = self.content_box.get_first_child()
+        while child:
+            if hasattr(child, "_section_name") and child._section_name == "Staged":
+                has_staged = True
+                break
+            child = child.get_next_sibling()
+        else:
+            has_staged = False
         has_message = bool(self.commit_entry.get_text().strip())
         self.commit_btn.set_sensitive(has_staged and has_message)
 

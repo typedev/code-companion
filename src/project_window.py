@@ -1,5 +1,6 @@
 """Project workspace window."""
 
+import subprocess
 from pathlib import Path
 
 import threading
@@ -55,7 +56,9 @@ class ProjectWindow(Adw.ApplicationWindow):
 
         self._setup_window()
         self._build_ui()
-        self._load_project()
+
+        # Defer heavy project loading until after window is presented
+        GLib.idle_add(self._load_project)
 
         # Connect window signals
         self.connect("close-request", self._on_close_request)
@@ -404,12 +407,30 @@ class ProjectWindow(Adw.ApplicationWindow):
         if not self._is_git_repo:
             return
 
+        project_dir = str(self.project_path)
+
         def _fetch():
+            # Use git CLI (subprocess) to avoid pygit2 GIL blocking
             try:
-                staged = self.git_service.get_staged_files()
-                unstaged = self.git_service.get_unstaged_files()
-                changes_count = len(staged) + len(unstaged)
-                ahead, _ = self.git_service.get_ahead_behind()
+                result = subprocess.run(
+                    ["git", "status", "--porcelain", "-z"],
+                    capture_output=True, cwd=project_dir, timeout=30,
+                )
+                # Count non-empty entries
+                entries = [e for e in result.stdout.split(b"\x00") if len(e) >= 3]
+                changes_count = len(entries)
+
+                # Check ahead/behind
+                result2 = subprocess.run(
+                    ["git", "rev-list", "--left-right", "--count", "@{upstream}...HEAD"],
+                    capture_output=True, cwd=project_dir, timeout=10,
+                    text=True,
+                )
+                ahead = 0
+                if result2.returncode == 0 and result2.stdout.strip():
+                    parts = result2.stdout.strip().split()
+                    if len(parts) == 2:
+                        ahead = int(parts[1])
             except Exception:
                 changes_count = 0
                 ahead = 0
@@ -443,32 +464,27 @@ class ProjectWindow(Adw.ApplicationWindow):
         if hasattr(self, "_git_toolbar_btn"):
             self._git_toolbar_btn.set_visible(self._is_git_repo)
 
+        # Track which sidebar tabs have been fully built (for lazy loading)
+        self._built_tabs: set[str] = set()
+
         # Top-level stack: Files / Git / Claude / Notes
         self.sidebar_stack = Gtk.Stack()
         self.sidebar_stack.set_transition_type(Gtk.StackTransitionType.CROSSFADE)
         self.sidebar_stack.set_vexpand(True)
         self.sidebar_stack.set_hexpand(False)
 
-        # Files page
+        # Files page — build immediately (default visible tab)
         files_page = self._build_files_page()
         self.sidebar_stack.add_named(files_page, "files")
+        self._built_tabs.add("files")
 
-        # Git page (always add to stack, button visibility controls access)
+        # Deferred tabs — add placeholders, built on first switch
         if self._is_git_repo:
-            git_page = self._build_git_page()
-            self.sidebar_stack.add_named(git_page, "git")
+            self.sidebar_stack.add_named(self._create_tab_placeholder(), "git")
 
-        # Claude page
-        claude_page = self._build_claude_page()
-        self.sidebar_stack.add_named(claude_page, "claude")
-
-        # Notes page
-        notes_page = self._build_notes_page()
-        self.sidebar_stack.add_named(notes_page, "notes")
-
-        # Problems page
-        problems_page = self._build_problems_page()
-        self.sidebar_stack.add_named(problems_page, "problems")
+        self.sidebar_stack.add_named(self._create_tab_placeholder(), "claude")
+        self.sidebar_stack.add_named(self._create_tab_placeholder(), "notes")
+        self.sidebar_stack.add_named(self._create_tab_placeholder(), "problems")
 
         # Wrap stack in scrolled window to allow shrinking
         scrolled = Gtk.ScrolledWindow()
@@ -482,12 +498,54 @@ class ProjectWindow(Adw.ApplicationWindow):
 
         return box
 
+    def _create_tab_placeholder(self) -> Gtk.Box:
+        """Create a placeholder with spinner for deferred tab loading."""
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        box.set_vexpand(True)
+        box.set_valign(Gtk.Align.CENTER)
+        box.set_halign(Gtk.Align.CENTER)
+
+        spinner = Gtk.Spinner()
+        spinner.set_size_request(32, 32)
+        spinner.start()
+        box.append(spinner)
+
+        return box
+
+    def _ensure_tab_built(self, tab_name: str):
+        """Build a sidebar tab on first access (lazy loading)."""
+        if tab_name in self._built_tabs:
+            return
+
+        # Remove placeholder
+        placeholder = self.sidebar_stack.get_child_by_name(tab_name)
+        if placeholder:
+            self.sidebar_stack.remove(placeholder)
+
+        # Build the real page
+        if tab_name == "git" and self._is_git_repo:
+            page = self._build_git_page()
+        elif tab_name == "claude":
+            page = self._build_claude_page()
+        elif tab_name == "notes":
+            page = self._build_notes_page()
+        elif tab_name == "problems":
+            page = self._build_problems_page()
+        else:
+            return
+
+        self.sidebar_stack.add_named(page, tab_name)
+        self._built_tabs.add(tab_name)
+
     def _on_tab_toggled(self, button, tab_name):
         """Handle tab button toggle."""
         if button.get_active():
             # Skip if sidebar_stack not yet created (during init)
             if not hasattr(self, "sidebar_stack"):
                 return
+            # Lazy build the tab if needed
+            if hasattr(self, "_built_tabs"):
+                self._ensure_tab_built(tab_name)
             # Switch to this tab (only if page exists in stack)
             if self.sidebar_stack.get_child_by_name(tab_name):
                 self.sidebar_stack.set_visible_child_name(tab_name)
@@ -686,7 +744,7 @@ class ProjectWindow(Adw.ApplicationWindow):
         git_switcher.set_margin_bottom(4)
         box.append(git_switcher)
 
-        # Changes panel
+        # Changes panel (refresh is async via subprocess)
         self.git_changes_panel = GitChangesPanel(str(self.project_path), self.file_monitor_service)
         self.git_changes_panel.connect("file-clicked", self._on_git_file_clicked)
         self.git_changes_panel.connect("branch-changed", self._on_branch_changed)
