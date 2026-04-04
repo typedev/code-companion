@@ -103,6 +103,17 @@ class FileMonitorService(GObject.Object):
                 callback=self._on_git_log_changed
             )
 
+        # .git/refs/remotes/*/ - remote tracking branches (push/pull updates)
+        refs_remotes = self._git_dir / "refs" / "remotes"
+        if refs_remotes.exists():
+            for remote_dir in refs_remotes.iterdir():
+                if remote_dir.is_dir():
+                    self._add_monitor(
+                        remote_dir,
+                        is_file=False,
+                        callback=self._on_git_refs_changed
+                    )
+
         # .git/HEAD - branch switches
         head_file = self._git_dir / "HEAD"
         if head_file.exists():

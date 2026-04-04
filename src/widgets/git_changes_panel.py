@@ -685,6 +685,7 @@ class GitChangesPanel(Gtk.Box):
             result = self.service.pull(credentials)
             self._show_toast(result)
             self.refresh()
+            self._file_monitor_service.emit("git-history-changed")
         except AuthenticationRequired as e:
             self._show_credentials_dialog("Pull", e.remote_url, self._do_pull)
         except Exception as e:
@@ -700,6 +701,7 @@ class GitChangesPanel(Gtk.Box):
             result = self.service.push(credentials)
             self._show_toast(result)
             self.refresh()  # Update counts
+            self._file_monitor_service.emit("git-history-changed")
         except AuthenticationRequired as e:
             self._show_credentials_dialog("Push", e.remote_url, self._do_push)
         except Exception as e:
