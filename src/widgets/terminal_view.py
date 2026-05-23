@@ -1,6 +1,7 @@
 """Embedded VTE terminal widget."""
 
 import os
+import signal
 import subprocess
 
 import gi
@@ -347,6 +348,23 @@ class TerminalView(Gtk.Box):
     def clear(self):
         """Clear the terminal."""
         self.terminal.feed_child(b"clear\n")
+
+    def cleanup(self):
+        """Terminate the shell and its children before the widget is destroyed.
+
+        Sends SIGHUP to the shell's process group so job-control children
+        (dev servers, etc.) exit too — matching real terminal-emulator semantics.
+        """
+        # Disable auto-respawn first, otherwise _on_child_exited will start a new shell.
+        self._respawn_on_exit = False
+
+        pid = getattr(self, "child_pid", None)
+        if not pid:
+            return
+        try:
+            os.killpg(os.getpgid(pid), signal.SIGHUP)
+        except (OSError, ProcessLookupError):
+            pass
 
     def _apply_terminal_settings(self):
         """Apply terminal font and colors from app settings."""

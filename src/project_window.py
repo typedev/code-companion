@@ -1479,6 +1479,11 @@ class ProjectWindow(Adw.ApplicationWindow):
             self.problems_detail_page = None
             self.problems_detail_view = None
 
+        # Terminal tab - kill child shell + its process group so dev servers
+        # don't survive as orphans holding ports.
+        if isinstance(child, TerminalView):
+            child.cleanup()
+
         return False  # Allow close
 
     def _on_unsaved_close_response(self, dialog, response, page, editor):
