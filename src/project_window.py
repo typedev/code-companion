@@ -7,8 +7,8 @@ import threading
 from gi.repository import Adw, Gtk, GLib, Gdk, Gio
 
 from .models import Session
-from .services import get_adapter, ProjectLock, ProjectRegistry, GitService, IconCache, ToastService, SettingsService, FileMonitorService
-from .widgets import SessionView, TerminalView, FileTree, FileEditor, TasksPanel, GitChangesPanel, GitHistoryPanel, DiffView, CommitDetailView, ClaudeHistoryPanel, FileSearchDialog, UnifiedSearch, NotesPanel, PreferencesDialog, SnippetsBar, QueryEditor, ProblemsPanel, ProblemsDetailView, ImageViewer, SvgEditor
+from .services import get_adapter, ProjectLock, ProjectRegistry, GitService, IconCache, ToastService, SettingsService, FileMonitorService, IssuesService
+from .widgets import SessionView, TerminalView, FileTree, FileEditor, TasksPanel, GitChangesPanel, GitHistoryPanel, DiffView, CommitDetailView, ClaudeHistoryPanel, FileSearchDialog, UnifiedSearch, NotesPanel, PreferencesDialog, SnippetsBar, QueryEditor, ProblemsPanel, ProblemsDetailView, IssuesPanel, IssueDetailView, ImageViewer, SvgEditor
 
 
 def escape_markup(text: str) -> str:
@@ -41,6 +41,9 @@ class ProjectWindow(Adw.ApplicationWindow):
         self.git_diff_staged: bool | None = None
         self.problems_detail_page: Adw.TabPage | None = None
         self.problems_detail_view: ProblemsDetailView | None = None
+        self.issue_detail_page: Adw.TabPage | None = None
+        self.issue_detail_view: IssueDetailView | None = None
+        self.issues_service: IssuesService | None = None
 
         # Acquire lock
         if not self.lock.acquire():
@@ -327,6 +330,11 @@ class ProjectWindow(Adw.ApplicationWindow):
         toolbar.append(problems_btn)
         self._tab_buttons["problems"] = problems_btn
 
+        # Issues button (GitHub Issues)
+        self._issues_toolbar_btn = self._create_toolbar_button("todo", "Issues", "issues")
+        toolbar.append(self._issues_toolbar_btn)
+        self._tab_buttons["issues"] = self._issues_toolbar_btn
+
         # Spacer to push future buttons to bottom
         spacer = Gtk.Box()
         spacer.set_vexpand(True)
@@ -362,6 +370,9 @@ class ProjectWindow(Adw.ApplicationWindow):
         .toolbar-badge-yellow {
             background-color: #e9a100;
             color: alpha(black, 0.85);
+        }
+        .toolbar-badge-blue {
+            background-color: #3584e4;
         }
         """
         provider = Gtk.CssProvider()
@@ -460,9 +471,16 @@ class ProjectWindow(Adw.ApplicationWindow):
         if self._is_git_repo:
             self.git_service.open()
 
+        # Issues service (GitHub Issues); harmless for non-GitHub repos
+        self.issues_service = IssuesService(self.project_path)
+
         # Show/hide Git button based on git repo status
         if hasattr(self, "_git_toolbar_btn"):
             self._git_toolbar_btn.set_visible(self._is_git_repo)
+
+        # Show/hide Issues button based on GitHub remote
+        if hasattr(self, "_issues_toolbar_btn"):
+            self._issues_toolbar_btn.set_visible(self.issues_service.is_github_repo())
 
         # Track which sidebar tabs have been fully built (for lazy loading)
         self._built_tabs: set[str] = set()
@@ -485,6 +503,7 @@ class ProjectWindow(Adw.ApplicationWindow):
         self.sidebar_stack.add_named(self._create_tab_placeholder(), "claude")
         self.sidebar_stack.add_named(self._create_tab_placeholder(), "notes")
         self.sidebar_stack.add_named(self._create_tab_placeholder(), "problems")
+        self.sidebar_stack.add_named(self._create_tab_placeholder(), "issues")
 
         # Wrap stack in scrolled window to allow shrinking
         scrolled = Gtk.ScrolledWindow()
@@ -531,6 +550,8 @@ class ProjectWindow(Adw.ApplicationWindow):
             page = self._build_notes_page()
         elif tab_name == "problems":
             page = self._build_problems_page()
+        elif tab_name == "issues":
+            page = self._build_issues_page()
         else:
             return
 
@@ -559,6 +580,9 @@ class ProjectWindow(Adw.ApplicationWindow):
             # Lazy load Problems when tab is shown
             if tab_name == "problems" and hasattr(self, "problems_panel"):
                 self.problems_panel.load_if_needed()
+            # Lazy load Issues when tab is shown
+            if tab_name == "issues" and hasattr(self, "issues_panel"):
+                self.issues_panel.load_if_needed()
         else:
             # Don't allow deactivating without activating another
             # Check if any other visible button is active
@@ -613,6 +637,75 @@ class ProjectWindow(Adw.ApplicationWindow):
         self.problems_detail_page.set_icon(Gio.ThemedIcon.new("dialog-warning-symbolic"))
 
         self.tab_view.set_selected_page(self.problems_detail_page)
+
+    def _build_issues_page(self) -> Gtk.Box:
+        """Build the Issues tab content (GitHub Issues)."""
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        box.set_vexpand(True)
+
+        self.issues_panel = IssuesPanel(str(self.project_path), self.issues_service)
+        self.issues_panel.connect("issue-selected", self._on_issue_selected)
+        self.issues_panel.connect("issues-changed", lambda _p: self._update_issues_badge())
+        box.append(self.issues_panel)
+
+        return box
+
+    def _on_issue_selected(self, panel, issue):
+        """Handle issue selection - show detail view (single-tab reuse)."""
+        # Reuse existing detail view if available
+        if self.issue_detail_view is not None and self.issue_detail_page is not None:
+            self.issue_detail_view.update(issue)
+            self.issue_detail_page.set_title(f"Issue #{issue.number}")
+            self.tab_view.set_selected_page(self.issue_detail_page)
+            return
+
+        self.issue_detail_view = IssueDetailView(issue, self.issues_service)
+        self.issue_detail_view.connect("send-to-claude", self._on_send_issue_to_claude)
+        self.issue_detail_view.connect(
+            "issue-changed", lambda _v, _i: self._update_issues_badge()
+        )
+
+        self.issue_detail_page = self.tab_view.append(self.issue_detail_view)
+        self.issue_detail_page.set_title(f"Issue #{issue.number}")
+        self.issue_detail_page.set_icon(Gio.ThemedIcon.new("dialog-information-symbolic"))
+
+        self.tab_view.set_selected_page(self.issue_detail_page)
+
+    def _on_send_issue_to_claude(self, view, prompt: str):
+        """Feed a prepared issue prompt into the singleton Claude terminal."""
+        started_now = self.claude_terminal is None
+        if started_now:
+            self._on_claude_clicked(None)
+
+        def _feed():
+            if self.claude_terminal:
+                self.claude_terminal.terminal.feed_child(prompt.encode("utf-8"))
+                GLib.timeout_add(50, self._send_enter_to_terminal)
+            return False
+
+        # If the session was just created, give the CLI a moment to start.
+        GLib.timeout_add(400 if started_now else 0, _feed)
+
+    def _update_issues_badge(self):
+        """Update the Issues toolbar badge with the open-issue count."""
+        if not hasattr(self, "_issues_toolbar_btn"):
+            return
+        if self.issues_service is None or not self.issues_service.is_github_repo():
+            return
+
+        def _fetch():
+            try:
+                count = len(self.issues_service.list_issues("open"))
+            except Exception:
+                count = 0
+            GLib.idle_add(_apply, count)
+
+        def _apply(count):
+            if hasattr(self, "_issues_toolbar_btn"):
+                self._set_button_badge(self._issues_toolbar_btn, count, "blue")
+            return False
+
+        threading.Thread(target=_fetch, daemon=True).start()
 
     def _on_notes_open_file(self, panel, file_path: str):
         """Handle notes panel file open."""
@@ -806,6 +899,10 @@ class ProjectWindow(Adw.ApplicationWindow):
             self.file_monitor_service.connect("git-history-changed", lambda _s: self._update_git_badge())
             self._update_git_badge()  # Initial badge
 
+        # Issues badge (only meaningful for GitHub repos)
+        if self.issues_service is not None and self.issues_service.is_github_repo():
+            self._update_issues_badge()  # Initial badge
+
     def _on_session_activated(self, panel, session: Session):
         """Handle session activation - show in main area, reuse single tab."""
         # Reuse existing session detail view if available
@@ -861,6 +958,7 @@ class ProjectWindow(Adw.ApplicationWindow):
         # Add query editor below terminal
         query_editor = QueryEditor()
         query_editor.connect("send-requested", self._on_query_send)
+        query_editor.connect("make-issue-requested", self._on_query_make_issue)
         container.append(query_editor)
 
         # Add snippets bar below query editor
@@ -900,6 +998,24 @@ class ProjectWindow(Adw.ApplicationWindow):
             self.claude_terminal.terminal.feed_child(text.encode("utf-8"))
             # Send Enter separately after short delay
             GLib.timeout_add(50, self._send_enter_to_terminal)
+
+    def _on_query_make_issue(self, query_editor, text: str):
+        """Ask Claude to format the editor text as a GitHub issue and create it."""
+        if not self.claude_terminal or not text.strip():
+            return
+        prompt = self._build_make_issue_prompt(text)
+        self.claude_terminal.terminal.feed_child(prompt.encode("utf-8"))
+        GLib.timeout_add(50, self._send_enter_to_terminal)
+        query_editor.clear()
+
+    def _build_make_issue_prompt(self, text: str) -> str:
+        """Build the prompt that asks Claude to create a GitHub issue from text."""
+        return (
+            "Please turn the following into a well-formed GitHub issue and create it "
+            "for this repository with `gh issue create` (write a clear title and a "
+            "structured body). Reply with the new issue number and URL.\n\n"
+            f"---\n{text}"
+        )
 
     def _send_enter_to_terminal(self):
         """Send Enter key to terminal."""
@@ -1478,6 +1594,11 @@ class ProjectWindow(Adw.ApplicationWindow):
         if page == self.problems_detail_page:
             self.problems_detail_page = None
             self.problems_detail_view = None
+
+        # Issue detail tab - clear references when closed
+        if page == self.issue_detail_page:
+            self.issue_detail_page = None
+            self.issue_detail_view = None
 
         # Terminal tab - kill child shell + its process group so dev servers
         # don't survive as orphans holding ports.

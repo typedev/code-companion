@@ -11,11 +11,63 @@ from gi.repository import Gtk, GtkSource, GObject, Pango, Spelling
 from ..services import SettingsService
 
 
+# Preferred canonical locale per base language for the simplified selector.
+_PREFERRED_LOCALES = {
+    "en": "en_US", "ru": "ru_RU", "de": "de_DE", "fr": "fr_FR",
+    "es": "es_ES", "it": "it_IT", "pt": "pt_BR", "uk": "uk_UA",
+    "pl": "pl_PL", "nl": "nl_NL", "cs": "cs_CZ", "sv": "sv_SE",
+}
+
+
+def _simple_language_name(full_name: str) -> str:
+    """'English (United States)' -> 'English'."""
+    return full_name.split(" (")[0].strip()
+
+
+def list_simple_languages() -> list[tuple[str, str]]:
+    """Return [(canonical_code, simple_name)] with one entry per base language.
+
+    The raw spell-check list contains dozens of regional variants (e.g. 24
+    English locales); this collapses them to one entry per language.
+    """
+    provider = Spelling.Provider.get_default()
+    by_base: dict[str, list] = {}
+    for lang in provider.list_languages():
+        base = lang.get_code().split("_")[0]
+        by_base.setdefault(base, []).append(lang)
+
+    result: list[tuple[str, str]] = []
+    for base, langs in by_base.items():
+        preferred = _PREFERRED_LOCALES.get(base)
+        chosen = next((l for l in langs if l.get_code() == preferred), langs[0])
+        result.append((chosen.get_code(), _simple_language_name(chosen.get_name())))
+
+    result.sort(key=lambda item: item[1])
+    return result
+
+
+def language_name_for_code(code: str) -> str | None:
+    """Simple language name ('English') for a spell-check code.
+
+    Returns None for 'auto' or an unknown code.
+    """
+    if not code or code == "auto":
+        return None
+    base = code.split("_")[0]
+    for c, name in list_simple_languages():
+        if c.split("_")[0] == base:
+            return name
+    return None
+
+
 class QueryEditor(Gtk.Box):
     """Collapsible multi-line editor for composing queries with spell checking."""
 
     __gsignals__ = {
         "send-requested": (GObject.SignalFlags.RUN_FIRST, None, (str,)),
+        # Ask Claude to formulate + create a GitHub issue from the editor text
+        # (or, if empty, from the ongoing discussion). Carries the editor text.
+        "make-issue-requested": (GObject.SignalFlags.RUN_FIRST, None, (str,)),
     }
 
     def __init__(self):
@@ -87,30 +139,30 @@ class QueryEditor(Gtk.Box):
         self.append(header)
 
     def _build_language_selector(self, header: Gtk.Box):
-        """Build language selector dropdown."""
-        # Get available languages
-        provider = Spelling.Provider.get_default()
-        languages = provider.list_languages()
-
-        # Create menu
+        """Build a simplified language selector (one entry per language)."""
         menu = Gtk.StringList()
         menu.append("Auto")
         self._language_codes = ["auto"]
 
-        for lang in languages:
-            menu.append(lang.get_name())
-            self._language_codes.append(lang.get_code())
+        for code, name in list_simple_languages():
+            menu.append(name)
+            self._language_codes.append(code)
 
         # Dropdown
         self.lang_dropdown = Gtk.DropDown(model=menu)
-        self.lang_dropdown.set_tooltip_text("Spell check language")
+        self.lang_dropdown.set_tooltip_text("Language (spell check + Claude replies)")
         self.lang_dropdown.add_css_class("flat")
 
-        # Load saved language
+        # Load saved language, matching by base code (e.g. saved 'en_GB' -> 'English').
         saved_lang = self.settings.get("editor.spellcheck_language", "auto")
-        if saved_lang in self._language_codes:
-            idx = self._language_codes.index(saved_lang)
-            self.lang_dropdown.set_selected(idx)
+        saved_base = "auto" if saved_lang == "auto" else saved_lang.split("_")[0]
+        selected_idx = 0
+        for idx, code in enumerate(self._language_codes):
+            code_base = "auto" if code == "auto" else code.split("_")[0]
+            if code_base == saved_base:
+                selected_idx = idx
+                break
+        self.lang_dropdown.set_selected(selected_idx)
 
         self.lang_dropdown.connect("notify::selected", self._on_language_changed)
         header.append(self.lang_dropdown)
@@ -164,6 +216,15 @@ class QueryEditor(Gtk.Box):
         button_bar.set_margin_top(4)
         button_bar.set_margin_bottom(8)
         button_bar.set_halign(Gtk.Align.END)
+
+        # Make Issue button — let Claude formulate + create a GitHub issue
+        make_issue_btn = Gtk.Button(label="Make Issue")
+        make_issue_btn.add_css_class("flat")
+        make_issue_btn.set_tooltip_text(
+            "Ask Claude to format this text as a GitHub issue and create it"
+        )
+        make_issue_btn.connect("clicked", self._on_make_issue_clicked)
+        button_bar.append(make_issue_btn)
 
         # Clear button
         clear_btn = Gtk.Button(label="Clear")
@@ -274,6 +335,12 @@ class QueryEditor(Gtk.Box):
         text = self.get_text()
         if text.strip():
             self.emit("send-requested", text)
+
+    def _on_make_issue_clicked(self, button):
+        """Handle Make Issue button click - format editor text as a GitHub issue."""
+        text = self.get_text()
+        if text.strip():
+            self.emit("make-issue-requested", text)
 
     # Public API
 

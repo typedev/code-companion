@@ -21,6 +21,8 @@ from .snippets_bar import SnippetsBar
 from .query_editor import QueryEditor
 from .problems_panel import ProblemsPanel
 from .problems_detail_view import ProblemsDetailView
+from .issues_panel import IssuesPanel
+from .issue_detail_view import IssueDetailView
 from .script_toolbar import ScriptToolbar
 from .markdown_preview import MarkdownPreview
 from .image_viewer import ImageViewer
@@ -51,6 +53,8 @@ __all__ = [
     "QueryEditor",
     "ProblemsPanel",
     "ProblemsDetailView",
+    "IssuesPanel",
+    "IssueDetailView",
     "ScriptToolbar",
     "MarkdownPreview",
     "ImageViewer",

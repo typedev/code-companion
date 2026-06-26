@@ -7,6 +7,7 @@ from .project_registry import ProjectRegistry
 from .project_lock import ProjectLock
 from .tasks_service import TasksService, Task, TaskInput
 from .git_service import GitService, GitFileStatus, FileStatus, GitCommit, AuthenticationRequired
+from .issues_service import IssuesService, Issue, IssueComment, GitHubError
 from .icon_cache import IconCache
 from .toast_service import ToastService
 from .settings_service import SettingsService
@@ -36,6 +37,10 @@ __all__ = [
     "FileStatus",
     "GitCommit",
     "AuthenticationRequired",
+    "IssuesService",
+    "Issue",
+    "IssueComment",
+    "GitHubError",
     "IconCache",
     "ToastService",
     "SettingsService",

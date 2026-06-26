@@ -24,8 +24,8 @@ HTML_TEMPLATE = """
         }}
         body {{
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-            font-size: 15px;
-            line-height: 1.6;
+            font-size: {body_font_size}px;
+            line-height: {line_height};
             padding: 24px;
             max-width: 900px;
             margin: 0 auto;
@@ -46,7 +46,7 @@ HTML_TEMPLATE = """
         h4, h5, h6 {{ border-bottom: none; }}
         code {{
             font-family: "{font_family}", ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
-            font-size: {font_size}px;
+            font-size: {code_font_size}px;
             background: {code_bg};
             padding: 0.2em 0.4em;
             border-radius: 4px;
@@ -60,7 +60,7 @@ HTML_TEMPLATE = """
         pre code {{
             background: none;
             padding: 0;
-            font-size: {font_size}px;
+            font-size: {code_font_size}px;
             line-height: {line_height};
         }}
         blockquote {{
@@ -107,6 +107,32 @@ HTML_TEMPLATE = """
         .hljs {{
             background: transparent !important;
         }}
+        /* Issue body + comment cards (used by the Issues detail view) */
+        .issue-comments-title {{
+            margin-top: 28px;
+            font-size: 1.1em;
+            color: {dim_color};
+        }}
+        .issue-comment {{
+            border: 1px solid {border_color};
+            border-radius: 8px;
+            margin: 16px 0;
+            overflow: hidden;
+        }}
+        .comment-head {{
+            background: {code_bg};
+            padding: 8px 14px;
+            font-weight: 600;
+            border-bottom: 1px solid {border_color};
+        }}
+        .comment-head .comment-date {{
+            font-weight: normal;
+            color: {dim_color};
+        }}
+        .comment-body {{
+            padding: 4px 14px;
+        }}
+        .comment-body > :first-child {{ margin-top: 8px; }}
     </style>
 </head>
 <body>
@@ -172,6 +198,11 @@ class MarkdownPreview(Gtk.Box):
         decision.use()
         return True
 
+    @staticmethod
+    def render_markdown(markdown_text: str) -> str:
+        """Convert markdown to an HTML fragment (no surrounding document)."""
+        return mistune.html(markdown_text or "")
+
     def update_preview(self, markdown_text: str, base_path: str = None):
         """Update the preview with new markdown content.
 
@@ -179,14 +210,25 @@ class MarkdownPreview(Gtk.Box):
             markdown_text: The markdown source text
             base_path: Optional base path for resolving relative URLs
         """
-        # Convert markdown to HTML
-        html_content = mistune.html(markdown_text)
+        self.update_html(mistune.html(markdown_text), base_path)
 
+    def update_html(self, html_content: str, base_path: str = None):
+        """Render a pre-built HTML fragment inside the themed document.
+
+        Args:
+            html_content: HTML body fragment (already converted from markdown)
+            base_path: Optional base path for resolving relative URLs
+        """
         # Get theme settings
         theme = self.settings.get("appearance.theme", "system")
         font_family = self.settings.get("editor.font_family", "Monospace")
         font_size = self.settings.get("editor.font_size", 12)
         line_height = self.settings.get("editor.line_height", 1.4)
+
+        # Editor font size is in points; convert to px (~4/3) so markdown text
+        # visually matches the editor and tracks the user's size preference.
+        body_font_size = max(11, round(float(font_size) * 4 / 3))
+        code_font_size = body_font_size
 
         # Determine colors based on theme
         if theme == "dark":
@@ -233,7 +275,8 @@ class MarkdownPreview(Gtk.Box):
             highlight_style=highlight_style,
             color_scheme=color_scheme,
             font_family=font_family,
-            font_size=font_size,
+            body_font_size=body_font_size,
+            code_font_size=code_font_size,
             line_height=line_height,
         )
 
