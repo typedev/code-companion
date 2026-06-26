@@ -1013,7 +1013,9 @@ class ProjectWindow(Adw.ApplicationWindow):
         return (
             "Please turn the following into a well-formed GitHub issue and create it "
             "for this repository with `gh issue create` (write a clear title and a "
-            "structured body). Reply with the new issue number and URL.\n\n"
+            "structured body). Write the issue in English unless the text below is "
+            "clearly meant to be in another language. Reply with the new issue "
+            "number and URL.\n\n"
             f"---\n{text}"
         )
 
