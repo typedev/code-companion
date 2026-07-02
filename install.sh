@@ -26,7 +26,7 @@ install_system_deps() {
     # Detect package manager and install dependencies
     if command -v dnf &> /dev/null; then
         # Fedora/RHEL
-        PACKAGES="cairo-devel cairo-gobject-devel gobject-introspection-devel gtk4-devel libadwaita-devel gtksourceview5-devel vte291-gtk4-devel webkitgtk6.0-devel libgit2-devel libspelling-devel python3-devel meson ninja-build"
+        PACKAGES="cairo-devel cairo-gobject-devel gobject-introspection-devel gtk4-devel libadwaita-devel gtksourceview5-devel vte291-gtk4-devel webkitgtk6.0-devel libgit2-devel libspelling-devel python3-devel meson ninja-build ripgrep fd-find"
 
         # Check if packages are installed
         MISSING=""
@@ -45,7 +45,7 @@ install_system_deps() {
 
     elif command -v apt-get &> /dev/null; then
         # Debian/Ubuntu
-        PACKAGES="libcairo2-dev libgirepository-2.0-dev libgtk-4-dev libadwaita-1-dev libgtksourceview-5-dev libvte-2.91-gtk4-dev libwebkitgtk-6.0-dev libgit2-dev libspelling-1-dev gir1.2-spelling-1 python3-dev pkg-config meson ninja-build"
+        PACKAGES="libcairo2-dev libgirepository-2.0-dev libgtk-4-dev libadwaita-1-dev libgtksourceview-5-dev libvte-2.91-gtk4-dev libwebkitgtk-6.0-dev libgit2-dev libspelling-1-dev gir1.2-spelling-1 python3-dev pkg-config meson ninja-build ripgrep fd-find"
 
         # Check if packages are installed
         MISSING=""
@@ -65,7 +65,7 @@ install_system_deps() {
 
     elif command -v pacman &> /dev/null; then
         # Arch Linux
-        PACKAGES="cairo gobject-introspection gtk4 libadwaita gtksourceview5 vte4 webkitgtk-6.0 libgit2 libspelling python meson ninja"
+        PACKAGES="cairo gobject-introspection gtk4 libadwaita gtksourceview5 vte4 webkitgtk-6.0 libgit2 libspelling python meson ninja ripgrep fd"
 
         # Check if packages are installed
         MISSING=""
@@ -95,6 +95,7 @@ install_system_deps() {
         warn "  - libspelling development files (+ GObject introspection typelib)"
         warn "  - python3 development files"
         warn "  - meson and ninja build tools"
+        warn "  - ripgrep and fd (recommended, for fast file/content search)"
         read -p "Continue anyway? [y/N] " -n 1 -r
         echo
         if [[ ! $REPLY =~ ^[Yy]$ ]]; then

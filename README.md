@@ -89,7 +89,8 @@ A native GTK4/libadwaita desktop application for working with AI coding assistan
 **System dependencies (Fedora):**
 ```bash
 sudo dnf install gtk4-devel libadwaita-devel gtksourceview5-devel \
-    vte291-gtk4-devel python3-gobject libgit2-devel webkitgtk6.0-devel libspelling-devel
+    vte291-gtk4-devel python3-gobject libgit2-devel webkitgtk6.0-devel libspelling-devel \
+    ripgrep fd-find
 ```
 
 **System dependencies (Ubuntu/Debian):**
@@ -97,7 +98,8 @@ sudo dnf install gtk4-devel libadwaita-devel gtksourceview5-devel \
 sudo apt install libgtk-4-dev libadwaita-1-dev libgtksourceview-5-dev \
     libvte-2.91-gtk4-dev libwebkitgtk-6.0-dev libgit2-dev \
     libspelling-1-dev gir1.2-spelling-1 \
-    libcairo2-dev libgirepository-2.0-dev pkg-config python3-dev python3-gi
+    libcairo2-dev libgirepository-2.0-dev pkg-config python3-dev python3-gi \
+    ripgrep fd-find
 ```
 
 ### Python Setup
@@ -113,6 +115,35 @@ uv sync
 # Run the application
 uv run python -m src.main
 ```
+
+### Optional runtime tools
+
+These are not required to launch the app, but improve specific features. The
+`install.sh` script installs `ripgrep`/`fd` for you; the rest are on demand.
+
+| Tool / package | Feature | Without it |
+|----------------|---------|-----------|
+| `ripgrep` (`rg`) | Unified search (content) | Falls back to `grep` — slower, less `.gitignore`-aware |
+| `fd` / `fd-find` | Unified search (file names) | Falls back to `find` — slower |
+| `hunspell-<lang>` dictionaries | Spell check in Query Editor | Language missing from the picker (no crash) |
+| `uv` | App launch (`bin/code-companion` runs `uv run` on every start) | App won't start |
+
+> On Debian/Ubuntu the `fd` binary is installed as **`fdfind`** — the app
+> detects both names automatically, no symlink needed.
+
+### Platform notes
+
+- **Console warnings**: launching from a terminal prints `PyGIWarning` and
+  `Gtk.StyleContext ... deprecated` messages (GTK 4.10+). These are cosmetic and
+  do not affect functionality.
+- **Markdown preview**: code highlighting (highlight.js) is bundled locally and
+  works offline. If the preview renders blank, it's usually the WebKitGTK
+  sandbox — install `bubblewrap` and `xdg-dbus-proxy`.
+- **Launching from the app menu**: the launcher calls `uv run`, so `uv` must be
+  on the PATH of your desktop session. If it lives in `~/.local/bin`, make sure
+  that directory is on the session PATH (log out/in after adding it).
+- **Git HTTPS auth**: push/pull credentials are saved via git's credential store
+  in `~/.git-credentials` (plain text), the same as on other distros.
 
 ## Usage
 

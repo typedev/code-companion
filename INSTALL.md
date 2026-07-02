@@ -11,7 +11,8 @@
 ```bash
 sudo dnf install gtk4-devel libadwaita-devel gtksourceview5-devel \
     vte291-gtk4-devel python3-gobject pygobject3-devel \
-    libgit2-devel webkitgtk6.0-devel libspelling-devel
+    libgit2-devel webkitgtk6.0-devel libspelling-devel \
+    ripgrep fd-find
 ```
 
 ### System Dependencies (Ubuntu/Debian)
@@ -21,7 +22,8 @@ sudo apt install libgtk-4-dev libadwaita-1-dev libgtksourceview-5-dev \
     libvte-2.91-gtk4-dev libwebkitgtk-6.0-dev libgit2-dev \
     libspelling-1-dev gir1.2-spelling-1 \
     libcairo2-dev libgirepository-2.0-dev pkg-config \
-    python3-dev python3-gi python3-gi-cairo gir1.2-gtk-4.0
+    python3-dev python3-gi python3-gi-cairo gir1.2-gtk-4.0 \
+    ripgrep fd-find
 ```
 
 ---
