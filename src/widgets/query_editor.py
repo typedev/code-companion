@@ -4,9 +4,19 @@ import gi
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("GtkSource", "5")
-gi.require_version("Spelling", "1")
 
-from gi.repository import Gtk, GtkSource, GObject, Pango, Spelling
+from gi.repository import Gtk, GtkSource, GObject, Pango
+
+# libspelling (Spelling-1 typelib) is optional: on systems where it isn't
+# installed the editor still works, just without spell checking.
+try:
+    gi.require_version("Spelling", "1")
+    from gi.repository import Spelling
+
+    HAS_SPELLING = True
+except (ImportError, ValueError):
+    Spelling = None
+    HAS_SPELLING = False
 
 from ..services import SettingsService
 
@@ -29,7 +39,12 @@ def list_simple_languages() -> list[tuple[str, str]]:
 
     The raw spell-check list contains dozens of regional variants (e.g. 24
     English locales); this collapses them to one entry per language.
+
+    Returns an empty list when libspelling is unavailable.
     """
+    if not HAS_SPELLING:
+        return []
+
     provider = Spelling.Provider.get_default()
     by_base: dict[str, list] = {}
     for lang in provider.list_languages():
@@ -241,7 +256,12 @@ class QueryEditor(Gtk.Box):
         parent.append(button_bar)
 
     def _setup_spellcheck(self):
-        """Set up spell checking with libspelling."""
+        """Set up spell checking with libspelling (no-op if unavailable)."""
+        self.checker = None
+        self.spell_adapter = None
+        if not HAS_SPELLING:
+            return
+
         self.checker = Spelling.Checker.get_default()
         self.spell_adapter = Spelling.TextBufferAdapter.new(self.buffer, self.checker)
         self.spell_adapter.set_enabled(True)
@@ -255,6 +275,9 @@ class QueryEditor(Gtk.Box):
 
     def _apply_spellcheck_language(self):
         """Apply spell check language from settings."""
+        if not self.spell_adapter:
+            return
+
         lang_code = self.settings.get("editor.spellcheck_language", "auto")
 
         if lang_code == "auto":

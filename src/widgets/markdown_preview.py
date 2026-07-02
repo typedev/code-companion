@@ -1,5 +1,7 @@
 """Markdown preview widget using WebKit."""
 
+from pathlib import Path
+
 import gi
 
 gi.require_version("WebKit", "6.0")
@@ -10,14 +12,36 @@ import mistune
 from ..services import SettingsService
 
 
+# Vendored highlight.js assets (see src/resources/highlight/). Bundled locally so
+# code highlighting works offline and on a clean machine without a CDN request.
+_HLJS_DIR = Path(__file__).resolve().parent.parent / "resources" / "highlight"
+
+# Markers replaced (via str.replace, not str.format) after the template is
+# formatted — the minified JS is full of "{}" and would break str.format().
+_HLJS_JS_MARKER = "/*__HLJS_JS__*/"
+_HLJS_CSS_MARKER = "/*__HLJS_CSS__*/"
+
+_hljs_cache: dict[str, str] = {}
+
+
+def _read_hljs_asset(name: str) -> str:
+    """Read a vendored highlight.js asset, cached; empty string if missing."""
+    if name not in _hljs_cache:
+        try:
+            _hljs_cache[name] = (_HLJS_DIR / name).read_text(encoding="utf-8")
+        except OSError:
+            _hljs_cache[name] = ""
+    return _hljs_cache[name]
+
+
 # HTML template with highlight.js for code syntax highlighting
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html>
 <head>
     <meta charset="UTF-8">
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/{highlight_style}.min.css">
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <style>/*__HLJS_CSS__*/</style>
+    <script>/*__HLJS_JS__*/</script>
     <style>
         :root {{
             color-scheme: {color_scheme};
@@ -194,7 +218,7 @@ class MarkdownPreview(Gtk.Box):
                 decision.ignore()
             return True
 
-        # Allow resource loading (CSS, JS from CDN)
+        # Allow resource loading (highlight.js CSS/JS are inlined locally)
         decision.use()
         return True
 
@@ -279,6 +303,13 @@ class MarkdownPreview(Gtk.Box):
             code_font_size=code_font_size,
             line_height=line_height,
         )
+
+        # Inline the vendored highlight.js CSS/JS after formatting (the minified
+        # JS contains "{}" that would break str.format()).
+        hljs_css = _read_hljs_asset(f"{highlight_style}.min.css")
+        hljs_js = _read_hljs_asset("highlight.min.js")
+        full_html = full_html.replace(_HLJS_CSS_MARKER, hljs_css)
+        full_html = full_html.replace(_HLJS_JS_MARKER, hljs_js)
 
         # Load HTML into WebView
         self.webview.load_html(full_html, base_path or "file:///")

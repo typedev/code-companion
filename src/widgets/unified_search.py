@@ -298,10 +298,11 @@ class UnifiedSearch(Gtk.Box):
 
     def _search_filenames(self, query: str) -> list[Path]:
         """Search for files by name using find or fd."""
-        fd_path = shutil.which("fd")
+        # On Debian/Ubuntu the fd binary is named "fdfind" to avoid a name clash.
+        fd_path = shutil.which("fd") or shutil.which("fdfind")
 
         if fd_path:
-            cmd = ["fd", "--type", "f", "--ignore-case", query]
+            cmd = [fd_path, "--type", "f", "--ignore-case", query]
         else:
             cmd = ["find", ".", "-type", "f", "-iname", f"*{query}*",
                    "-not", "-path", "*/.git/*", "-not", "-path", "*/__pycache__/*"]
