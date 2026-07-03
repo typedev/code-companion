@@ -213,6 +213,16 @@ Session files are JSONL with event types: `user`, `assistant`, `tool_use`, `tool
   - Preview toggle button in toolbar for .md files
   - Theme-aware preview (light/dark)
   - TODO: Editor search/replace (see `docs/TODO-editor-search.md`)
+- [x] v0.7.5: Git-Centric Project Manager:
+  - Per-project git status badges: dirty ●, ahead ↑N, behind ↓N, PR count, Issue count
+  - Local markers (repo/remote/dirty/ahead) auto-computed in background thread
+  - Network markers (fetch→behind, PR/Issue counts) via Refresh button + disk cache
+  - Smart "Updated <relative>" label (`utils/relative_time.humanize_relative`)
+  - `ProjectStatusService` (`services/project_status_service.py`) with JSON cache
+  - `ProjectRegistry` v2 format `{path, name}` with transparent legacy migration
+  - Rename project label (custom name, folder untouched)
+  - New Project button (folder picker + name → `git init` → register + open)
+  - See `docs/plan-git-centric-project-manager.md`
 - [ ] v0.8: Code Companion Refactor:
   - Rename to "Code Companion"
   - Abstract HistoryService into interface + adapters

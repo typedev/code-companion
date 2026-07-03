@@ -5,9 +5,10 @@ from .adapters import ClaudeHistoryAdapter
 from .config_path import get_config_dir, migrate_config_if_needed
 from .project_registry import ProjectRegistry
 from .project_lock import ProjectLock
+from .project_status_service import ProjectStatusService, LocalStatus, RemoteStatus
 from .tasks_service import TasksService, Task, TaskInput
 from .git_service import GitService, GitFileStatus, FileStatus, GitCommit, AuthenticationRequired
-from .issues_service import IssuesService, Issue, IssueComment, GitHubError
+from .issues_service import IssuesService, Issue, IssueComment, PullRequest, GitHubError
 from .icon_cache import IconCache
 from .toast_service import ToastService
 from .settings_service import SettingsService
@@ -29,6 +30,9 @@ __all__ = [
     "migrate_config_if_needed",
     "ProjectRegistry",
     "ProjectLock",
+    "ProjectStatusService",
+    "LocalStatus",
+    "RemoteStatus",
     "TasksService",
     "Task",
     "TaskInput",
@@ -40,6 +44,7 @@ __all__ = [
     "IssuesService",
     "Issue",
     "IssueComment",
+    "PullRequest",
     "GitHubError",
     "IconCache",
     "ToastService",

@@ -5,6 +5,7 @@ from datetime import datetime
 from gi.repository import Gtk, Gio, GObject, Adw
 
 from ..services import GitService, ToastService, FileMonitorService
+from ..utils.relative_time import humanize_relative
 
 
 class GitHistoryPanel(Gtk.Box):
@@ -297,32 +298,8 @@ class GitHistoryPanel(Gtk.Box):
         return row
 
     def _format_relative_time(self, timestamp: datetime) -> str:
-        """Format timestamp as relative time."""
-        now = datetime.now()
-        diff = now - timestamp
-
-        seconds = diff.total_seconds()
-        minutes = seconds / 60
-        hours = minutes / 60
-        days = hours / 24
-        weeks = days / 7
-
-        if seconds < 60:
-            return "just now"
-        elif minutes < 60:
-            n = int(minutes)
-            return f"{n} minute{'s' if n != 1 else ''} ago"
-        elif hours < 24:
-            n = int(hours)
-            return f"{n} hour{'s' if n != 1 else ''} ago"
-        elif days < 7:
-            n = int(days)
-            return f"{n} day{'s' if n != 1 else ''} ago"
-        elif weeks < 4:
-            n = int(weeks)
-            return f"{n} week{'s' if n != 1 else ''} ago"
-        else:
-            return timestamp.strftime("%b %d, %Y")
+        """Format timestamp as relative time (shared helper)."""
+        return humanize_relative(timestamp)
 
     def _on_row_selected(self, listbox, row):
         """Handle commit selection."""

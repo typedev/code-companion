@@ -1,7 +1,6 @@
 """Issues panel widget for the sidebar (GitHub Issues list)."""
 
 import threading
-from datetime import datetime, timezone
 from pathlib import Path
 
 from gi.repository import Gtk, GLib, GObject, Adw
@@ -12,44 +11,10 @@ from .github_auth import show_github_credentials_dialog
 FILTER_STATES = ["open", "closed", "all"]
 
 
-def parse_iso(value: str) -> datetime | None:
-    """Parse a GitHub ISO8601 timestamp into an aware datetime."""
-    if not value:
-        return None
-    try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-
-
-def format_relative_time(value: str) -> str:
-    """Format a GitHub ISO8601 timestamp as relative time (e.g. '3 days ago')."""
-    dt = parse_iso(value)
-    if dt is None:
-        return ""
-
-    now = datetime.now(timezone.utc)
-    seconds = (now - dt).total_seconds()
-    minutes = seconds / 60
-    hours = minutes / 60
-    days = hours / 24
-    weeks = days / 7
-
-    if seconds < 60:
-        return "just now"
-    if minutes < 60:
-        n = int(minutes)
-        return f"{n} minute{'s' if n != 1 else ''} ago"
-    if hours < 24:
-        n = int(hours)
-        return f"{n} hour{'s' if n != 1 else ''} ago"
-    if days < 7:
-        n = int(days)
-        return f"{n} day{'s' if n != 1 else ''} ago"
-    if weeks < 4:
-        n = int(weeks)
-        return f"{n} week{'s' if n != 1 else ''} ago"
-    return dt.strftime("%b %d, %Y")
+# Backwards-compatible re-exports; the implementation now lives in utils so the
+# relative-time phrasing is shared across the app (issue_detail_view imports
+# format_relative_time from here).
+from ..utils.relative_time import parse_iso, humanize_relative_iso as format_relative_time  # noqa: E402,F401
 
 
 class IssuesPanel(Gtk.Box):
@@ -464,9 +429,10 @@ class IssuesPanel(Gtk.Box):
             except AuthenticationRequired as exc:
                 GLib.idle_add(self._on_create_auth_required, title, body, exc.remote_url)
             except GitHubError as exc:
-                GLib.idle_add(
-                    lambda: ToastService.show_error(f"GitHub: {exc.message}")
-                )
+                # Bind the message eagerly; `exc` is unbound once the except
+                # block exits, so the idle callback must not reference it.
+                message = exc.message
+                GLib.idle_add(ToastService.show_error, f"GitHub: {message}")
 
         threading.Thread(target=work, daemon=True).start()
 

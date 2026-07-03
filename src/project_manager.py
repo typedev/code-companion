@@ -3,18 +3,55 @@
 import signal
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
-from gi.repository import Adw, Gtk, GLib, Gio, GObject
+from gi.repository import Adw, Gtk, GLib, Gio, Gdk
 
 from .services.project_registry import ProjectRegistry
 from .services.project_lock import ManagerLock
+from .services.project_status_service import (
+    ProjectStatusService,
+    LocalStatus,
+    RemoteStatus,
+)
+from .services.git_service import AuthenticationRequired
+from .services.issues_service import GitHubError
+from .utils.relative_time import humanize_relative
+from .widgets.github_auth import show_github_credentials_dialog
 from .version import __version__, get_version_info
 
 
-def escape_markup(text: str) -> str:
-    """Escape text for safe use in GTK markup."""
-    return GLib.markup_escape_text(text)
+# Inline CSS for the larger project cards and their status badges.
+_BADGE_CSS = b"""
+.project-card {
+    min-height: 56px;
+}
+.project-card-title {
+    font-size: 1.1em;
+    font-weight: bold;
+}
+.project-card-path {
+    font-size: 0.85em;
+}
+.cc-badge {
+    font-size: 11px;
+    font-weight: bold;
+    padding: 2px 8px;
+    border-radius: 9px;
+}
+.cc-badge image {
+    -gtk-icon-size: 13px;
+}
+.cc-badge-git    { background: alpha(#2ec27e, 0.18); color: #26a269; }
+.cc-badge-norepo { background: alpha(@theme_fg_color, 0.10); color: alpha(@theme_fg_color, 0.55); }
+.cc-badge-dirty  { background: alpha(#e5a50a, 0.20); color: #c07f00; }
+.cc-badge-ahead  { background: alpha(#3584e4, 0.20); color: #1c71d8; }
+.cc-badge-behind { background: alpha(#e66100, 0.22); color: #c64600; }
+.cc-badge-pr     { background: alpha(#2ec27e, 0.18); color: #26a269; }
+.cc-badge-issue  { background: alpha(@accent_color, 0.20); color: @accent_color; }
+.cc-badge-local  { background: alpha(@theme_fg_color, 0.10); color: alpha(@theme_fg_color, 0.55); }
+"""
 
 
 class ProjectManagerWindow(Adw.ApplicationWindow):
@@ -24,13 +61,29 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
         super().__init__(**kwargs)
 
         self.registry = ProjectRegistry()
+        self.status_service = ProjectStatusService.get_instance()
         self._manager_lock = ManagerLock()
         self._manager_lock.acquire()
 
+        # Maps resolved project path -> its ListBoxRow, for async status updates.
+        self._rows_by_path: dict[str, Adw.ActionRow] = {}
+        self._refreshing = False
+
+        self._setup_css()
         self._setup_signal_handler()
         self._setup_window()
         self._build_ui()
         self._load_projects()
+
+    def _setup_css(self):
+        """Install the badge stylesheet once for the default display."""
+        provider = Gtk.CssProvider()
+        provider.load_from_data(_BADGE_CSS)
+        Gtk.StyleContext.add_provider_for_display(
+            Gdk.Display.get_default(),
+            provider,
+            Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION,
+        )
 
         self.connect("destroy", self._on_destroy)
 
@@ -66,6 +119,12 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
         about_button.connect("clicked", self._on_about_clicked)
         header.pack_end(about_button)
 
+        # Refresh button (fetches network status: behind / PR / issue counts)
+        self.refresh_button = Gtk.Button(icon_name="view-refresh-symbolic")
+        self.refresh_button.set_tooltip_text("Refresh git status (fetch, PRs, issues)")
+        self.refresh_button.connect("clicked", self._on_refresh_clicked)
+        header.pack_start(self.refresh_button)
+
         main_box.append(header)
 
         # Content
@@ -76,11 +135,25 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
         content_box.set_margin_bottom(16)
         content_box.set_spacing(16)
 
-        # Title
+        # Title row: "Projects" + spinner + "Updated <relative>" label
+        title_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+
         title_label = Gtk.Label(label="Projects")
         title_label.add_css_class("title-1")
         title_label.set_xalign(0)
-        content_box.append(title_label)
+        title_label.set_hexpand(True)
+        title_row.append(title_label)
+
+        self.refresh_spinner = Gtk.Spinner()
+        self.refresh_spinner.set_valign(Gtk.Align.CENTER)
+        title_row.append(self.refresh_spinner)
+
+        self.updated_label = Gtk.Label()
+        self.updated_label.add_css_class("dim-label")
+        self.updated_label.set_valign(Gtk.Align.CENTER)
+        title_row.append(self.updated_label)
+
+        content_box.append(title_row)
 
         # Project list in scrolled window
         scrolled = Gtk.ScrolledWindow()
@@ -110,6 +183,11 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
         self.remove_button.connect("clicked", self._on_remove_project_clicked)
         buttons_box.append(self.remove_button)
 
+        # New project button (creates a git repo in a chosen folder)
+        new_button = Gtk.Button(label="New Project...")
+        new_button.connect("clicked", self._on_new_project_clicked)
+        buttons_box.append(new_button)
+
         # Add project button
         add_button = Gtk.Button(label="Add Project...")
         add_button.add_css_class("suggested-action")
@@ -126,21 +204,30 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
         self.project_list.connect("row-selected", self._on_selection_changed)
 
     def _load_projects(self):
-        """Load projects from registry."""
+        """Load projects from registry and kick off a background status scan."""
         projects = self.registry.get_registered_projects()
 
         # Clear existing
         self.project_list.remove_all()
+        self._rows_by_path = {}
 
         if not projects:
             self._show_empty_state()
+            self._update_latest_refresh_label()
             return
 
-        for project_path in projects:
-            path = Path(project_path)
-            if path.exists():
-                row = self._create_project_row(path)
-                self.project_list.append(row)
+        existing = [Path(p) for p in projects if Path(p).exists()]
+        for path in existing:
+            row = self._create_project_row(path)
+            self.project_list.append(row)
+            self._rows_by_path[str(path.resolve())] = row
+            # Render any cached network status immediately (survives reopen).
+            cached = self.status_service.get_cached_remote(str(path))
+            if cached:
+                self._render_remote_badges(row, cached)
+
+        self._update_latest_refresh_label()
+        self._start_local_scan(existing)
 
     def _show_empty_state(self):
         """Show empty state message."""
@@ -151,18 +238,277 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
         self.project_list.append(label)
 
     def _create_project_row(self, path: Path) -> Gtk.ListBoxRow:
-        """Create a list row for a project."""
-        row = Adw.ActionRow()
-        row.set_title(escape_markup(path.name))
-        row.set_subtitle(escape_markup(str(path)))
-        row.set_activatable(False)  # Single click selects, double click opens
+        """Create a larger, custom project card row."""
+        row = Gtk.ListBoxRow()
+        row.add_css_class("project-card")
         row.project_path = str(path)
 
-        # Folder icon
-        icon = Gtk.Image.new_from_icon_name("folder-symbolic")
-        row.add_prefix(icon)
+        hbox = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=14)
+        hbox.set_margin_top(10)
+        hbox.set_margin_bottom(10)
+        hbox.set_margin_start(14)
+        hbox.set_margin_end(10)
 
+        # Folder icon (larger)
+        icon = Gtk.Image.new_from_icon_name("folder-symbolic")
+        icon.set_pixel_size(32)
+        icon.set_valign(Gtk.Align.CENTER)
+        hbox.append(icon)
+
+        # Name + path
+        text_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        text_box.set_valign(Gtk.Align.CENTER)
+        text_box.set_hexpand(True)
+
+        name_label = Gtk.Label(label=self.registry.get_name(str(path)))
+        name_label.set_xalign(0)
+        name_label.add_css_class("project-card-title")
+        name_label.set_ellipsize(3)  # PANGO_ELLIPSIZE_END
+        text_box.append(name_label)
+        row.name_label = name_label
+
+        path_label = Gtk.Label(label=str(path))
+        path_label.set_xalign(0)
+        path_label.add_css_class("dim-label")
+        path_label.add_css_class("project-card-path")
+        path_label.set_ellipsize(3)
+        text_box.append(path_label)
+
+        hbox.append(text_box)
+
+        # Badge container (status markers)
+        badges = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+        badges.set_valign(Gtk.Align.CENTER)
+        row.badges_box = badges
+        row.local_badges = None
+        row.remote_badges = None
+        hbox.append(badges)
+
+        rename_button = Gtk.Button(icon_name="document-edit-symbolic")
+        rename_button.add_css_class("flat")
+        rename_button.set_valign(Gtk.Align.CENTER)
+        rename_button.set_tooltip_text("Rename project label")
+        rename_button.connect("clicked", self._on_rename_clicked, row)
+        hbox.append(rename_button)
+
+        row.set_child(hbox)
         return row
+
+    # ------------------------------------------------------------------
+    # Status badges
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _make_badge(
+        css_class: str, tooltip: str, text: str = "", icon_name: str = ""
+    ) -> Gtk.Widget:
+        """Create a small pill badge with an optional icon and/or text."""
+        box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=3)
+        box.add_css_class("cc-badge")
+        box.add_css_class(css_class)
+        box.set_tooltip_text(tooltip)
+        if icon_name:
+            box.append(Gtk.Image.new_from_icon_name(icon_name))
+        if text:
+            box.append(Gtk.Label(label=text))
+        return box
+
+    def _render_local_badges(self, row, status: LocalStatus):
+        """(Re)render the offline markers segment of a row's badge box."""
+        # Remove previously rendered local badges.
+        for badge in row.local_badges or []:
+            row.badges_box.remove(badge)
+
+        badges: list[Gtk.Widget] = []
+        if not status.has_repo:
+            badges.append(
+                self._make_badge("cc-badge-norepo", "Not a git repository", text="No Git")
+            )
+        else:
+            # Primary repo-state pill: green "Git".
+            badges.append(
+                self._make_badge("cc-badge-git", "Git repository", text="Git")
+            )
+            if status.dirty:
+                badges.append(
+                    self._make_badge(
+                        "cc-badge-dirty",
+                        "Uncommitted changes",
+                        icon_name="dialog-warning-symbolic",
+                    )
+                )
+            if status.ahead:
+                badges.append(
+                    self._make_badge(
+                        "cc-badge-ahead",
+                        f"{status.ahead} commit(s) to push",
+                        text=f"↑{status.ahead}",
+                    )
+                )
+            if not status.has_remote:
+                badges.append(
+                    self._make_badge("cc-badge-local", "No remote configured", text="local")
+                )
+
+        # Local badges go before remote ones (prepend in order).
+        insert_after = None
+        for badge in badges:
+            row.badges_box.insert_child_after(badge, insert_after)
+            insert_after = badge
+        row.local_badges = badges
+
+    def _render_remote_badges(self, row, status: RemoteStatus):
+        """(Re)render the network markers segment of a row's badge box."""
+        for badge in row.remote_badges or []:
+            row.badges_box.remove(badge)
+
+        badges: list[Gtk.Widget] = []
+        if status.behind:
+            badges.append(
+                self._make_badge(
+                    "cc-badge-behind",
+                    f"{status.behind} commit(s) to pull",
+                    text=f"↓{status.behind}",
+                )
+            )
+        if status.pr_count:
+            badges.append(
+                self._make_badge(
+                    "cc-badge-pr",
+                    f"{status.pr_count} open pull request(s)",
+                    text=f"PR {status.pr_count}",
+                )
+            )
+        if status.issue_count:
+            # No portable "flag" symbolic icon across themes; the ⚑ glyph renders
+            # reliably and reads as a flag.
+            badges.append(
+                self._make_badge(
+                    "cc-badge-issue",
+                    f"{status.issue_count} open issue(s)",
+                    text=f"⚑ {status.issue_count}",
+                )
+            )
+
+        # Remote badges are appended at the end of the box.
+        for badge in badges:
+            row.badges_box.append(badge)
+        row.remote_badges = badges
+
+    # ------------------------------------------------------------------
+    # Background local scan
+    # ------------------------------------------------------------------
+    def _start_local_scan(self, paths: list[Path]):
+        """Compute local git status for each project in a background thread."""
+        def worker():
+            for path in paths:
+                status = self.status_service.get_local_status(str(path))
+                GLib.idle_add(self._apply_local_status, str(path.resolve()), status)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _apply_local_status(self, resolved_path: str, status: LocalStatus):
+        """Main-thread callback: render local badges for a scanned project."""
+        row = self._rows_by_path.get(resolved_path)
+        if row is not None:
+            self._render_local_badges(row, status)
+        return False
+
+    # ------------------------------------------------------------------
+    # Network refresh (fetch + PR/issue counts)
+    # ------------------------------------------------------------------
+    def _on_refresh_clicked(self, _button, credentials: tuple[str, str] | None = None):
+        """Refresh network status for all GitHub-capable projects."""
+        if self._refreshing:
+            return
+        paths = list(self._rows_by_path.keys())
+        if not paths:
+            return
+
+        self._refreshing = True
+        self.refresh_button.set_sensitive(False)
+        self.refresh_spinner.start()
+
+        def worker():
+            for resolved_path in paths:
+                try:
+                    status = self.status_service.refresh_remote_status(
+                        resolved_path, credentials=credentials
+                    )
+                    GLib.idle_add(self._apply_remote_status, resolved_path, status)
+                except AuthenticationRequired as exc:
+                    GLib.idle_add(self._on_refresh_auth_required, exc.remote_url)
+                    return
+                except GitHubError:
+                    # Non-fatal (network/API); skip this project's network badges.
+                    continue
+            GLib.idle_add(self._on_refresh_done)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _apply_remote_status(self, resolved_path: str, status: RemoteStatus):
+        row = self._rows_by_path.get(resolved_path)
+        if row is not None:
+            self._render_remote_badges(row, status)
+        return False
+
+    def _on_refresh_auth_required(self, remote_url: str):
+        """Prompt for GitHub credentials, then retry the whole refresh."""
+        self._on_refresh_done()
+        show_github_credentials_dialog(self, remote_url, self._retry_refresh_with_credentials)
+        return False
+
+    def _retry_refresh_with_credentials(self, credentials: tuple[str, str]):
+        self._on_refresh_clicked(None, credentials=credentials)
+
+    def _on_refresh_done(self):
+        self._refreshing = False
+        self.refresh_button.set_sensitive(True)
+        self.refresh_spinner.stop()
+        self._update_latest_refresh_label()
+        return False
+
+    def _update_latest_refresh_label(self):
+        """Show 'Updated <relative>' from the newest cached refresh timestamp."""
+        latest = None
+        for resolved_path in self._rows_by_path:
+            cached = self.status_service.get_cached_remote(resolved_path)
+            if cached and cached.refreshed_at:
+                if latest is None or cached.refreshed_at > latest:
+                    latest = cached.refreshed_at
+        self.updated_label.set_text(f"Updated {humanize_relative(latest)}" if latest else "")
+
+    # ------------------------------------------------------------------
+    # Rename
+    # ------------------------------------------------------------------
+    def _on_rename_clicked(self, _button, row):
+        """Show a dialog to edit the project's display label (folder unchanged)."""
+        path = row.project_path
+        current = self.registry.get_name(path)
+
+        dialog = Adw.AlertDialog()
+        dialog.set_heading("Rename Project")
+        dialog.set_body(f"Custom label for:\n{path}")
+
+        entry = Gtk.Entry()
+        entry.set_text(current)
+        entry.set_activates_default(True)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        box.append(entry)
+        dialog.set_extra_child(box)
+
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("rename", "Rename")
+        dialog.set_response_appearance("rename", Adw.ResponseAppearance.SUGGESTED)
+        dialog.set_default_response("rename")
+        dialog.connect("response", self._on_rename_response, row, entry)
+        dialog.present(self)
+
+    def _on_rename_response(self, _dialog, response, row, entry):
+        if response != "rename":
+            return
+        name = entry.get_text().strip()
+        self.registry.set_name(row.project_path, name)
+        row.name_label.set_text(self.registry.get_name(row.project_path))
 
     def _on_selection_changed(self, _listbox, row):
         """Handle selection change - enable/disable remove button."""
@@ -209,6 +555,82 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
             self.registry.unregister_project(row.project_path)
             self._load_projects()
             self.remove_button.set_sensitive(False)
+
+    # ------------------------------------------------------------------
+    # New project (pick folder -> name -> git init -> register + open)
+    # ------------------------------------------------------------------
+    def _on_new_project_clicked(self, _button):
+        """Pick a folder for a brand-new project."""
+        dialog = Gtk.FileDialog()
+        dialog.set_title("Choose Folder for New Project")
+        dialog.set_initial_folder(Gio.File.new_for_path(str(Path.home())))
+        dialog.select_folder(self, None, self._on_new_folder_selected)
+
+    def _on_new_folder_selected(self, dialog, result):
+        """Ask for a project name once a folder has been chosen."""
+        try:
+            folder = dialog.select_folder_finish(result)
+        except GLib.Error:
+            return  # cancelled
+        if not folder:
+            return
+        path = folder.get_path()
+
+        name_dialog = Adw.AlertDialog()
+        name_dialog.set_heading("New Project")
+        name_dialog.set_body(f"Initialize a git repository in:\n{path}")
+
+        entry = Gtk.Entry()
+        entry.set_text(Path(path).name)
+        entry.set_activates_default(True)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        box.append(entry)
+        name_dialog.set_extra_child(box)
+
+        name_dialog.add_response("cancel", "Cancel")
+        name_dialog.add_response("create", "Create")
+        name_dialog.set_response_appearance("create", Adw.ResponseAppearance.SUGGESTED)
+        name_dialog.set_default_response("create")
+        name_dialog.connect("response", self._on_new_project_response, path, entry)
+        name_dialog.present(self)
+
+    def _on_new_project_response(self, _dialog, response, path, entry):
+        if response != "create":
+            return
+        name = entry.get_text().strip()
+
+        def worker():
+            error = None
+            try:
+                result = subprocess.run(
+                    ["git", "init"],
+                    cwd=path,
+                    capture_output=True,
+                    text=True,
+                    timeout=15,
+                )
+                if result.returncode != 0:
+                    error = result.stderr.strip() or "git init failed"
+            except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as exc:
+                error = str(exc)
+            GLib.idle_add(self._on_new_project_created, path, name, error)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_new_project_created(self, path, name, error):
+        """Main-thread callback after `git init` completes."""
+        if error:
+            err = Adw.AlertDialog()
+            err.set_heading("Could Not Create Project")
+            err.set_body(f"git init failed:\n{error}")
+            err.add_response("ok", "OK")
+            err.present(self)
+            return False
+
+        self.registry.register_project(path, name)
+        self._load_projects()
+        self._open_project(path)
+        return False
 
     def _open_project(self, project_path: str, force: bool = False):
         """Open a project in a new process."""

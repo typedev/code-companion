@@ -70,6 +70,30 @@ class Issue:
 
 
 @dataclass
+class PullRequest:
+    """A GitHub pull request (lightweight)."""
+
+    number: int
+    title: str
+    state: str  # "open" | "closed"
+    html_url: str = ""
+    user: str = ""
+    draft: bool = False
+
+    @classmethod
+    def from_json(cls, data: dict) -> "PullRequest":
+        user = data.get("user") or {}
+        return cls(
+            number=data.get("number", 0),
+            title=data.get("title") or "",
+            state=data.get("state") or "open",
+            html_url=data.get("html_url") or "",
+            user=user.get("login") or "",
+            draft=bool(data.get("draft", False)),
+        )
+
+
+@dataclass
 class IssueComment:
     """A comment on a GitHub issue."""
 
@@ -276,6 +300,35 @@ class IssuesService:
                 break
             page += 1
         return issues
+
+    def list_pull_requests(
+        self, state: str = "open", credentials: tuple[str, str] | None = None
+    ) -> list[PullRequest]:
+        """List pull requests. ``state`` is one of "open", "closed", "all".
+
+        Uses the dedicated ``/pulls`` endpoint (unlike ``/issues``, which mixes
+        issues and PRs). Follows pagination up to MAX_PAGES.
+        """
+        prs: list[PullRequest] = []
+        page = 1
+        while page <= MAX_PAGES:
+            payload, headers = self._request(
+                "GET",
+                "/pulls",
+                params={"state": state, "per_page": 100, "page": page},
+                credentials=credentials,
+            )
+            if not isinstance(payload, list) or not payload:
+                break
+            prs.extend(
+                PullRequest.from_json(item)
+                for item in payload
+                if isinstance(item, dict)
+            )
+            if not self._has_next_page(headers):
+                break
+            page += 1
+        return prs
 
     @staticmethod
     def _has_next_page(headers: dict) -> bool:
