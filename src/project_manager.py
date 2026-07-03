@@ -68,6 +68,7 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
         # Maps resolved project path -> its ListBoxRow, for async status updates.
         self._rows_by_path: dict[str, Adw.ActionRow] = {}
         self._refreshing = False
+        self._query = ""
 
         self._setup_css()
         self._setup_signal_handler()
@@ -155,6 +156,13 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
 
         content_box.append(title_row)
 
+        # Search box to filter projects by name or path
+        self.search_entry = Gtk.SearchEntry()
+        self.search_entry.set_placeholder_text("Search projects...")
+        self.search_entry.set_key_capture_widget(None)  # avoid global key capture
+        self.search_entry.connect("search-changed", self._on_search_changed)
+        content_box.append(self.search_entry)
+
         # Project list in scrolled window
         scrolled = Gtk.ScrolledWindow()
         scrolled.set_vexpand(True)
@@ -163,6 +171,7 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
         self.project_list = Gtk.ListBox()
         self.project_list.set_selection_mode(Gtk.SelectionMode.SINGLE)
         self.project_list.add_css_class("boxed-list")
+        self.project_list.set_filter_func(self._filter_row)
 
         scrolled.set_child(self.project_list)
         content_box.append(scrolled)
@@ -509,6 +518,21 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
         name = entry.get_text().strip()
         self.registry.set_name(row.project_path, name)
         row.name_label.set_text(self.registry.get_name(row.project_path))
+
+    def _on_search_changed(self, entry):
+        """Re-run the list filter as the search query changes."""
+        self._query = entry.get_text().strip().lower()
+        self.project_list.invalidate_filter()
+
+    def _filter_row(self, row) -> bool:
+        """ListBox filter: match the query against a project's name and path."""
+        if not self._query:
+            return True
+        path = getattr(row, "project_path", None)
+        if path is None:
+            return True  # non-project rows (e.g. empty state) always show
+        name = row.name_label.get_text() if hasattr(row, "name_label") else ""
+        return self._query in name.lower() or self._query in path.lower()
 
     def _on_selection_changed(self, _listbox, row):
         """Handle selection change - enable/disable remove button."""
