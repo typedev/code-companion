@@ -11,6 +11,7 @@ from .git_service import GitService, GitFileStatus, FileStatus, GitCommit, Authe
 from .issues_service import IssuesService, Issue, IssueComment, PullRequest, GitHubError
 from .icon_cache import IconCache
 from .toast_service import ToastService
+from .async_runner import run_async, bump_generation
 from .settings_service import SettingsService
 from .snippets_service import SnippetsService
 from .rules_service import RulesService
@@ -48,6 +49,8 @@ __all__ = [
     "GitHubError",
     "IconCache",
     "ToastService",
+    "run_async",
+    "bump_generation",
     "SettingsService",
     "SnippetsService",
     "RulesService",

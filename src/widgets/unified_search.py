@@ -3,13 +3,12 @@
 import subprocess
 import shutil
 import re
-import threading
 from pathlib import Path
 from dataclasses import dataclass
 
 from gi.repository import Gtk, GObject, GLib, Adw
 
-from ..services import ToastService
+from ..services import ToastService, run_async
 from ..utils.atomic_write import atomic_write_text
 from ..utils.text_files import read_text_file
 
@@ -45,7 +44,7 @@ class UnifiedSearch(Gtk.Box):
         self.project_path = Path(project_path)
         self._content_results: list[FileContentMatches] = []
         self._file_results: list[Path] = []
-        self._search_pending = False
+        self._search_timeout_id = 0
         self._current_query = ""
 
         self._build_ui()
@@ -185,52 +184,60 @@ class UnifiedSearch(Gtk.Box):
         self.files_expander.set_expanded(True)
 
     def _on_search_changed(self, entry):
-        """Handle search text change - debounced search."""
+        """Handle search text change - debounced search (canonical: cancel prior timer)."""
         query = entry.get_text().strip()
         self._current_query = query
 
+        self._cancel_pending_search()
         if len(query) < 2:
             self._clear_results()
             self.results_box.set_visible(False)
             return
 
-        # Debounce
-        if not self._search_pending:
-            self._search_pending = True
-            GLib.timeout_add(250, lambda: self._delayed_search(query))
+        self._search_timeout_id = GLib.timeout_add(250, self._fire_debounced_search)
+
+    def _cancel_pending_search(self):
+        if self._search_timeout_id:
+            GLib.source_remove(self._search_timeout_id)
+            self._search_timeout_id = 0
+
+    def _fire_debounced_search(self) -> bool:
+        self._search_timeout_id = 0
+        query = self.search_entry.get_text().strip()
+        if len(query) >= 2:
+            self._do_search(query)
+        return False
 
     def _on_search_activate(self, entry):
-        """Handle Enter - immediate search."""
+        """Handle Enter - immediate search (cancels any pending debounce)."""
+        self._cancel_pending_search()
         query = entry.get_text().strip()
         if len(query) >= 2:
             self._do_search(query)
 
-    def _delayed_search(self, query):
-        """Perform delayed search."""
-        self._search_pending = False
-        current = self.search_entry.get_text().strip()
-        if current == query and len(query) >= 2:
-            self._do_search(query)
-        return False
-
     def _do_search(self, query: str):
-        """Perform both filename and content search."""
+        """Perform filename + content search off-thread.
+
+        run_async's generation token guarantees only the newest query's results
+        render, so a slow earlier search can't overwrite a newer one.
+
+        TODO(phase-2+): kill superseded rg/grep/find subprocesses; for now they are
+        bounded by --max-count and the subprocess timeouts, and stale results are
+        dropped by the generation token.
+        """
         self._clear_results()
         self.results_box.set_visible(True)
         self.content_count.set_label("searching...")
         self.files_count.set_label("searching...")
 
-        # Run both searches in parallel
-        def run_searches():
-            # Content search
-            content_results = self._search_content(query)
-            # Filename search
-            file_results = self._search_filenames(query)
+        def work():
+            return (self._search_content(query), self._search_filenames(query), query)
 
-            GLib.idle_add(lambda: self._display_results(content_results, file_results, query))
+        def done(result):
+            content_results, file_results, q = result
+            self._display_results(content_results, file_results, q)
 
-        thread = threading.Thread(target=run_searches, daemon=True)
-        thread.start()
+        run_async(self, worker=work, on_done=done, key="search")
 
     def _search_content(self, query: str) -> list[FileContentMatches]:
         """Search file contents using ripgrep or grep."""

@@ -16,17 +16,18 @@ thread (see ``project_manager`` for the threading pattern).
 """
 
 import json
-import os
 import subprocess
+import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
 from .config_path import get_config_dir
 from .issues_service import IssuesService
+from ..utils import git_auth
 
 # Never let git block on an interactive credential / known-hosts prompt.
-_GIT_ENV = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+_GIT_ENV = git_auth.build_git_env()  # LC_ALL=C + GIT_TERMINAL_PROMPT=0 (roadmap 3.4)
 
 
 @dataclass
@@ -80,6 +81,9 @@ class ProjectStatusService:
         self.config_dir = get_config_dir()
         self.cache_file = self.config_dir / "project_status_cache.json"
         self.config_dir.mkdir(parents=True, exist_ok=True)
+        # Guards _cache + the JSON file: refresh runs on multiple worker threads
+        # while the main thread reads cached values (roadmap 2.7).
+        self._lock = threading.Lock()
         self._cache: dict[str, dict] = self._load_cache()
 
     @classmethod
@@ -154,7 +158,9 @@ class ProjectStatusService:
     # ------------------------------------------------------------------
     def get_cached_remote(self, path: str) -> RemoteStatus | None:
         """Return the last cached remote status for ``path``, if any."""
-        entry = self._cache.get(str(Path(path).resolve()))
+        with self._lock:
+            entry = self._cache.get(str(Path(path).resolve()))
+            entry = dict(entry) if entry else None
         if not entry:
             return None
         refreshed = entry.get("refreshed_at")
@@ -166,8 +172,8 @@ class ProjectStatusService:
         )
 
     def _store(self, path: str, status: RemoteStatus):
-        """Persist a remote status to the in-memory + on-disk cache."""
-        self._cache[str(Path(path).resolve())] = {
+        """Persist a remote status to the in-memory + on-disk cache (thread-safe)."""
+        entry = {
             "behind": status.behind,
             "pr_count": status.pr_count,
             "issue_count": status.issue_count,
@@ -175,7 +181,9 @@ class ProjectStatusService:
             if status.refreshed_at
             else None,
         }
-        self._save_cache()
+        with self._lock:
+            self._cache[str(Path(path).resolve())] = entry
+            self._save_cache()
 
     def _load_cache(self) -> dict[str, dict]:
         if not self.cache_file.exists():

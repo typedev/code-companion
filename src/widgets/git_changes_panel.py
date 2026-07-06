@@ -1,13 +1,13 @@
 """Git changes panel widget."""
 
 import subprocess
-import threading
 from pathlib import Path
 
 from gi.repository import Gtk, GLib, GObject, Adw
 
-from ..services import GitService, GitFileStatus, FileStatus, ToastService, FileMonitorService, AuthenticationRequired
+from ..services import GitService, GitFileStatus, FileStatus, ToastService, FileMonitorService, AuthenticationRequired, run_async
 from ..services.icon_cache import IconCache
+from ..utils import git_auth
 from .branch_popover import BranchPopover
 
 
@@ -30,8 +30,13 @@ class GitChangesPanel(Gtk.Box):
         "branch-changed": (GObject.SignalFlags.RUN_FIRST, None, ()),  # emitted when branch switches
     }
 
-    # Polling interval for git status (ms) - fast operation ~2ms
-    POLL_INTERVAL = 2000
+    # Slow fallback poll (ms). FileMonitorService signals drive most refreshes now;
+    # this only catches anything the monitors miss (roadmap 2.4).
+    POLL_INTERVAL = 30000
+    # Debounce window for coalescing bursty refresh triggers (ms).
+    REFRESH_DEBOUNCE = 200
+    # Cap on interactive auth retries before giving up (roadmap 2.2).
+    MAX_AUTH_ATTEMPTS = 3
 
     def __init__(self, project_path: str, file_monitor_service: FileMonitorService):
         super().__init__(orientation=Gtk.Orientation.VERTICAL)
@@ -44,9 +49,15 @@ class GitChangesPanel(Gtk.Box):
         self._expanded_staged: set[str] = set()
         self._expanded_unstaged: set[str] = set()
 
-        # Polling state
+        # Polling / refresh state
         self._poll_timeout_id: int | None = None
+        self._refresh_timeout_id: int = 0
         self._last_status_hash: str | None = None
+
+        # In-flight guard: serializes mutating git ops (2.2/2.3) so a double-click
+        # can't produce two commits and slow network ops don't stack.
+        self._busy = False
+        self._auth_attempts = 0
 
         # Check if git repo
         if not self.service.is_git_repo():
@@ -70,11 +81,40 @@ class GitChangesPanel(Gtk.Box):
 
     def _on_git_status_changed(self, service):
         """Handle git status changes from monitor service."""
-        self.refresh()
+        self._schedule_refresh()
 
     def _on_working_tree_changed(self, service, path: str):
         """Handle working tree changes from monitor service."""
+        self._schedule_refresh()
+
+    def _schedule_refresh(self):
+        """Coalesce bursty refresh triggers (monitor signals, post-actions) into one.
+
+        Cancels any pending refresh and reschedules; combined with the generation
+        token in refresh(), N rapid triggers produce a single visible refresh
+        (roadmap 2.4).
+        """
+        if self._refresh_timeout_id:
+            GLib.source_remove(self._refresh_timeout_id)
+        self._refresh_timeout_id = GLib.timeout_add(self.REFRESH_DEBOUNCE, self._do_scheduled_refresh)
+
+    def _do_scheduled_refresh(self) -> bool:
+        self._refresh_timeout_id = 0
         self.refresh()
+        return False
+
+    def _set_busy(self, busy: bool):
+        """Enable/disable persistent mutating buttons while a git op is in flight."""
+        self._busy = busy
+        if hasattr(self, "push_btn"):
+            self.push_btn.set_sensitive(not busy)
+        if hasattr(self, "pull_btn"):
+            self.pull_btn.set_sensitive(not busy)
+        if busy:
+            if hasattr(self, "commit_btn"):
+                self.commit_btn.set_sensitive(False)
+        else:
+            self._update_commit_button()
 
     def _start_polling(self):
         """Start polling git status for changes."""
@@ -97,6 +137,9 @@ class GitChangesPanel(Gtk.Box):
     def _on_destroy(self, widget):
         """Handle widget destruction."""
         self._stop_polling()
+        if self._refresh_timeout_id:
+            GLib.source_remove(self._refresh_timeout_id)
+            self._refresh_timeout_id = 0
 
     def _build_no_repo_ui(self):
         """Build UI for non-git directories."""
@@ -240,21 +283,23 @@ class GitChangesPanel(Gtk.Box):
             return  # Not a git repo
 
         project_dir = str(self.project_path)
+        env = git_auth.build_git_env()
 
         def _fetch():
+            branch, ahead, behind = "?", 0, 0
+            staged, unstaged = [], []
             try:
                 # Get branch name
                 r = subprocess.run(
                     ["git", "branch", "--show-current"],
-                    capture_output=True, text=True, cwd=project_dir, timeout=10,
+                    capture_output=True, text=True, cwd=project_dir, timeout=10, env=env,
                 )
                 branch = r.stdout.strip() or "HEAD"
 
                 # Get ahead/behind
-                ahead, behind = 0, 0
                 r = subprocess.run(
                     ["git", "rev-list", "--left-right", "--count", "@{upstream}...HEAD"],
-                    capture_output=True, text=True, cwd=project_dir, timeout=10,
+                    capture_output=True, text=True, cwd=project_dir, timeout=10, env=env,
                 )
                 if r.returncode == 0 and r.stdout.strip():
                     parts = r.stdout.strip().split()
@@ -264,16 +309,16 @@ class GitChangesPanel(Gtk.Box):
                 # Get status
                 r = subprocess.run(
                     ["git", "status", "--porcelain", "-z"],
-                    capture_output=True, cwd=project_dir, timeout=30,
+                    capture_output=True, cwd=project_dir, timeout=30, env=env,
                 )
                 staged, unstaged = self._parse_porcelain_to_file_status(r.stdout)
             except Exception:
-                branch, ahead, behind = "?", 0, 0
-                staged, unstaged = [], []
+                pass
+            return (branch, ahead, behind, staged, unstaged)
 
-            GLib.idle_add(self._apply_refresh, branch, ahead, behind, staged, unstaged)
-
-        threading.Thread(target=_fetch, daemon=True).start()
+        # run_async gives a generation token (only the newest refresh renders) and a
+        # liveness guard for free (roadmap 2.4).
+        run_async(self, worker=_fetch, on_done=lambda data: self._apply_refresh(*data), key="refresh")
 
     @staticmethod
     def _parse_porcelain_to_file_status(data: bytes) -> tuple[list, list]:
@@ -567,15 +612,24 @@ class GitChangesPanel(Gtk.Box):
         self.emit("file-clicked", file_status.path, file_status.staged)
 
     def _on_stage_clicked(self, button, file_status: GitFileStatus):
-        """Handle stage/unstage button click."""
-        try:
-            if file_status.staged:
-                self.service.unstage(file_status.path)
-            else:
-                self.service.stage(file_status.path)
+        """Handle stage/unstage button click (off-thread, serialized)."""
+        if self._busy:
+            return
+        self._set_busy(True)
+        staged, path = file_status.staged, file_status.path
+
+        def work():
+            self.service.unstage(path) if staged else self.service.stage(path)
+
+        def done(_):
+            self._set_busy(False)
             self.refresh()
-        except Exception as e:
-            self._show_error(f"Failed to {'unstage' if file_status.staged else 'stage'}: {e}")
+
+        def err(e):
+            self._set_busy(False)
+            self._show_error(f"Failed to {'unstage' if staged else 'stage'}: {e}")
+
+        run_async(self, worker=work, on_done=done, on_error=err, key="mutate")
 
     def _on_restore_clicked(self, button, file_status: GitFileStatus):
         """Handle restore button click - restore file from HEAD."""
@@ -595,25 +649,44 @@ class GitChangesPanel(Gtk.Box):
         dialog.present(self.get_root())
 
     def _on_restore_response(self, dialog, response: str, file_status: GitFileStatus):
-        """Handle restore confirmation dialog response."""
-        if response == "restore":
-            try:
-                self.service.restore_file(file_status.path)
-                self._show_toast(f"Restored: {file_status.path}")
-                self.refresh()
-            except Exception as e:
-                self._show_error(f"Failed to restore: {e}")
+        """Handle restore confirmation dialog response (off-thread, serialized)."""
+        if response != "restore" or self._busy:
+            return
+        self._set_busy(True)
+        path = file_status.path
+
+        def work():
+            self.service.restore_file(path)
+
+        def done(_):
+            self._set_busy(False)
+            self._show_toast(f"Restored: {path}")
+            self.refresh()
+
+        def err(e):
+            self._set_busy(False)
+            self._show_error(f"Failed to restore: {e}")
+
+        run_async(self, worker=work, on_done=done, on_error=err, key="mutate")
 
     def _on_stage_all_clicked(self, button, is_staged: bool):
-        """Handle stage/unstage all button."""
-        try:
-            if is_staged:
-                self.service.unstage_all()
-            else:
-                self.service.stage_all()
+        """Handle stage/unstage all button (off-thread, serialized)."""
+        if self._busy:
+            return
+        self._set_busy(True)
+
+        def work():
+            self.service.unstage_all() if is_staged else self.service.stage_all()
+
+        def done(_):
+            self._set_busy(False)
             self.refresh()
-        except Exception as e:
+
+        def err(e):
+            self._set_busy(False)
             self._show_error(f"Failed to {'unstage' if is_staged else 'stage'} all: {e}")
+
+        run_async(self, worker=work, on_done=done, on_error=err, key="mutate")
 
     def _on_commit_entry_changed(self, entry):
         """Handle commit message entry change."""
@@ -636,27 +709,51 @@ class GitChangesPanel(Gtk.Box):
         self.commit_btn.set_sensitive(has_staged and has_message)
 
     def _on_commit_clicked(self, *args):
-        """Handle commit button click."""
+        """Handle commit button click (off-thread; the busy guard blocks double-commits)."""
+        if self._busy:
+            return
         message = self.commit_entry.get_text().strip()
         if not message:
             return
+        self._set_busy(True)
 
-        try:
-            commit_hash = self.service.commit(message)
+        def work():
+            return self.service.commit(message)
+
+        def done(commit_hash):
+            self._set_busy(False)
             self.commit_entry.set_text("")
             self._show_toast(f"Committed: {commit_hash}")
             self.refresh()
-        except Exception as e:
+
+        def err(e):
+            self._set_busy(False)
             self._show_error(f"Commit failed: {e}")
 
-    def _on_pull_clicked(self, button):
-        """Handle pull button click."""
-        # Check for uncommitted changes first
-        if self.service.has_uncommitted_changes():
-            self._show_uncommitted_warning()
-            return
+        run_async(self, worker=work, on_done=done, on_error=err, key="mutate")
 
-        self._do_pull()
+    def _on_pull_clicked(self, button):
+        """Handle pull button click (uncommitted-changes check runs off-thread)."""
+        if self._busy:
+            return
+        self._auth_attempts = 0
+        self._set_busy(True)
+
+        def work():
+            return self.service.has_uncommitted_changes()
+
+        def done(dirty):
+            self._set_busy(False)
+            if dirty:
+                self._show_uncommitted_warning()
+            else:
+                self._do_pull()
+
+        def err(e):
+            self._set_busy(False)
+            self._show_error_dialog("Pull Failed", str(e))
+
+        run_async(self, worker=work, on_done=done, on_error=err, key="mutate")
 
     def _show_uncommitted_warning(self):
         """Show warning about uncommitted changes before pull."""
@@ -680,32 +777,74 @@ class GitChangesPanel(Gtk.Box):
             self._do_pull()
 
     def _do_pull(self, credentials: tuple[str, str] | None = None):
-        """Execute pull operation."""
-        try:
-            result = self.service.pull(credentials)
+        """Execute pull off-thread so a slow network never freezes the window (2.2)."""
+        if self._busy:
+            return
+        self._set_busy(True)
+        self._show_toast("Pulling…")
+
+        def work():
+            return self.service.pull(credentials)
+
+        def done(result):
+            self._auth_attempts = 0
+            self._set_busy(False)
             self._show_toast(result)
             self.refresh()
             self._file_monitor_service.emit("git-history-changed")
-        except AuthenticationRequired as e:
-            self._show_credentials_dialog("Pull", e.remote_url, self._do_pull)
-        except Exception as e:
-            self._show_error_dialog("Pull Failed", str(e))
+
+        def err(e):
+            self._set_busy(False)
+            if isinstance(e, AuthenticationRequired):
+                self._retry_with_auth("Pull", e.remote_url, self._do_pull)
+            else:
+                self._show_error_dialog("Pull Failed", str(e))
+
+        run_async(self, worker=work, on_done=done, on_error=err, key="mutate")
 
     def _on_push_clicked(self, button):
         """Handle push button click."""
+        if self._busy:
+            return
+        self._auth_attempts = 0
         self._do_push()
 
     def _do_push(self, credentials: tuple[str, str] | None = None):
-        """Execute push operation."""
-        try:
-            result = self.service.push(credentials)
+        """Execute push off-thread (2.2)."""
+        if self._busy:
+            return
+        self._set_busy(True)
+        self._show_toast("Pushing…")
+
+        def work():
+            return self.service.push(credentials)
+
+        def done(result):
+            self._auth_attempts = 0
+            self._set_busy(False)
             self._show_toast(result)
             self.refresh()  # Update counts
             self._file_monitor_service.emit("git-history-changed")
-        except AuthenticationRequired as e:
-            self._show_credentials_dialog("Push", e.remote_url, self._do_push)
-        except Exception as e:
-            self._show_error_dialog("Push Failed", str(e))
+
+        def err(e):
+            self._set_busy(False)
+            if isinstance(e, AuthenticationRequired):
+                self._retry_with_auth("Push", e.remote_url, self._do_push)
+            else:
+                self._show_error_dialog("Push Failed", str(e))
+
+        run_async(self, worker=work, on_done=done, on_error=err, key="mutate")
+
+    def _retry_with_auth(self, operation: str, remote_url: str, retry_callback):
+        """Prompt for credentials and retry, capped at MAX_AUTH_ATTEMPTS (2.2)."""
+        self._auth_attempts += 1
+        if self._auth_attempts > self.MAX_AUTH_ATTEMPTS:
+            self._auth_attempts = 0
+            self._show_error_dialog(
+                f"{operation} Failed", "Authentication failed after several attempts."
+            )
+            return
+        self._show_credentials_dialog(operation, remote_url, retry_callback)
 
     def _show_credentials_dialog(self, operation: str, remote_url: str, retry_callback):
         """Show dialog to get git credentials."""

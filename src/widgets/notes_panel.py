@@ -2,12 +2,11 @@
 
 import subprocess
 import shutil
-import threading
 from pathlib import Path
 
-from gi.repository import Gtk, Gdk, GLib, GObject, Adw
+from gi.repository import Gtk, Gdk, GObject, Adw
 
-from ..services import SnippetsService, RulesService, ToastService, GitService, FileStatus, FileMonitorService
+from ..services import SnippetsService, RulesService, ToastService, GitService, FileStatus, FileMonitorService, run_async
 from ..services.icon_cache import IconCache
 from ..services.config_path import get_config_dir
 
@@ -325,12 +324,8 @@ class NotesPanel(Gtk.Box):
         loading.set_margin_start(8)
         self.todos_list.append(loading)
 
-        def search_todos():
-            results = self._search_todos()
-            GLib.idle_add(lambda: self._display_todos(results))
-
-        thread = threading.Thread(target=search_todos, daemon=True)
-        thread.start()
+        # run_async adds the liveness guard + generation token the raw thread lacked.
+        run_async(self, worker=self._search_todos, on_done=self._display_todos, key="todos")
 
     def _search_todos(self) -> dict[str, list[tuple[int, str, str]]]:
         """Search for TODOs in code and markdown files."""

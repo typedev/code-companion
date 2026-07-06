@@ -1,6 +1,6 @@
 # Stability & Growth Roadmap (v0.8.x → v1.0)
 
-**Status**: Phase 1 (data safety) code-complete & tested — pending live UI verification; Phase 2 next
+**Status**: Phases 1 (data safety) & 2 (async layer, +3.4 git env) code-complete & tested; Phase 7 (MCP) next
 **Based on**: 4-track reliability audit + worktree architecture research (2026-07-06)
 **Code references**: valid as of commit `ef69c77` — line numbers may drift, symbol names are stable.
 
@@ -96,7 +96,7 @@ Reference implementations already in the codebase (copy these, don't invent):
 - correct liveness guard: `git_changes_panel._apply_refresh` (~324) `hasattr` check.
 
 ### 2.1 `run_async` helper
-- [ ] Create `src/utils/async_runner.py` (or `services/`): `run_async(widget, worker, on_done, on_error=None)`:
+- [x] Create `src/utils/async_runner.py` (or `services/`): `run_async(widget, worker, on_done, on_error=None)`:
   - runs `worker` in a daemon thread, wraps the body in try/except;
   - marshals the result via `GLib.idle_add`;
   - **generation token**: each call site owns a counter; results from superseded calls are dropped;
@@ -105,40 +105,40 @@ Reference implementations already in the codebase (copy these, don't invent):
 - Acceptance: a demo race (two calls, first resolves last) applies only the newest result; destroying the widget mid-flight produces no GTK-CRITICAL.
 
 ### 2.2 Off-thread push/pull (CRITICAL freeze fix)
-- [ ] Defect: `_do_pull`/`_do_push` (`src/widgets/git_changes_panel.py` ~682-708) call `git_service.pull/push` (subprocess with 60 s timeout) synchronously on the UI thread → whole-window freeze on slow network. `has_uncommitted_changes()` (full `repo.status()`) also runs on the UI thread before pull (~655).
+- [x] Defect: `_do_pull`/`_do_push` (`src/widgets/git_changes_panel.py` ~682-708) call `git_service.pull/push` (subprocess with 60 s timeout) synchronously on the UI thread → whole-window freeze on slow network. `has_uncommitted_changes()` (full `repo.status()`) also runs on the UI thread before pull (~655).
 - Fix: run via 2.1; while in flight: spinner inside the Push/Pull button + `set_sensitive(False)` on mutating panel actions; completion → toast (success) or dialog (failure, see 3.5). The `AuthenticationRequired` retry loop must also stay off-thread and gain a retry cap (2-3 attempts, then give up with the dialog).
 - Acceptance: pull against an unreachable remote — UI stays responsive, button spins, error dialog appears after timeout.
 
 ### 2.3 Off-thread stage/unstage/commit/status
-- [ ] Defect: pygit2 index ops and `status()` run in click handlers (`git_changes_panel.py` ~569-650); `index.add_all()`/`write_tree()` walk the whole worktree.
+- [x] Defect: pygit2 index ops and `status()` run in click handlers (`git_changes_panel.py` ~569-650); `index.add_all()`/`write_tree()` walk the whole worktree.
 - Fix: route through 2.1 with the same busy-button pattern. Serialize mutating git ops per panel (a simple in-flight flag: queue or ignore clicks while one runs).
 - Acceptance: staging in a large repo does not stall the window; double-clicking Commit cannot produce two commits.
 
 ### 2.4 Coalesced, generation-guarded changes refresh
-- [ ] Defect: `git_changes_panel.refresh()` (~237-276) spawns an unbounded thread per trigger (2 s poll + monitor signals + every action); stale results overwrite fresh state.
+- [x] Defect: `git_changes_panel.refresh()` (~237-276) spawns an unbounded thread per trigger (2 s poll + monitor signals + every action); stale results overwrite fresh state.
 - Fix: single debounced trigger (150-300 ms) merging poll + monitor + post-action refreshes; generation token so only the newest `_fetch` result renders. Consider dropping the 2 s poll entirely once `FileMonitorService` signals are trusted (keep a slow 30 s fallback poll).
 - Acceptance: `git checkout` of a big branch produces one visible refresh, not a flicker storm; staged/unstaged sections never show pre-action state after an action.
 
 ### 2.5 `UnifiedSearch` correctness
-- [ ] Defect (~183-229): debounce gates scheduling instead of resetting the timer; Enter bypasses debounce; no generation token → old query's results overwrite the new query's; concurrent `rg`/`grep`/`find` subprocesses unbounded; no widget-liveness guard.
+- [x] Defect (~183-229): debounce gates scheduling instead of resetting the timer; Enter bypasses debounce; no generation token → old query's results overwrite the new query's; concurrent `rg`/`grep`/`find` subprocesses unbounded; no widget-liveness guard.
 - Fix: canonical debounce (cancel prior timeout id); generation token checked in `_display_results`; terminate superseded subprocesses (`Popen.kill()`); route through 2.1.
 - Acceptance: type fast then pause — results always match the entry text; no flicker between queries.
 
 ### 2.6 Liveness guards on all remaining idle_add landing points
-- [ ] Audit list: `claude_history_panel.py` `_on_sessions_loaded` (~160), `problems_panel.py` (~197, ~333), `file_tree.py` `_apply_git_status` (~503), `project_manager.py` callbacks (~439, 475, 564, 770), `notes_panel.py` `_display_todos` (~330).
+- [x] Audit list: `claude_history_panel.py` `_on_sessions_loaded` (~160), `problems_panel.py` (~197, ~333), `file_tree.py` `_apply_git_status` (~503), `project_manager.py` callbacks (~439, 475, 564, 770), `notes_panel.py` `_display_todos` (~330).
 - Fix: migrate to 2.1 (preferred) or add the guard inline.
 - Acceptance: closing tabs / switching projects during background loads produces zero GTK-CRITICAL warnings in the console.
 
 ### 2.7 `ProjectStatusService` cache lock
-- [ ] Defect: `_cache` dict + JSON file mutated from worker threads while the main thread reads (`src/services/project_status_service.py` ~149-195 vs `project_manager.py` ~443-484).
+- [x] Defect: `_cache` dict + JSON file mutated from worker threads while the main thread reads (`src/services/project_status_service.py` ~149-195 vs `project_manager.py` ~443-484).
 - Fix: `threading.Lock` around cache read/write and file write (or mutate only via idle_add on the main thread).
 
 ### 2.8 Badge generation tokens
-- [ ] Defect: header badge fetchers (`project_window.py` ~416-460, ~688-708) have liveness guards but no ordering — stale counts can land last.
+- [x] Defect: header badge fetchers (`project_window.py` ~416-460, ~688-708) have liveness guards but no ordering — stale counts can land last.
 - Fix: latest-wins token per badge (comes free with 2.1).
 
 ### 2.9 File-tree refresh coalescing
-- [ ] Defect: `_on_working_tree_changed` (`src/widgets/file_tree.py` ~811) triggers a **full tree rebuild + `git status` subprocess per changed path** (service debounces per-path, so N files → N rebuilds).
+- [x] Defect: `_on_working_tree_changed` (`src/widgets/file_tree.py` ~811) triggers a **full tree rebuild + `git status` subprocess per changed path** (service debounces per-path, so N files → N rebuilds).
 - Fix: single debounce key for tree refresh; one in-flight git status at a time (generation-guarded). Incremental row updates are a stretch goal, not required now.
 - Acceptance: branch switch touching 50 files → one or two rebuilds, not dozens.
 
@@ -164,7 +164,7 @@ Goal: existing git operations become trustworthy; repo states become visible; er
 - Acceptance: discard on a symlink restores the symlink; discard on a CRLF-attributed file preserves CRLF.
 
 ### 3.4 Deterministic git CLI environment
-- [ ] Defect: locale-dependent stderr string matching — "has no upstream branch" retry (`git_service.py` ~407-422), auth-error indicators (`git_auth.py` ~18-26), "Already up to date" (~369) — breaks on non-English systems. `GIT_TERMINAL_PROMPT=0` missing from panel status subprocesses and `get_ahead_behind` → possible hangs on prompt.
+- [x] Defect: locale-dependent stderr string matching — "has no upstream branch" retry (`git_service.py` ~407-422), auth-error indicators (`git_auth.py` ~18-26), "Already up to date" (~369) — breaks on non-English systems. `GIT_TERMINAL_PROMPT=0` missing from panel status subprocesses and `get_ahead_behind` → possible hangs on prompt.
 - Fix: one `build_git_env()` used by every subprocess call: `LC_ALL=C`, `GIT_TERMINAL_PROMPT=0` (+ auth vars when needed). Prefer exit codes / `--porcelain` output over message matching where possible.
 
 ### 3.5 Actionable push/pull failure dialogs

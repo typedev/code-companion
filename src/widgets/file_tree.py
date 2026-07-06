@@ -1,13 +1,13 @@
 """File tree widget for browsing project files."""
 
 import subprocess
-import threading
 from pathlib import Path
 
 import pathspec
 from gi.repository import Adw, Gtk, Gio, GLib, GObject, Pango, Gdk
 
-from ..services import GitService, FileStatus, IconCache, ToastService, SettingsService, FileMonitorService
+from ..services import GitService, FileStatus, IconCache, ToastService, SettingsService, FileMonitorService, run_async
+from ..utils import git_auth
 
 
 # CSS classes for git status colors
@@ -62,6 +62,8 @@ class FileTree(Gtk.Box):
 
         # Flag to skip redundant git status fetch after async load
         self._git_status_fresh = False
+        # Debounce id for coalescing bursty working-tree refreshes (roadmap 2.9)
+        self._refresh_timeout_id = 0
 
         self._build_ui()
         self._setup_css()
@@ -488,21 +490,21 @@ class FileTree(Gtk.Box):
             self._git_status_fresh = False
 
     def _load_git_status_async(self):
-        """Load git status in background thread using git CLI (avoids pygit2 GIL blocking)."""
+        """Load git status off-thread (generation-guarded, one in-flight at a time)."""
         root = str(self.root_path)
+        env = git_auth.build_git_env()
 
         def _fetch():
             try:
                 result = subprocess.run(
                     ["git", "status", "--porcelain", "-z"],
-                    capture_output=True, cwd=root, timeout=30,
+                    capture_output=True, cwd=root, timeout=30, env=env,
                 )
-                status = self._parse_porcelain_status(result.stdout)
+                return self._parse_porcelain_status(result.stdout)
             except Exception:
-                status = {}
-            GLib.idle_add(self._apply_git_status, status)
+                return {}
 
-        threading.Thread(target=_fetch, daemon=True).start()
+        run_async(self, worker=_fetch, on_done=self._apply_git_status, key="git_status")
 
     @staticmethod
     def _parse_porcelain_status(data: bytes) -> dict[str, "FileStatus"]:
@@ -806,7 +808,7 @@ class FileTree(Gtk.Box):
 
     def _on_git_status_changed(self, service):
         """Handle git status changes from monitor service."""
-        self.refresh()
+        self._schedule_refresh()
 
     def _on_working_tree_changed(self, service, path: str):
         """Handle working tree changes from monitor service."""
@@ -814,6 +816,24 @@ class FileTree(Gtk.Box):
         if path.endswith(".gitignore"):
             self._load_ignore_patterns()
 
+        self._schedule_refresh()
+
+    def _schedule_refresh(self):
+        """Coalesce bursty working-tree events into a single rebuild (roadmap 2.9).
+
+        Without this, a branch switch touching N files fires N full tree rebuilds +
+        N git-status subprocesses. Debouncing + the git-status generation token
+        collapses that to one or two.
+        """
+        if self._refresh_timeout_id:
+            GLib.source_remove(self._refresh_timeout_id)
+        self._refresh_timeout_id = GLib.timeout_add(200, self._do_scheduled_refresh)
+
+    def _do_scheduled_refresh(self) -> bool:
+        self._refresh_timeout_id = 0
+        if self.get_root() is None:
+            return False
         self.refresh()
         # Update monitors for newly expanded/collapsed directories
         self._update_monitors()
+        return False

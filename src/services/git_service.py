@@ -317,6 +317,7 @@ class GitService:
                 capture_output=True,
                 text=True,
                 timeout=10,
+                env=git_auth.build_git_env(),
             )
             if result.returncode == 0:
                 parts = result.stdout.strip().split()

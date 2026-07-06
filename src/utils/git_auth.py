@@ -128,6 +128,24 @@ def get_stored_credentials(
     return None
 
 
+def build_git_env(base: dict | None = None) -> dict:
+    """Return a git subprocess environment that is deterministic across locales.
+
+    - ``LC_ALL=C`` so message-string matching (upstream / "Already up to date" /
+      auth-error checks) and any output parsing see stable English output on every
+      machine, not the user's localized git messages.
+    - ``GIT_TERMINAL_PROMPT=0`` so git fails fast with an error instead of blocking
+      the caller on an interactive username/password prompt.
+
+    Every git subprocess in the app should pass ``env=build_git_env()`` (or the
+    auth variant below, which builds on this).
+    """
+    env = dict(base) if base is not None else os.environ.copy()
+    env["LC_ALL"] = "C"
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    return env
+
+
 def build_auth_env(
     remote_url: str,
     credentials: tuple[str, str] | None,
@@ -138,7 +156,7 @@ def build_auth_env(
     Returns ``(env, askpass_script_path)``. ``askpass_script_path`` is the temp
     script path (or None); the caller owns cleanup if it wishes to unlink it.
     """
-    env = os.environ.copy()
+    env = build_git_env()
 
     # If no credentials provided, try to get stored ones (http(s) only — ssh and
     # local/path remotes never use GIT_ASKPASS, and probing the credential helper

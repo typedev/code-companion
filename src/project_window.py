@@ -3,11 +3,11 @@
 import subprocess
 from pathlib import Path
 
-import threading
 from gi.repository import Adw, Gtk, GLib, Gdk, Gio
 
 from .models import Session
-from .services import get_adapter, ProjectLock, ProjectRegistry, GitService, IconCache, ToastService, SettingsService, FileMonitorService, IssuesService
+from .services import get_adapter, ProjectLock, ProjectRegistry, GitService, IconCache, ToastService, SettingsService, FileMonitorService, IssuesService, run_async
+from .utils import git_auth
 from .widgets import SessionView, TerminalView, FileTree, FileEditor, TasksPanel, GitChangesPanel, GitHistoryPanel, DiffView, CommitDetailView, ClaudeHistoryPanel, FileSearchDialog, UnifiedSearch, NotesPanel, PreferencesDialog, SnippetsBar, QueryEditor, ProblemsPanel, ProblemsDetailView, IssuesPanel, IssueDetailView, ImageViewer, SvgEditor, BinaryFileView
 from .utils.text_files import is_binary
 
@@ -420,13 +420,15 @@ class ProjectWindow(Adw.ApplicationWindow):
             return
 
         project_dir = str(self.project_path)
+        env = git_auth.build_git_env()
 
         def _fetch():
             # Use git CLI (subprocess) to avoid pygit2 GIL blocking
+            changes_count, ahead = 0, 0
             try:
                 result = subprocess.run(
                     ["git", "status", "--porcelain", "-z"],
-                    capture_output=True, cwd=project_dir, timeout=30,
+                    capture_output=True, cwd=project_dir, timeout=30, env=env,
                 )
                 # Count non-empty entries
                 entries = [e for e in result.stdout.split(b"\x00") if len(e) >= 3]
@@ -435,20 +437,18 @@ class ProjectWindow(Adw.ApplicationWindow):
                 # Check ahead/behind
                 result2 = subprocess.run(
                     ["git", "rev-list", "--left-right", "--count", "@{upstream}...HEAD"],
-                    capture_output=True, cwd=project_dir, timeout=10,
-                    text=True,
+                    capture_output=True, cwd=project_dir, timeout=10, text=True, env=env,
                 )
-                ahead = 0
                 if result2.returncode == 0 and result2.stdout.strip():
                     parts = result2.stdout.strip().split()
                     if len(parts) == 2:
                         ahead = int(parts[1])
             except Exception:
-                changes_count = 0
-                ahead = 0
-            GLib.idle_add(_apply, changes_count, ahead)
+                pass
+            return (changes_count, ahead)
 
-        def _apply(changes_count, ahead):
+        def _apply(data):
+            changes_count, ahead = data
             if not hasattr(self, "_git_toolbar_btn"):
                 return
             if changes_count > 0:
@@ -458,7 +458,8 @@ class ProjectWindow(Adw.ApplicationWindow):
             else:
                 self._set_button_badge(self._git_toolbar_btn, 0, "red")
 
-        threading.Thread(target=_fetch, daemon=True).start()
+        # Generation token → a stale count can't land after a newer one (roadmap 2.8).
+        run_async(self, worker=_fetch, on_done=_apply, key="git_badge")
 
     def _build_sidebar(self) -> Gtk.Box:
         """Build the sidebar with Files/Git/Claude tabs."""
@@ -696,17 +697,15 @@ class ProjectWindow(Adw.ApplicationWindow):
 
         def _fetch():
             try:
-                count = len(self.issues_service.list_issues("open"))
+                return len(self.issues_service.list_issues("open"))
             except Exception:
-                count = 0
-            GLib.idle_add(_apply, count)
+                return 0
 
         def _apply(count):
             if hasattr(self, "_issues_toolbar_btn"):
                 self._set_button_badge(self._issues_toolbar_btn, count, "blue")
-            return False
 
-        threading.Thread(target=_fetch, daemon=True).start()
+        run_async(self, worker=_fetch, on_done=_apply, key="issues_badge")
 
     def _on_notes_open_file(self, panel, file_path: str):
         """Handle notes panel file open."""
