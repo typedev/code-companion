@@ -18,6 +18,7 @@ from .services.project_status_service import (
 from .services.git_service import AuthenticationRequired
 from .services.issues_service import GitHubError
 from .services.sync_service import SyncService
+from .services.icon_cache import IconCache
 from .models.sync import ProjectSyncStatus, SyncState
 from .utils.relative_time import humanize_relative
 from .widgets.github_auth import show_github_credentials_dialog
@@ -127,19 +128,27 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
         about_button.connect("clicked", self._on_about_clicked)
         header.pack_end(about_button)
 
-        # Refresh button (fetches network status: behind / PR / issue counts)
-        self.refresh_button = Gtk.Button(icon_name="view-refresh-symbolic")
-        self.refresh_button.set_tooltip_text("Refresh git status (fetch, PRs, issues)")
+        # Refresh button (git status: behind / PR / issue counts) — git icon.
+        self.refresh_button = self._icon_button(
+            "git", "view-refresh-symbolic", "Refresh git status (fetch, PRs, issues)"
+        )
         self.refresh_button.connect("clicked", self._on_refresh_clicked)
         header.pack_start(self.refresh_button)
 
-        # Sync button (pull + push Claude history & memory via the sync repo)
-        self.sync_button = Gtk.Button(icon_name="emblem-synchronizing-symbolic")
-        self.sync_button.set_tooltip_text(
-            "Sync Claude history & memory across machines"
+        # Sync button (Claude history & memory across machines) — claude icon.
+        self.sync_button = self._icon_button(
+            "claude",
+            "emblem-synchronizing-symbolic",
+            "Sync Claude history & memory across machines",
         )
         self.sync_button.connect("clicked", self._on_sync_clicked)
         header.pack_start(self.sync_button)
+
+        # Sync options menu (configure / backup mode / restore).
+        self.sync_menu_button = Gtk.MenuButton(icon_name="view-more-symbolic")
+        self.sync_menu_button.set_tooltip_text("Sync options")
+        self.sync_menu_button.set_menu_model(self._build_sync_menu())
+        header.pack_start(self.sync_menu_button)
 
         main_box.append(header)
 
@@ -630,6 +639,160 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
         self.sync_service.settings.set("sync.repo_url", url)
         self.sync_service.settings.set("sync.enabled", True)
         self._on_sync_clicked(None)
+
+    @staticmethod
+    def _icon_button(svg_name: str, fallback_icon: str, tooltip: str) -> Gtk.Button:
+        """Header button using a Material SVG icon (falls back to a themed icon)."""
+        button = Gtk.Button()
+        gicon = IconCache().get_provider_gicon(svg_name)
+        if gicon is not None:
+            image = Gtk.Image.new_from_gicon(gicon)
+            image.set_pixel_size(18)
+            button.set_child(image)
+        else:
+            button.set_icon_name(fallback_icon)
+        button.set_tooltip_text(tooltip)
+        return button
+
+    # ------------------------------------------------------------------
+    # Sync options menu + backup / restore
+    # ------------------------------------------------------------------
+    def _build_sync_menu(self) -> Gio.Menu:
+        group = Gio.SimpleActionGroup()
+
+        configure = Gio.SimpleAction.new("configure", None)
+        configure.connect("activate", lambda *_: self._show_sync_config_dialog())
+        group.add_action(configure)
+
+        backup_on = self.sync_service.settings.get("sync.mode") == "backup"
+        backup = Gio.SimpleAction.new_stateful(
+            "backup_mode", None, GLib.Variant.new_boolean(backup_on)
+        )
+        backup.connect("change-state", self._on_backup_mode_toggle)
+        group.add_action(backup)
+
+        restore = Gio.SimpleAction.new("restore", None)
+        restore.connect("activate", lambda *_: self._on_restore_clicked())
+        group.add_action(restore)
+
+        self.insert_action_group("sync", group)
+
+        menu = Gio.Menu()
+        menu.append("Configure sync…", "sync.configure")
+        menu.append("Backup mode (all projects + registry)", "sync.backup_mode")
+        menu.append("Restore from backup…", "sync.restore")
+        return menu
+
+    def _on_backup_mode_toggle(self, action, value):
+        action.set_state(value)
+        self.sync_service.settings.set(
+            "sync.mode", "backup" if value.get_boolean() else "selected"
+        )
+
+    def _on_restore_clicked(self):
+        """List projects present in the backup but not on this machine, to clone."""
+        if not self.sync_service.is_configured():
+            self._show_info(
+                "Sync not configured",
+                "Configure sync and press Sync first, then try Restore.",
+            )
+            return
+        restorable = self.sync_service.list_restorable(list(self._rows_by_path.keys()))
+        if not restorable:
+            self._show_info(
+                "Nothing to restore",
+                "All backed-up projects are already here. If you just configured "
+                "sync, press Sync first to fetch the backup.",
+            )
+            return
+
+        dialog = Adw.AlertDialog()
+        dialog.set_heading("Restore from Backup")
+        dialog.set_body("Select projects to clone and register on this machine:")
+
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        checks: list[Gtk.CheckButton] = []
+        for entry in restorable:
+            remote = entry.canonical_remote or entry.remote_url or "(no remote — cannot restore)"
+            check = Gtk.CheckButton(label=f"{entry.name}   ·   {remote}")
+            check.set_active(bool(entry.remote_url))
+            check.set_sensitive(bool(entry.remote_url))
+            check.entry = entry
+            box.append(check)
+            checks.append(check)
+        scrolled = Gtk.ScrolledWindow()
+        scrolled.set_min_content_height(220)
+        scrolled.set_child(box)
+        dialog.set_extra_child(scrolled)
+
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("choose", "Choose Folder & Restore")
+        dialog.set_response_appearance("choose", Adw.ResponseAppearance.SUGGESTED)
+        dialog.connect("response", self._on_restore_response, checks)
+        dialog.present(self)
+
+    def _on_restore_response(self, _dialog, response, checks):
+        if response != "choose":
+            return
+        selected = [c.entry for c in checks if c.get_active() and c.entry.remote_url]
+        if not selected:
+            return
+        self._restore_selected = selected
+        file_dialog = Gtk.FileDialog()
+        file_dialog.set_title("Choose a folder to clone the projects into")
+        file_dialog.select_folder(self, None, self._on_restore_folder_chosen)
+
+    def _on_restore_folder_chosen(self, dialog, result):
+        try:
+            folder = dialog.select_folder_finish(result)
+        except GLib.Error:
+            return
+        base = folder.get_path()
+        if base:
+            self._run_restore(self._restore_selected, base)
+
+    def _run_restore(self, entries, base, credentials=None):
+        self.updated_label.set_text("Restoring…")
+
+        def worker():
+            restored = []
+            for entry in entries:
+                try:
+                    path = self.sync_service.restore_project(
+                        entry, base, credentials=credentials
+                    )
+                    restored.append(path)
+                except AuthenticationRequired as exc:
+                    GLib.idle_add(self._on_restore_auth, exc.remote_url, entries, base)
+                    return
+                except Exception as exc:  # noqa: BLE001 — report and continue
+                    print(f"Restore failed for {entry.name}: {exc}")
+            GLib.idle_add(self._on_restore_done, restored)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_restore_auth(self, remote_url, entries, base):
+        show_github_credentials_dialog(
+            self,
+            remote_url,
+            lambda creds: self._run_restore(entries, base, credentials=creds),
+        )
+        return False
+
+    def _on_restore_done(self, restored):
+        self._load_projects()  # pick up the newly registered projects
+        self.updated_label.set_text(f"Restored {len(restored)} project(s)")
+        if restored:
+            # A follow-up sync materializes each restored project's history/memory.
+            self._on_sync_clicked(None)
+        return False
+
+    def _show_info(self, heading: str, body: str):
+        dialog = Adw.AlertDialog()
+        dialog.set_heading(heading)
+        dialog.set_body(body)
+        dialog.add_response("ok", "OK")
+        dialog.present(self)
 
     def _update_latest_refresh_label(self):
         """Show 'Updated <relative>' from the newest cached refresh timestamp."""

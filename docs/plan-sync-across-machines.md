@@ -210,6 +210,6 @@ Package 2–8 as pytest cases sharing one bare remote (HOME swap + fresh singlet
 - [x] **CP3 — SyncRepo + lock + recovery**: `sync_repo.py`, `sync_lock.py`, `sync_recovery.py`. 10 tests against a local bare repo.
 - [x] **CP4 — SyncService orchestration**: `sync_service.py` (steps 0–8, schema guard, status cache, global plans/settings). 4 two-machine HOME-override tests: roundtrip, different-projects-no-clobber, non-destructive same-file conflict, schema guard.
 - [x] **CP5 — Project Manager UI**: Sync button, `_on_sync_clicked` worker + auth-retry dialog, `_render_sync_badges`, cached-status paint, first-run "Configure sync…" dialog. Import-verified; mirrors the proven `_on_refresh_clicked` pattern.
-- [ ] **CP6 — Backup mode** (post-MVP): pending.
+- [x] **CP6 — Backup mode**: `sync.mode="backup"` writes `global/registry.json` (additive union by id, with cloneable remote URL); `list_restorable()` surfaces backed-up projects absent locally; `restore_project()` clones + registers them (then a follow-up Sync materializes their data). UI: sync-options menu (Configure / Backup mode toggle / Restore from backup…) with a folder-picker restore dialog. Header buttons now use the Material **git** and **claude** icons (were near-identical stock symbolic icons). 2 backend tests.
 
-Total: **60 tests passing**, ruff clean. No commits made (awaiting review). pytest added to dev deps; `[tool.pytest.ini_options]` added to pyproject.
+Total: **62 tests passing**, ruff clean. pytest added to dev deps; `[tool.pytest.ini_options]` added to pyproject.

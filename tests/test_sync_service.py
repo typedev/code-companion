@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from src.models.sync import SyncState
+from src.models.sync import BackupEntry, SyncState
 from src.services.settings_service import SettingsService
 from src.services.sync_service import SyncService
 from src.utils.paths import encode_project_path
@@ -201,3 +201,55 @@ def test_schema_guard_refuses_newer_repo(tmp_path):
     resB = fresh_service(homeB, str(bare)).sync([str(projB)])
     assert resB.per_project[str(projB.resolve())].state == SyncState.ERROR
     assert not (claude_proj_dir(homeB, projB) / "memory" / "M.md").exists()
+
+
+# --------------------------------------------------------------------------- #
+# CP6 — backup mode
+# --------------------------------------------------------------------------- #
+
+def test_backup_mode_exports_registry_and_lists_restorable(tmp_path):
+    bare = make_bare(tmp_path)
+    origin = "https://github.com/test/proj.git"
+
+    homeA = tmp_path / "mA"
+    projA = make_project(homeA, "proj", origin)
+    seed_memory(homeA, projA, {"M.md": "factA\n"})
+    svcA = fresh_service(homeA, str(bare))
+    svcA.settings.set("sync.mode", "backup")
+    svcA.sync([str(projA)])
+
+    # Registry manifest is written into the repo.
+    assert read_repo_file(tmp_path, bare, "global/registry.json") is not None
+
+    # Machine B with nothing registered: the project shows up as restorable.
+    homeB = tmp_path / "mB"
+    svcB = fresh_service(homeB, str(bare))
+    svcB.settings.set("sync.mode", "backup")
+    svcB.sync([])  # clones the repo; nothing local
+    restorable = svcB.list_restorable([])
+    assert [e.project_id for e in restorable] == ["github.com_test_proj"]
+    assert restorable[0].name == "proj"
+    assert restorable[0].remote_url == origin
+
+
+def test_restore_project_clones_and_registers(tmp_path):
+    # A real (local bare) project origin we can actually clone.
+    proj_origin = make_bare(tmp_path, "po.git")
+    seed = tmp_path / "seed"
+    git(tmp_path, "clone", "-q", str(proj_origin), str(seed))
+    (seed / "f.txt").write_text("hi\n", encoding="utf-8")
+    git(seed, "add", "-A")
+    git(seed, "commit", "-q", "-m", "init")
+    git(seed, "branch", "-M", "main")
+    git(seed, "push", "-q", "-u", "origin", "main")
+
+    homeB = tmp_path / "mB"
+    svc = fresh_service(homeB, str(make_bare(tmp_path, "sync.git")))
+    entry = BackupEntry(project_id="x", name="My Proj!", remote_url=str(proj_origin))
+    new_path = svc.restore_project(entry, str(homeB / "restored"))
+
+    assert Path(new_path).exists()
+    assert (Path(new_path) / "f.txt").read_text() == "hi\n"
+    from src.services.project_registry import ProjectRegistry
+
+    assert ProjectRegistry().is_registered(new_path)

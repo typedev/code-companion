@@ -55,6 +55,11 @@ def _slug(value: str) -> str:
     return re.sub(r"[^a-z0-9._-]+", "_", value.lower()).strip("_")
 
 
+def origin_url(project_path: str | Path) -> str | None:
+    """Return the raw ``origin`` remote URL (cloneable), or None."""
+    return _run_git(["remote", "get-url", "origin"], Path(project_path))
+
+
 def resolve_project_identity(project_path: str | Path) -> ProjectIdentity | None:
     """Resolve a project's sync identity, or None if it is not syncable."""
     path = Path(project_path)

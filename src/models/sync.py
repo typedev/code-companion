@@ -54,3 +54,19 @@ class FileEntry:
     rel_path: str
     sha256: str
     size: int
+
+
+@dataclass
+class BackupEntry:
+    """A project recorded in the backup registry (for clean-OS restore).
+
+    ``remote_url`` is the raw origin (cloneable); ``canonical_remote`` is the
+    normalized identity. ``source_path`` is where it lived on the machine that
+    wrote the entry (a hint, not authoritative on this machine).
+    """
+
+    project_id: str
+    name: str
+    remote_url: str | None = None
+    canonical_remote: str | None = None
+    source_path: str = ""

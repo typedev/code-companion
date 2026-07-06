@@ -8,12 +8,23 @@ step 0-8 sequence from docs/plan-sync-across-machines.md under a single
 
 import json
 import socket
+import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
-from ..models.sync import SCHEMA_VERSION, ProjectSyncStatus, SyncResult, SyncState
-from ..utils import claude_paths
-from ..utils.project_identity import ProjectIdentity, resolve_project_identity
+from ..models.sync import (
+    SCHEMA_VERSION,
+    BackupEntry,
+    ProjectSyncStatus,
+    SyncResult,
+    SyncState,
+)
+from ..utils import claude_paths, git_auth
+from ..utils.project_identity import (
+    ProjectIdentity,
+    origin_url,
+    resolve_project_identity,
+)
 from . import sync_engine as E
 from .config_path import get_config_dir
 from .git_service import AuthenticationRequired
@@ -24,6 +35,14 @@ from .sync_recovery import recover
 from .sync_repo import RebaseConflict, SyncRepo
 
 _GLOBAL_ID = "__global__"
+
+
+def _safe_dirname(name: str) -> str:
+    """A filesystem-safe folder name for a restored project."""
+    import re
+
+    slug = re.sub(r"[^A-Za-z0-9._-]+", "-", name).strip("-")
+    return slug or "project"
 
 
 class SyncService:
@@ -198,6 +217,10 @@ class SyncService:
 
         # Global layer (plans + settings).
         global_conflicts = self._sync_global(repo, snap_root)
+
+        # Backup mode also records the project registry for clean-OS restore.
+        if self.settings.get("sync.mode") == "backup":
+            self._export_registry(repo, syncable)
 
         # Ensure manifest is present/current.
         self._write_manifest(repo)
@@ -387,6 +410,120 @@ class SyncService:
                 new_base[rel] = hl
         self.state.set_base(_GLOBAL_ID, new_base)
         return conflicts
+
+    # ------------------------------------------------------------------ #
+    # backup mode (registry export + restore)
+    # ------------------------------------------------------------------ #
+
+    def _export_registry(self, repo: SyncRepo, syncable) -> None:
+        """Write global/registry.json — a portable map of all synced projects.
+
+        Additive union by project_id: this machine's entries are updated, other
+        machines' entries are preserved. Enables restoring the project list on a
+        clean OS.
+        """
+        from .project_registry import ProjectRegistry
+
+        reg = ProjectRegistry()
+        path = repo.worktree() / "global" / "registry.json"
+        existing: dict[str, dict] = {}
+        if path.exists():
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+                for e in data.get("projects", []):
+                    if e.get("project_id"):
+                        existing[e["project_id"]] = e
+            except (json.JSONDecodeError, OSError):
+                pass
+        for local_path, ident in syncable:
+            existing[ident.project_id] = {
+                "project_id": ident.project_id,
+                "name": reg.get_name(local_path),
+                "remote_url": origin_url(local_path),
+                "canonical_remote": ident.canonical_remote,
+                "source_path": local_path,
+            }
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {"projects": sorted(existing.values(), key=lambda e: e.get("project_id", ""))}
+        path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+    def backup_manifest(self) -> list[BackupEntry]:
+        """Read the backup registry from the local clone (empty if none)."""
+        path = self.clone_path / "global" / "registry.json"
+        if not path.exists():
+            return []
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return []
+        return [
+            BackupEntry(
+                project_id=e.get("project_id", ""),
+                name=e.get("name", ""),
+                remote_url=e.get("remote_url"),
+                canonical_remote=e.get("canonical_remote"),
+                source_path=e.get("source_path", ""),
+            )
+            for e in data.get("projects", [])
+            if e.get("project_id")
+        ]
+
+    def list_restorable(self, registered_paths: list[str]) -> list[BackupEntry]:
+        """Backup entries whose project is not registered on this machine."""
+        known: set[str] = set()
+        for p in registered_paths:
+            ident = resolve_project_identity(p)
+            if ident:
+                known.add(ident.project_id)
+        return [e for e in self.backup_manifest() if e.project_id not in known]
+
+    def restore_project(
+        self, entry: BackupEntry, base_dir: str, credentials: tuple[str, str] | None = None
+    ) -> str:
+        """Clone a backed-up project's git repo under base_dir and register it.
+
+        Returns the new local path. A subsequent Sync materializes its history
+        and memory. Raises AuthenticationRequired / RuntimeError.
+        """
+        if not entry.remote_url:
+            raise RuntimeError(f"No remote URL recorded for '{entry.name}'")
+        base = Path(base_dir)
+        base.mkdir(parents=True, exist_ok=True)
+        dir_name = _safe_dirname(entry.name or entry.project_id)
+        target = base / dir_name
+        n = 2
+        while target.exists():
+            target = base / f"{dir_name}-{n}"
+            n += 1
+
+        env, askpass = git_auth.build_auth_env(entry.remote_url, credentials, base)
+        try:
+            result = subprocess.run(
+                ["git", "clone", entry.remote_url, str(target)],
+                cwd=str(base),
+                capture_output=True,
+                text=True,
+                timeout=300,
+                env=env,
+            )
+        finally:
+            if askpass:
+                try:
+                    Path(askpass).unlink()
+                except OSError:
+                    pass
+        if result.returncode != 0:
+            error = (result.stderr or result.stdout or "").strip()
+            if git_auth.is_auth_error(error):
+                raise AuthenticationRequired(error, entry.remote_url)
+            raise RuntimeError(error or "Clone failed")
+
+        from .project_registry import ProjectRegistry
+
+        ProjectRegistry().register_project(str(target), entry.name)
+        if credentials:
+            git_auth.store_credentials(entry.remote_url, credentials, target)
+        return str(target)
 
     # ------------------------------------------------------------------ #
     # manifest
