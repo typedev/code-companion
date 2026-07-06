@@ -11,11 +11,17 @@ from gi.repository import Gtk, GtkSource, GLib, GObject, Pango, Adw, Gdk
 from .code_view import get_language_for_file
 from .script_toolbar import ScriptToolbar
 from .markdown_preview import MarkdownPreview
+from .disk_sync import DiskSyncController
 from ..services import ToastService, SettingsService
+from ..utils.atomic_write import atomic_write_text
+from ..utils.text_files import read_text_file
 
 
 class FileEditor(Gtk.Box):
-    """A widget for editing files with syntax highlighting and autosave."""
+    """A widget for editing files with syntax highlighting.
+
+    Saving is explicit (Ctrl+S or the toolbar). There is no autosave.
+    """
 
     __gsignals__ = {
         "modified-changed": (GObject.SignalFlags.RUN_FIRST, None, (bool,)),
@@ -32,18 +38,29 @@ class FileEditor(Gtk.Box):
         self._is_markdown = Path(file_path).suffix.lower() == ".md"
         self._preview_active = False
 
+        # Disk-safety state
+        self._line_ending = "\n"  # detected on load, preserved on save
+        self._load_failed = False  # True if the file couldn't be decoded; blocks save
+
         # Search state
         self._search_context = None
         self._search_settings = None
 
+        # External-change detection (roadmap 1.1/1.2)
+        self._disk_sync = DiskSyncController(self)
+
         self._build_ui()
         self._load_file()
+        self._disk_sync.note_loaded()
         self._setup_search()
 
     def _build_ui(self):
         """Build the editor UI."""
         # Get settings
         self.settings = SettingsService.get_instance()
+
+        # Disk-change banner sits at the very top (roadmap 1.1)
+        self.append(self._disk_sync.banner)
 
         # Script toolbar (for all files - has refresh, save, run/outline for scripts)
         ext = Path(self.file_path).suffix.lower()
@@ -90,7 +107,12 @@ class FileEditor(Gtk.Box):
         self.settings.connect("changed", self._on_setting_changed)
 
         # Connect signals
-        self.buffer.connect("changed", self._on_buffer_changed)
+        # Track the modified flag via "modified-changed", NOT "changed": on the
+        # first edit after a load, "changed" is emitted while get_modified() is
+        # still False (the flag flips just afterwards), so a "changed" handler
+        # would miss the first edit and leave _modified stale — dangerous for
+        # the disk-sync guard, which would then silently reload a dirty buffer.
+        self.buffer.connect("modified-changed", self._on_modified_changed)
 
         # Wrap in scrolled window
         scrolled = Gtk.ScrolledWindow()
@@ -245,7 +267,7 @@ class FileEditor(Gtk.Box):
             self.show_search()
             return True
         elif ctrl and keyval == Gdk.KEY_s:
-            self.save()
+            self.request_save()
             return True
         elif ctrl and keyval == Gdk.KEY_z:
             if shift:
@@ -511,21 +533,50 @@ class FileEditor(Gtk.Box):
     def _load_file(self):
         """Load file content into buffer."""
         try:
-            with open(self.file_path, "r", encoding="utf-8") as f:
-                content = f.read()
-            self.buffer.set_text(content)
-            self.buffer.set_modified(False)
-            self._modified = False
-            # Place cursor at start
-            self.buffer.place_cursor(self.buffer.get_start_iter())
-            # Update outline for Python files
-            self._update_outline()
-        except (OSError, UnicodeDecodeError) as e:
-            self.buffer.set_text(f"Error loading file: {e}")
+            result = read_text_file(self.file_path)
+        except OSError as e:
+            self._set_buffer_text(f"Error loading file: {e}")
+            self._load_failed = True
             self.source_view.set_editable(False)
+            return
 
-    def _on_buffer_changed(self, buffer):
-        """Handle buffer changes."""
+        if not result.ok:
+            # Non-UTF-8 content: never dump raw bytes into an editable buffer.
+            self._set_buffer_text(
+                "This file could not be decoded as UTF-8 and is shown read-only "
+                "to avoid corrupting it on save."
+            )
+            self._load_failed = True
+            self.source_view.set_editable(False)
+            return
+
+        self._load_failed = False
+        self._line_ending = result.line_ending
+        self._set_buffer_text(result.text)
+        self.buffer.set_modified(False)
+        self._modified = False
+        # A successful load always restores editability (a prior failed load
+        # may have disabled it).
+        self.source_view.set_editable(True)
+        # Place cursor at start
+        self.buffer.place_cursor(self.buffer.get_start_iter())
+        # Update outline for Python files
+        self._update_outline()
+
+    def _set_buffer_text(self, text: str):
+        """Replace buffer content without polluting the undo stack.
+
+        Loading/reloading a file is not a user edit, so it must not be undoable
+        (otherwise Ctrl+Z right after opening would wipe the buffer to empty).
+        """
+        self.buffer.begin_irreversible_action()
+        try:
+            self.buffer.set_text(text)
+        finally:
+            self.buffer.end_irreversible_action()
+
+    def _on_modified_changed(self, buffer):
+        """Handle the buffer's modified flag flipping."""
         is_modified = buffer.get_modified()
         if is_modified != self._modified:
             self._modified = is_modified
@@ -534,28 +585,109 @@ class FileEditor(Gtk.Box):
 
     def _on_save_requested(self, toolbar):
         """Handle save request from toolbar."""
-        self.save()
+        self.request_save()
 
-    def save(self) -> bool:
-        """Save the file. Returns True on success."""
+    def _write_now(self) -> bool:
+        """Atomically write the buffer to disk (no conflict check). Returns success."""
+        if self._load_failed:
+            ToastService.show_error("File was not loaded correctly; refusing to save over it.")
+            return False
         try:
             start = self.buffer.get_start_iter()
             end = self.buffer.get_end_iter()
             content = self.buffer.get_text(start, end, True)
 
-            with open(self.file_path, "w", encoding="utf-8") as f:
-                f.write(content)
+            atomic_write_text(self.file_path, content, newline=self._line_ending)
 
             self.buffer.set_modified(False)
             self._modified = False
             self.script_toolbar.set_modified(False)
             self.emit("modified-changed", False)
+            self._disk_sync.note_saved()
             ToastService.show("File saved")
             return True
 
         except OSError as e:
-            ToastService.show_error(f"Error saving file: {e}")
+            self._disk_sync.show_error_banner(f"Could not save '{Path(self.file_path).name}': {e}")
             return False
+
+    def save(self) -> bool:
+        """Synchronous save without the interactive conflict dialog.
+
+        Kept for programmatic callers that need an immediate boolean (save-before-run,
+        Save-As). Interactive and close/rename/delete paths use ``request_save()`` so
+        an external change surfaces a choice first.
+        """
+        return self._write_now()
+
+    def request_save(self, on_result=None):
+        """Save, surfacing a conflict dialog if the file changed on disk (roadmap 1.2).
+
+        ``on_result(success: bool)`` is invoked when the operation settles.
+        Reload / Show Diff / Cancel all abort the save and report ``False``.
+        """
+        def done(ok: bool):
+            if on_result is not None:
+                on_result(ok)
+
+        if self._load_failed:
+            ToastService.show_error("File was not loaded correctly; refusing to save over it.")
+            done(False)
+            return
+
+        if self._disk_sync.has_conflict():
+            self._present_conflict_dialog(done)
+            return
+
+        done(self._write_now())
+
+    def _present_conflict_dialog(self, done):
+        name = Path(self.file_path).name
+        dialog = Adw.AlertDialog()
+        dialog.set_heading("File Changed on Disk")
+        dialog.set_body(
+            f"'{name}' was modified on disk since it was opened here. Overwrite it "
+            "with your version, reload the disk version (losing your edits), or view "
+            "the differences?"
+        )
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("diff", "Show Diff")
+        dialog.add_response("reload", "Reload")
+        dialog.add_response("overwrite", "Overwrite")
+        dialog.set_response_appearance("overwrite", Adw.ResponseAppearance.DESTRUCTIVE)
+        dialog.set_default_response("cancel")
+        dialog.set_close_response("cancel")
+        dialog.connect("response", self._on_conflict_response, done)
+        dialog.present(self.get_root())
+
+    def _on_conflict_response(self, dialog, response, done):
+        if response == "overwrite":
+            done(self._write_now())
+        elif response == "reload":
+            self._disk_sync.reload_from_disk()
+            done(False)
+        elif response == "diff":
+            self._disk_sync.show_diff()
+            done(False)
+        else:
+            done(False)
+
+    def set_file_path(self, new_path: str):
+        """Repoint the editor at a new path after an in-app rename/move (roadmap 1.8).
+
+        Updates the language, toolbar, and re-arms the disk monitor on the new
+        path. Does not touch the modified flag or buffer content.
+        """
+        self.file_path = new_path
+        self._is_markdown = Path(new_path).suffix.lower() == ".md"
+        if hasattr(self, "script_toolbar"):
+            self.script_toolbar.file_path = new_path
+        lang_id = get_language_for_file(new_path)
+        language = None
+        if lang_id:
+            language = GtkSource.LanguageManager.get_default().get_language(lang_id)
+        self.buffer.set_language(language)
+        self._disk_sync.note_loaded()
 
     def undo(self):
         """Undo last change."""

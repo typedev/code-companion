@@ -1,8 +1,10 @@
 # Stability & Growth Roadmap (v0.8.x → v1.0)
 
-**Status**: approved plan, not started
+**Status**: Phase 1 (data safety) code-complete & tested — pending live UI verification; Phase 2 next
 **Based on**: 4-track reliability audit + worktree architecture research (2026-07-06)
 **Code references**: valid as of commit `ef69c77` — line numbers may drift, symbol names are stable.
+
+> **Near-term scope (settled 2026-07-06):** the active track is **Phase 1 → Phase 2 → Phase 7 (MCP)**, in that order (MCP strictly after 1 and 2). **Deferred beyond this horizon:** Phase 6 (worktrees) and Phase 4.4 (merge/conflict-resolution view) — conflicts are resolved via the agent in the terminal, so an in-app merge UI isn't built now. Consequently the merge-specific parts of Phase 3 (3.1 merge-parent guards, 3.6 conflicts UI, 3.9 stash-switch) and MCP 7.6 (worktree tools) are deferred too. **Add-on to Phase 2:** pull in 3.4 (`build_git_env` with `LC_ALL=C` + `GIT_TERMINAL_PROMPT=0`). **MCP v1 scope:** read tools (7.3) + mutating tools (7.4). See the revised version mapping at the bottom.
 
 ## How to use this document (for the implementing agent)
 
@@ -27,7 +29,7 @@
 Goal: eliminate every identified data-loss path. Small in code volume, highest value. No new UI surfaces except one banner and two dialogs.
 
 ### 1.1 External-change detection in `FileEditor`
-- [ ] Defect: `FileEditor` (`src/widgets/file_editor.py`, `__init__` ~line 25) never monitors its own file and is not subscribed to `FileMonitorService`; the service only watches tree-expanded directories. An open file rewritten externally (by Claude Code, `git checkout`, etc.) is silently stale.
+- [x] Defect: `FileEditor` (`src/widgets/file_editor.py`, `__init__` ~line 25) never monitors its own file and is not subscribed to `FileMonitorService`; the service only watches tree-expanded directories. An open file rewritten externally (by Claude Code, `git checkout`, etc.) is silently stale.
 - Fix: on open, record `os.stat` mtime+size and attach a `Gio.FileMonitor` for the file itself (or subscribe to `FileMonitorService` with a per-file filter). On external change:
   - buffer **unmodified** → auto-reload silently + toast "File reloaded from disk".
   - buffer **modified** → show `Adw.Banner` at the top of the editor: "File changed on disk" with buttons **Reload** and **Diff** (Diff opens buffer-vs-disk comparison in the existing reusable diff tab).
@@ -36,27 +38,27 @@ Goal: eliminate every identified data-loss path. Small in code volume, highest v
 - Acceptance: open file → edit it externally → banner appears (dirty buffer) or content auto-reloads (clean buffer). Closing the tab detaches the monitor (no leak, verify with repeated open/close).
 
 ### 1.2 Pre-save conflict guard (mtime check)
-- [ ] Defect: `save()` (`file_editor.py` ~539, `svg_editor.py` ~736) writes blindly. Combined with 1.1's blindness this silently clobbers external edits. Implicit save paths make it worse: tab close (`project_window.py` ~1619), window-close Save All (~1673), rename (~1253), delete (~1339), run-script autosave (`file_editor.py` ~630).
+- [x] Defect: `save()` (`file_editor.py` ~539, `svg_editor.py` ~736) writes blindly. Combined with 1.1's blindness this silently clobbers external edits. Implicit save paths make it worse: tab close (`project_window.py` ~1619), window-close Save All (~1673), rename (~1253), delete (~1339), run-script autosave (`file_editor.py` ~630).
 - Fix: before writing, re-stat the file. If mtime/size differ from last known → `Adw.AlertDialog`: **Overwrite / Reload / Show Diff** (Cancel semantics on Reload/Diff: the save is aborted). Update stored mtime after every successful save/reload.
 - Acceptance: edit in editor + edit externally → Ctrl+S shows the conflict dialog; Overwrite writes; Reload discards buffer with confirmation if dirty.
 
 ### 1.3 Atomic writes
-- [ ] Defect: `open(path, "w")` truncates before writing (`file_editor.py` ~546, `svg_editor.py` ~743, `unified_search.py` `_on_replace_all` ~457). Crash/ENOSPC mid-write destroys the file.
+- [x] Defect: `open(path, "w")` truncates before writing (`file_editor.py` ~546, `svg_editor.py` ~743, `unified_search.py` `_on_replace_all` ~457). Crash/ENOSPC mid-write destroys the file.
 - Fix: shared helper (e.g. `src/utils/atomic_write.py`): write to a temp file in the same directory → `flush` + `os.fsync` → `os.replace(tmp, target)`. Preserve original file mode (`os.stat().st_mode`). Use it for editor save, svg save, and search replace.
 - Acceptance: unit-testable helper; simulated failure (e.g. exception between write and replace) leaves the original file intact.
 
 ### 1.4 Respect `save()` failures in all close flows
-- [ ] Defect: callers discard the boolean: `_on_unsaved_close_response` (`project_window.py` ~1617) closes the tab even if save failed; same for Save All on window close (~1667-1681), rename (~1253), delete (~1339).
+- [x] Defect: callers discard the boolean: `_on_unsaved_close_response` (`project_window.py` ~1617) closes the tab even if save failed; same for Save All on window close (~1667-1681), rename (~1253), delete (~1339).
 - Fix: if `save()` returns False → abort the close/rename/delete, keep the tab open, show a persistent error `Adw.Banner` in the editor with the OS error text (a toast would vanish and leave a mystery open tab).
 - Acceptance: make a file read-only on disk, edit, close tab → "Save" fails → tab stays open with an error banner.
 
 ### 1.5 Undo stack integrity
-- [ ] Defect: `_load_file` (`file_editor.py` ~511) and `reload()` (~329) call `buffer.set_text()` without `begin_not_undoable_action()`. Ctrl+Z right after opening wipes the buffer to empty; undo after reload interleaves corrupt states.
+- [x] Defect: `_load_file` (`file_editor.py` ~511) and `reload()` (~329) call `buffer.set_text()` without `begin_not_undoable_action()`. Ctrl+Z right after opening wipes the buffer to empty; undo after reload interleaves corrupt states.
 - Fix: wrap both `set_text` calls in `begin_not_undoable_action()` / `end_not_undoable_action()`.
 - Acceptance: open file → Ctrl+Z → nothing happens. Reload → Ctrl+Z undoes only user edits made after reload.
 
 ### 1.6 Encoding & line endings
-- [ ] Defect: text-mode IO with default newline translation silently converts CRLF/CR/mixed files to LF on save (`file_editor.py` ~514/546) → spurious full-file git diffs. Non-UTF8 files put "Error loading file:" into the buffer and never restore `editable` on a later successful reload (~523-525). Binary files with unknown extensions route into the editor (`project_window.py` ~1471).
+- [x] Defect: text-mode IO with default newline translation silently converts CRLF/CR/mixed files to LF on save (`file_editor.py` ~514/546) → spurious full-file git diffs. Non-UTF8 files put "Error loading file:" into the buffer and never restore `editable` on a later successful reload (~523-525). Binary files with unknown extensions route into the editor (`project_window.py` ~1471).
 - Fix:
   - Read with `newline=""`; detect dominant line ending; store it on the editor; join with it on save. (Optional later: show ending in a status area.)
   - On successful load always `set_editable(True)`; track a `_load_failed` flag that blocks `save()`.
@@ -64,7 +66,7 @@ Goal: eliminate every identified data-loss path. Small in code volume, highest v
 - Acceptance: CRLF file survives open/edit/save with CRLF intact (`git diff` shows only the edited line). Binary file opens as placeholder, not garbage.
 
 ### 1.7 Safe global Replace All (`UnifiedSearch`)
-- [ ] Defect (`src/widgets/unified_search.py` `_on_replace_all` ~442-464): hardcoded `re.IGNORECASE` substring replace over **whole files** (not just shown matches); locale-default encoding via `read_text()`/`write_text()`; newline translation; non-atomic; synchronous on the UI thread; errors go to `print()`; open editors not notified (a later editor save clobbers the replacement).
+- [x] Defect (`src/widgets/unified_search.py` `_on_replace_all` ~442-464): hardcoded `re.IGNORECASE` substring replace over **whole files** (not just shown matches); locale-default encoding via `read_text()`/`write_text()`; newline translation; non-atomic; synchronous on the UI thread; errors go to `print()`; open editors not notified (a later editor save clobbers the replacement).
 - Fix:
   - Replace only within the match ranges actually found by the search (same case sensitivity the search used).
   - Confirmation `Adw.AlertDialog` before applying: "N replacements in M files" with the file list in `set_extra_child`.
@@ -73,12 +75,12 @@ Goal: eliminate every identified data-loss path. Small in code volume, highest v
 - Acceptance: search "foo", file containing "FOObar" is NOT touched unless the search itself matched it; open+clean editor of a replaced file shows the new content; simulated write error appears in the summary.
 
 ### 1.8 Delete/rename of open files
-- [ ] Defect: deleting a file with unsaved edits pops "Unsaved Changes / Save?" — and Save resurrects the just-deleted file (`project_window.py` `_close_tabs_for_path` ~1227 → `_on_tab_close_requested` ~1545). Rename force-saves to the OLD path before renaming (~1253) without asking. Externally renamed files leave the editor writing to a ghost path (`file_editor.py` stores `file_path` at construction, never updated).
+- [x] Defect: deleting a file with unsaved edits pops "Unsaved Changes / Save?" — and Save resurrects the just-deleted file (`project_window.py` `_close_tabs_for_path` ~1227 → `_on_tab_close_requested` ~1545). Rename force-saves to the OLD path before renaming (~1253) without asking. Externally renamed files leave the editor writing to a ghost path (`file_editor.py` stores `file_path` at construction, never updated).
 - Fix: delete-driven closes force-close (clear modified flag or dedicated force path). Rename updates `editor.file_path` in place instead of save+close. External delete/rename detected via the 1.1 monitor → banner "File was deleted/moved on disk" with Save-As / Close actions.
 - Acceptance: delete an open modified file → tab closes, no dialog, no resurrected file. Rename an open file in-app → same tab, new path, edits intact.
 
 ### 1.9 App-quit guard
-- [ ] Defect: window `close-request` guards unsaved changes, but app-level quit paths (SIGTERM, future Ctrl+Q) bypass it (`src/main.py` has no `do_shutdown` handling). The `FileEditor` docstring claims "autosave" that does not exist (`file_editor.py:18`).
+- [x] Defect: window `close-request` guards unsaved changes, but app-level quit paths (SIGTERM, future Ctrl+Q) bypass it (`src/main.py` has no `do_shutdown` handling). The `FileEditor` docstring claims "autosave" that does not exist (`file_editor.py:18`).
 - Fix: route quit through the same unsaved-changes check; correct the docstring. (Full crash-recovery drafts are out of scope for this phase.)
 - Acceptance: quitting with dirty buffers prompts exactly like window close.
 
@@ -389,11 +391,17 @@ Not planned: a pre-session "checkpoint/rollback" tool — the user's branch-per-
 
 ## Suggested version mapping
 
-- v0.8.1 — Phase 1 (data safety)
-- v0.8.2 — Phase 2 (async layer)
-- v0.8.3 — Phase 3 (git robustness)
-- v0.9 — Phase 4 (git features; packaging can proceed in parallel per the existing roadmap)
-- v0.9.x — Phase 5 (reviewer editor); Phase 8.6 (plan progress) any time
-- v1.0 — Phase 6 (worktrees & parallel agents) + Phase 7 (MCP control surface; can start any time after Phase 2, worktree tools after Phase 6) + Phase 8 (agent observability; 8.1 together with 5.1)
+**Active track (re-prioritized 2026-07-06):**
+- v0.8.1 — **Phase 1** (data safety)
+- v0.8.2 — **Phase 2** (async layer) + **3.4** (deterministic git env) as an add-on
+- v0.8.3 / v0.9 — **Phase 7** (MCP control surface: read tools 7.3 + mutating tools 7.4; **excluding 7.6** worktree tools)
+
+**Deferred (record only, not scheduled):**
+- Phase 3 (git robustness) — non-merge items (3.2 error surfacing, 3.3 restore_file, 3.5 push/pull dialogs, 3.7 credentials, 3.8 diff/status parsing, 3.10 monitor gaps) may be cherry-picked opportunistically; merge-specific items (3.1, 3.6, 3.9) are tied to the deferred merge UI.
+- Phase 4 (git features) — including 4.4 (merge/conflict view), deferred with Phase 6.
+- Phase 5 (reviewer editor); Phase 8 (agent observability); Phase 8.6 (plan progress) any time.
+- Phase 6 (worktrees & parallel agents) — deferred to a later horizon; re-evaluate after the MCP track lands.
+
+The pre-existing v0.8 refactor plan (`docs/plan-code-companion-refactor.md`, HistoryService adapters) remains orthogonal.
 
 The pre-existing v0.8 refactor plan (`docs/plan-code-companion-refactor.md`, HistoryService adapters) is orthogonal; if done first, Phase 5.1/6.3 history changes should target the adapter interface instead of `HistoryService` directly.

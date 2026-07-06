@@ -11,7 +11,10 @@ from gi.repository import Gtk, GtkSource, GLib, GObject, Pango, Adw, Gdk, GdkPix
 from .code_view import get_language_for_file
 from .script_toolbar import ScriptToolbar
 from .image_viewer import PixelImage, _pixbuf_to_cairo_surface, _get_display_scale
+from .disk_sync import DiskSyncController
 from ..services import ToastService, SettingsService
+from ..utils.atomic_write import atomic_write_text
+from ..utils.text_files import read_text_file
 
 
 # Checkerboard CSS for transparency visualization
@@ -42,6 +45,8 @@ class SvgEditor(Gtk.Box):
 
         self.file_path = file_path
         self._modified = False
+        self._line_ending = "\n"  # detected on load, preserved on save
+        self._load_failed = False  # True if the file couldn't be decoded; blocks save
         self._preview_debounce_id = None
         self._last_valid_surface = None  # Cairo ImageSurface for preview
         self._last_valid_pixbuf = None
@@ -52,9 +57,13 @@ class SvgEditor(Gtk.Box):
         self._search_context = None
         self._search_settings = None
 
+        # External-change detection (roadmap 1.1/1.2)
+        self._disk_sync = DiskSyncController(self)
+
         self._setup_css()
         self._build_ui()
         self._load_file()
+        self._disk_sync.note_loaded()
         self._setup_search()
 
     def _setup_css(self):
@@ -70,6 +79,9 @@ class SvgEditor(Gtk.Box):
     def _build_ui(self):
         """Build the editor UI."""
         self.settings = SettingsService.get_instance()
+
+        # Disk-change banner sits at the very top (roadmap 1.1)
+        self.append(self._disk_sync.banner)
 
         # Script toolbar (save + refresh for SVG)
         self.script_toolbar = ScriptToolbar(self.file_path)
@@ -108,6 +120,10 @@ class SvgEditor(Gtk.Box):
 
         self.settings.connect("changed", self._on_setting_changed)
         self.buffer.connect("changed", self._on_buffer_changed)
+        # Modified tracking goes through "modified-changed" (not "changed"), which
+        # carries the correct flag value; "changed" fires before the flag flips on
+        # the first edit. See the note in file_editor.py.
+        self.buffer.connect("modified-changed", self._on_modified_changed)
 
         editor_scrolled = Gtk.ScrolledWindow()
         editor_scrolled.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
@@ -420,7 +436,7 @@ class SvgEditor(Gtk.Box):
             self.show_search()
             return True
         elif ctrl and keyval == Gdk.KEY_s:
-            self.save()
+            self.request_save()
             return True
         elif ctrl and keyval == Gdk.KEY_z:
             if shift:
@@ -620,27 +636,50 @@ class SvgEditor(Gtk.Box):
     def _load_file(self):
         """Load file content into buffer."""
         try:
-            with open(self.file_path, "r", encoding="utf-8") as f:
-                content = f.read()
-            self.buffer.set_text(content)
-            self.buffer.set_modified(False)
-            self._modified = False
-            self.buffer.place_cursor(self.buffer.get_start_iter())
-            # Initial preview
-            self._update_preview()
-        except (OSError, UnicodeDecodeError) as e:
-            self.buffer.set_text(f"Error loading file: {e}")
+            result = read_text_file(self.file_path)
+        except OSError as e:
+            self._set_buffer_text(f"Error loading file: {e}")
+            self._load_failed = True
             self.source_view.set_editable(False)
+            return
 
-    def _on_buffer_changed(self, buffer):
-        """Handle buffer changes."""
+        if not result.ok:
+            self._set_buffer_text(
+                "This file could not be decoded as UTF-8 and is shown read-only "
+                "to avoid corrupting it on save."
+            )
+            self._load_failed = True
+            self.source_view.set_editable(False)
+            return
+
+        self._load_failed = False
+        self._line_ending = result.line_ending
+        self._set_buffer_text(result.text)
+        self.buffer.set_modified(False)
+        self._modified = False
+        self.source_view.set_editable(True)
+        self.buffer.place_cursor(self.buffer.get_start_iter())
+        # Initial preview
+        self._update_preview()
+
+    def _set_buffer_text(self, text: str):
+        """Replace buffer content without polluting the undo stack."""
+        self.buffer.begin_irreversible_action()
+        try:
+            self.buffer.set_text(text)
+        finally:
+            self.buffer.end_irreversible_action()
+
+    def _on_modified_changed(self, buffer):
+        """Handle the buffer's modified flag flipping."""
         is_modified = buffer.get_modified()
         if is_modified != self._modified:
             self._modified = is_modified
             self.script_toolbar.set_modified(is_modified)
             self.emit("modified-changed", is_modified)
 
-        # Debounce preview update
+    def _on_buffer_changed(self, buffer):
+        """Handle buffer content changes (schedule a debounced preview update)."""
         if self._preview_debounce_id:
             GLib.source_remove(self._preview_debounce_id)
         self._preview_debounce_id = GLib.timeout_add(500, self._update_preview)
@@ -731,28 +770,94 @@ class SvgEditor(Gtk.Box):
 
     def _on_save_requested(self, toolbar):
         """Handle save request from toolbar."""
-        self.save()
+        self.request_save()
 
-    def save(self) -> bool:
-        """Save the file. Returns True on success."""
+    def _write_now(self) -> bool:
+        """Atomically write the buffer to disk (no conflict check). Returns success."""
+        if self._load_failed:
+            ToastService.show_error("File was not loaded correctly; refusing to save over it.")
+            return False
         try:
             start = self.buffer.get_start_iter()
             end = self.buffer.get_end_iter()
             content = self.buffer.get_text(start, end, True)
 
-            with open(self.file_path, "w", encoding="utf-8") as f:
-                f.write(content)
+            atomic_write_text(self.file_path, content, newline=self._line_ending)
 
             self.buffer.set_modified(False)
             self._modified = False
             self.script_toolbar.set_modified(False)
             self.emit("modified-changed", False)
+            self._disk_sync.note_saved()
             ToastService.show("File saved")
             return True
 
         except OSError as e:
-            ToastService.show_error(f"Error saving file: {e}")
+            self._disk_sync.show_error_banner(f"Could not save '{Path(self.file_path).name}': {e}")
             return False
+
+    def save(self) -> bool:
+        """Synchronous save without the interactive conflict dialog.
+
+        Interactive and close/rename/delete paths use ``request_save()`` so an
+        external change surfaces a choice first.
+        """
+        return self._write_now()
+
+    def request_save(self, on_result=None):
+        """Save, surfacing a conflict dialog if the file changed on disk (roadmap 1.2)."""
+        def done(ok: bool):
+            if on_result is not None:
+                on_result(ok)
+
+        if self._load_failed:
+            ToastService.show_error("File was not loaded correctly; refusing to save over it.")
+            done(False)
+            return
+
+        if self._disk_sync.has_conflict():
+            self._present_conflict_dialog(done)
+            return
+
+        done(self._write_now())
+
+    def _present_conflict_dialog(self, done):
+        name = Path(self.file_path).name
+        dialog = Adw.AlertDialog()
+        dialog.set_heading("File Changed on Disk")
+        dialog.set_body(
+            f"'{name}' was modified on disk since it was opened here. Overwrite it "
+            "with your version, reload the disk version (losing your edits), or view "
+            "the differences?"
+        )
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("diff", "Show Diff")
+        dialog.add_response("reload", "Reload")
+        dialog.add_response("overwrite", "Overwrite")
+        dialog.set_response_appearance("overwrite", Adw.ResponseAppearance.DESTRUCTIVE)
+        dialog.set_default_response("cancel")
+        dialog.set_close_response("cancel")
+        dialog.connect("response", self._on_conflict_response, done)
+        dialog.present(self.get_root())
+
+    def _on_conflict_response(self, dialog, response, done):
+        if response == "overwrite":
+            done(self._write_now())
+        elif response == "reload":
+            self._disk_sync.reload_from_disk()
+            done(False)
+        elif response == "diff":
+            self._disk_sync.show_diff()
+            done(False)
+        else:
+            done(False)
+
+    def set_file_path(self, new_path: str):
+        """Repoint the editor at a new path after an in-app rename/move (roadmap 1.8)."""
+        self.file_path = new_path
+        if hasattr(self, "script_toolbar"):
+            self.script_toolbar.file_path = new_path
+        self._disk_sync.note_loaded()
 
     def undo(self):
         """Undo last change."""

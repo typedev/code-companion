@@ -27,6 +27,7 @@ from .script_toolbar import ScriptToolbar
 from .markdown_preview import MarkdownPreview
 from .image_viewer import ImageViewer
 from .svg_editor import SvgEditor
+from .binary_file_view import BinaryFileView
 
 __all__ = [
     "MessageRow",
@@ -59,4 +60,5 @@ __all__ = [
     "MarkdownPreview",
     "ImageViewer",
     "SvgEditor",
+    "BinaryFileView",
 ]

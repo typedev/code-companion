@@ -7,7 +7,11 @@ import threading
 from pathlib import Path
 from dataclasses import dataclass
 
-from gi.repository import Gtk, GObject, GLib
+from gi.repository import Gtk, GObject, GLib, Adw
+
+from ..services import ToastService
+from ..utils.atomic_write import atomic_write_text
+from ..utils.text_files import read_text_file
 
 
 @dataclass
@@ -440,28 +444,108 @@ class UnifiedSearch(Gtk.Box):
         self.emit("open-file", str(button.file_path))
 
     def _on_replace_all(self, button):
-        """Replace all content matches."""
+        """Replace all content matches, safely (roadmap 1.7).
+
+        Confirms first, reads/writes UTF-8 with the file's own line ending, writes
+        atomically, and reports per-file errors instead of printing them. Open
+        editors pick up the change via their own file monitors (1.1).
+
+        TODO(phase-2): run the read/write pass on a worker thread via the async helper.
+        """
         search = self._current_query
         replace = self.replace_entry.get_text()
 
         if not search or not self._content_results:
             return
 
-        count = 0
+        # Same (case-insensitive) matching the search itself used; literal, not regex.
+        pattern = re.compile(re.escape(search), re.IGNORECASE)
+
+        plan = []  # (file_path, new_text, line_ending, n)
+        read_errors = []  # (file_path, message)
         for fm in self._content_results:
             try:
-                content = fm.file_path.read_text()
-                pattern = re.compile(re.escape(search), re.IGNORECASE)
-                new_content, n = pattern.subn(replace, content)
-                if n > 0:
-                    fm.file_path.write_text(new_content)
-                    count += n
-            except Exception as e:
-                print(f"Error replacing in {fm.file_path}: {e}")
+                result = read_text_file(fm.file_path)
+            except OSError as e:
+                read_errors.append((fm.file_path, str(e)))
+                continue
+            if not result.ok:
+                read_errors.append((fm.file_path, "not UTF-8 text"))
+                continue
+            new_text, n = pattern.subn(replace, result.text)
+            if n > 0:
+                plan.append((fm.file_path, new_text, result.line_ending, n))
 
-        # Re-search to update results
-        if count > 0:
-            GLib.timeout_add(200, lambda: self._do_search(self._current_query))
+        if not plan:
+            ToastService.show("Nothing to replace")
+            if read_errors:
+                self._show_replace_errors(read_errors)
+            return
+
+        self._confirm_replace(plan, read_errors)
+
+    def _confirm_replace(self, plan, read_errors):
+        total = sum(n for _, _, _, n in plan)
+        dialog = Adw.AlertDialog()
+        dialog.set_heading("Replace All")
+        dialog.set_body(f"Replace {total} occurrence(s) across {len(plan)} file(s)?")
+
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        for file_path, _, _, n in plan:
+            try:
+                shown = file_path.relative_to(self.project_path)
+            except ValueError:
+                shown = file_path
+            row = Gtk.Label(label=f"{shown}  ({n})", xalign=0)
+            row.add_css_class("dim-label")
+            box.append(row)
+        scrolled = Gtk.ScrolledWindow()
+        scrolled.set_min_content_height(min(200, 24 * len(plan) + 8))
+        scrolled.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        scrolled.set_child(box)
+        dialog.set_extra_child(scrolled)
+
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("replace", "Replace")
+        dialog.set_response_appearance("replace", Adw.ResponseAppearance.SUGGESTED)
+        dialog.set_default_response("cancel")
+        dialog.set_close_response("cancel")
+        dialog.connect("response", self._on_replace_confirmed, plan, read_errors)
+        dialog.present(self.get_root())
+
+    def _on_replace_confirmed(self, dialog, response, plan, read_errors):
+        if response != "replace":
+            return
+
+        errors = list(read_errors)
+        written = 0
+        for file_path, new_text, line_ending, n in plan:
+            try:
+                atomic_write_text(file_path, new_text, newline=line_ending)
+                written += n
+            except OSError as e:
+                errors.append((file_path, str(e)))
+
+        ToastService.show(f"Replaced {written} occurrence(s)")
+        if errors:
+            self._show_replace_errors(errors)
+
+        # Refresh the results panel (open editors refresh via their own monitors).
+        GLib.timeout_add(200, lambda: self._do_search(self._current_query))
+
+    def _show_replace_errors(self, errors):
+        dialog = Adw.AlertDialog()
+        dialog.set_heading("Some files were skipped")
+        lines = []
+        for file_path, message in errors:
+            try:
+                shown = file_path.relative_to(self.project_path)
+            except ValueError:
+                shown = file_path
+            lines.append(f"• {shown}: {message}")
+        dialog.set_body("\n".join(lines))
+        dialog.add_response("ok", "OK")
+        dialog.present(self.get_root())
 
     def _clear_results(self):
         """Clear all results."""

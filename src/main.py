@@ -9,7 +9,7 @@ import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 
-from gi.repository import Adw, Gio, GLib
+from gi.repository import Adw, Gio
 
 from .project_manager import ProjectManagerWindow
 from .project_window import ProjectWindow
@@ -24,6 +24,27 @@ class Application(Adw.Application):
             flags=Gio.ApplicationFlags.NON_UNIQUE,
         )
         self.project_path = project_path
+
+    def do_startup(self):
+        """Set up application-wide actions and accelerators."""
+        Adw.Application.do_startup(self)
+
+        quit_action = Gio.SimpleAction.new("quit", None)
+        quit_action.connect("activate", self._on_quit)
+        self.add_action(quit_action)
+        self.set_accels_for_action("app.quit", ["<Control>q"])
+
+    def _on_quit(self, action, param):
+        """Quit via the active window's close path so the unsaved-changes guard runs.
+
+        Closing the window triggers ProjectWindow's close-request handler, which
+        prompts for unsaved editors instead of quitting straight through them.
+        """
+        win = self.get_active_window()
+        if win is not None:
+            win.close()
+        else:
+            self.quit()
 
     def do_activate(self):
         """Called when the application is activated."""

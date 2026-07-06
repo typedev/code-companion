@@ -8,7 +8,8 @@ from gi.repository import Adw, Gtk, GLib, Gdk, Gio
 
 from .models import Session
 from .services import get_adapter, ProjectLock, ProjectRegistry, GitService, IconCache, ToastService, SettingsService, FileMonitorService, IssuesService
-from .widgets import SessionView, TerminalView, FileTree, FileEditor, TasksPanel, GitChangesPanel, GitHistoryPanel, DiffView, CommitDetailView, ClaudeHistoryPanel, FileSearchDialog, UnifiedSearch, NotesPanel, PreferencesDialog, SnippetsBar, QueryEditor, ProblemsPanel, ProblemsDetailView, IssuesPanel, IssueDetailView, ImageViewer, SvgEditor
+from .widgets import SessionView, TerminalView, FileTree, FileEditor, TasksPanel, GitChangesPanel, GitHistoryPanel, DiffView, CommitDetailView, ClaudeHistoryPanel, FileSearchDialog, UnifiedSearch, NotesPanel, PreferencesDialog, SnippetsBar, QueryEditor, ProblemsPanel, ProblemsDetailView, IssuesPanel, IssueDetailView, ImageViewer, SvgEditor, BinaryFileView
+from .utils.text_files import is_binary
 
 
 def escape_markup(text: str) -> str:
@@ -880,6 +881,7 @@ class ProjectWindow(Adw.ApplicationWindow):
         self.tab_view = Adw.TabView()
         self.tab_view.set_vexpand(True)
         self.tab_view.connect("close-page", self._on_tab_close_requested)
+        self.tab_view.connect("page-detached", self._on_page_detached)
         box.append(self.tab_view)
 
         # Connect tab bar to tab view
@@ -1218,44 +1220,57 @@ class ProjectWindow(Adw.ApplicationWindow):
                 path.unlink()
                 ToastService.show(f"Deleted: {path.name}")
 
-            # Close any tabs with the deleted file
-            self._close_tabs_for_path(path)
+            # Close any tabs with the deleted file (without a save prompt)
+            self._force_close_tabs_for_path(path)
 
         except OSError as e:
             ToastService.show_error(f"Failed to delete: {e}")
 
-    def _close_tabs_for_path(self, deleted_path: Path):
-        """Close any tabs that reference the deleted path."""
+    def _force_close_tabs_for_path(self, target_path: Path):
+        """Close tabs referencing target_path WITHOUT prompting to save (roadmap 1.8).
+
+        Clearing the modified flag first prevents the tab-close handler from popping
+        a 'Save?' dialog that would recreate the just-deleted file.
+        """
         pages_to_close = []
         for i in range(self.tab_view.get_n_pages()):
             page = self.tab_view.get_nth_page(i)
             child = page.get_child()
             if hasattr(child, "file_path"):
                 child_path = Path(child.file_path)
-                # Check if the file is the deleted path or inside deleted folder
-                if child_path == deleted_path or deleted_path in child_path.parents:
-                    pages_to_close.append(page)
-
-        for page in pages_to_close:
-            self.tab_view.close_page(page)
-
-    def _save_and_close_tabs_for_path(self, target_path: Path):
-        """Save and close any tabs that reference the target path."""
-        pages_to_close = []
-        for i in range(self.tab_view.get_n_pages()):
-            page = self.tab_view.get_nth_page(i)
-            child = page.get_child()
-            if hasattr(child, "file_path"):
-                child_path = Path(child.file_path)
-                # Check if the file is the target path or inside target folder
                 if child_path == target_path or target_path in child_path.parents:
-                    # Save if modified
-                    if isinstance(child, (FileEditor, SvgEditor)) and child._modified:
-                        child.save()
+                    if isinstance(child, (FileEditor, SvgEditor)):
+                        child._modified = False
+                        child.buffer.set_modified(False)
                     pages_to_close.append(page)
 
         for page in pages_to_close:
             self.tab_view.close_page(page)
+
+    def _repoint_tabs(self, old_path: Path, new_path: Path):
+        """Repoint open tabs from old_path to new_path in place after a rename (roadmap 1.8)."""
+        for i in range(self.tab_view.get_n_pages()):
+            page = self.tab_view.get_nth_page(i)
+            child = page.get_child()
+            if not hasattr(child, "file_path"):
+                continue
+            child_path = Path(child.file_path)
+            if child_path == old_path:
+                new_child = new_path
+            elif old_path in child_path.parents:
+                new_child = new_path / child_path.relative_to(old_path)
+            else:
+                continue
+
+            if hasattr(child, "set_file_path"):
+                child.set_file_path(str(new_child))
+            else:
+                child.file_path = str(new_child)  # ImageViewer / BinaryFileView
+
+            page.set_title(new_child.name)
+            page.set_tooltip(str(new_child))
+            gicon = IconCache().get_file_gicon(new_child)
+            page.set_icon(gicon or Gio.ThemedIcon.new("text-x-generic-symbolic"))
 
     def _on_rename_requested(self, file_tree, old_path_str: str, new_name: str):
         """Handle rename request from file tree."""
@@ -1267,16 +1282,16 @@ class ProjectWindow(Adw.ApplicationWindow):
             ToastService.show_error(f"'{new_name}' already exists")
             return
 
-        # Save and close affected tabs
-        self._save_and_close_tabs_for_path(old_path)
-
-        # Perform rename
+        # Rename on disk first, then repoint any open tabs in place (keeping edits).
         try:
             old_path.rename(new_path)
-            item_type = "Folder" if new_path.is_dir() else "File"
-            ToastService.show(f"{item_type} renamed to '{new_name}'")
         except OSError as e:
             ToastService.show_error(f"Failed to rename: {e}")
+            return
+
+        self._repoint_tabs(old_path, new_path)
+        item_type = "Folder" if new_path.is_dir() else "File"
+        ToastService.show(f"{item_type} renamed to '{new_name}'")
 
     def _on_delete_requested(self, file_tree, paths: list):
         """Handle delete request from file tree (via context menu or Delete key)."""
@@ -1335,8 +1350,8 @@ class ProjectWindow(Adw.ApplicationWindow):
 
         for path in paths:
             try:
-                # Save and close tabs first
-                self._save_and_close_tabs_for_path(path)
+                # Force-close tabs first (no save prompt → no file resurrection)
+                self._force_close_tabs_for_path(path)
 
                 if path.is_dir():
                     shutil.rmtree(path)
@@ -1477,6 +1492,8 @@ class ProjectWindow(Adw.ApplicationWindow):
             elif ext == ".svg":
                 widget = SvgEditor(file_path)
                 widget.connect("modified-changed", self._on_editor_modified_changed)
+            elif is_binary(file_path):
+                widget = BinaryFileView(file_path)
             else:
                 widget = FileEditor(file_path)
                 widget.connect("modified-changed", self._on_editor_modified_changed)
@@ -1541,6 +1558,24 @@ class ProjectWindow(Adw.ApplicationWindow):
 
         # Run command after terminal is ready
         GLib.timeout_add(100, lambda: terminal.run_command(command) or False)
+
+    def _on_page_detached(self, tab_view, page, position):
+        """Dispose editor disk monitors when their tab is removed (no leak)."""
+        child = page.get_child()
+        disk_sync = getattr(child, "_disk_sync", None)
+        if disk_sync is not None:
+            disk_sync.dispose()
+
+    def open_text_diff(self, file_path: str, old_text: str, new_text: str, title: str):
+        """Open a read-only diff of two in-memory texts in a reusable tab.
+
+        Used by the editor's disk-change banner to show buffer-vs-disk (roadmap 1.1).
+        """
+        diff_view = DiffView(old_text, new_text, file_path=file_path)
+        page = self.tab_view.append(diff_view)
+        page.set_title(title)
+        page.set_icon(Gio.ThemedIcon.new("emblem-documents-symbolic"))
+        self.tab_view.set_selected_page(page)
 
     def _on_tab_close_requested(self, tab_view, page) -> bool:
         """Handle tab close request."""
@@ -1611,16 +1646,16 @@ class ProjectWindow(Adw.ApplicationWindow):
 
     def _on_unsaved_close_response(self, dialog, response, page, editor):
         """Handle unsaved file close dialog response."""
-        if response == "cancel":
-            # User cancelled - don't close
-            return
-        elif response == "save":
-            # Save then close
-            editor.save()
-            self.tab_view.close_page_finish(page, True)
+        if response == "save":
+            # Save, then close ONLY if the save actually succeeded (roadmap 1.4).
+            # request_save may surface a conflict dialog; the tab stays open on
+            # failure/cancel (a save-failure banner is shown by the editor).
+            editor.request_save(lambda ok: self.tab_view.close_page_finish(page, ok))
         elif response == "discard":
             # Discard changes and close
             self.tab_view.close_page_finish(page, True)
+        else:  # cancel
+            self.tab_view.close_page_finish(page, False)
 
     def _on_claude_close_response(self, dialog, response, page):
         """Handle Claude close dialog response."""
@@ -1669,16 +1704,30 @@ class ProjectWindow(Adw.ApplicationWindow):
         if response == "cancel":
             return
         elif response == "save":
-            # Save all files then close
-            for _, editor in unsaved_files:
-                editor.save()
-            self.close()
+            # Save all, close ONLY if every save succeeded (roadmap 1.4).
+            self._save_all_then_close(unsaved_files)
         elif response == "discard":
             # Mark files as not modified to prevent dialogs on close
             for _, editor in unsaved_files:
                 editor._modified = False
                 editor.buffer.set_modified(False)
             self.close()
+
+    def _save_all_then_close(self, unsaved_files):
+        """Save every unsaved editor; close the window only if all succeed."""
+        state = {"pending": len(unsaved_files), "all_ok": True}
+
+        def one_done(ok: bool):
+            state["pending"] -= 1
+            if not ok:
+                state["all_ok"] = False
+            if state["pending"] == 0 and state["all_ok"]:
+                self.close()
+            # On any failure the window stays open; the failing editor(s) show a
+            # save-error banner so the tab isn't a silent mystery.
+
+        for _, editor in unsaved_files:
+            editor.request_save(one_done)
 
     def _on_destroy(self, window):
         """Clean up on window destroy."""
