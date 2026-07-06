@@ -1,14 +1,14 @@
 """Git service using pygit2 for repository operations."""
 
-import os
 import subprocess
-import urllib.parse
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
 
 import pygit2
+
+from ..utils import git_auth
 
 
 class AuthenticationRequired(Exception):
@@ -871,124 +871,26 @@ class GitService:
             return ""
 
     # --- Authentication helpers ---
+    #
+    # The actual implementation lives in src/utils/git_auth.py so the sync repo
+    # wrapper can reuse it. These thin wrappers preserve the original signatures.
 
     def _is_auth_error(self, error: str) -> bool:
         """Check if error message indicates authentication failure."""
-        auth_indicators = [
-            "could not read Username",
-            "could not read Password",
-            "Authentication failed",
-            "Invalid username or password",
-            "fatal: Authentication failed",
-            "Permission denied",
-            "remote: Invalid username or password",
-        ]
-        return any(indicator in error for indicator in auth_indicators)
+        return git_auth.is_auth_error(error)
 
     def _get_stored_credentials(self, remote_url: str) -> tuple[str, str] | None:
-        """Try to get stored credentials from git credential helper.
-
-        Returns (username, password) tuple if found, None otherwise.
-        """
-        try:
-            parsed = urllib.parse.urlparse(remote_url)
-            protocol = parsed.scheme or "https"
-            host = parsed.hostname or ""
-
-            credential_input = f"protocol={protocol}\nhost={host}\n\n"
-
-            # Use credential.helper=store explicitly to match _store_credentials
-            result = subprocess.run(
-                ["git", "-c", "credential.helper=store", "credential", "fill"],
-                input=credential_input,
-                cwd=str(self.repo_path),
-                capture_output=True,
-                text=True,
-                timeout=5,
-            )
-
-            if result.returncode == 0:
-                # Parse output
-                username = None
-                password = None
-                for line in result.stdout.strip().split("\n"):
-                    if line.startswith("username="):
-                        username = line[9:]
-                    elif line.startswith("password="):
-                        password = line[9:]
-
-                if username and password:
-                    return (username, password)
-
-        except (subprocess.TimeoutExpired, FileNotFoundError, Exception):
-            pass
-
-        return None
+        """Try to get stored credentials from git credential helper."""
+        return git_auth.get_stored_credentials(remote_url, self.repo_path)
 
     def _get_auth_env(self, remote_url: str, credentials: tuple[str, str] | None) -> dict:
         """Get environment dict with GIT_ASKPASS for credentials."""
-        env = os.environ.copy()
-
-        # If no credentials provided, try to get stored ones
-        if not credentials:
-            credentials = self._get_stored_credentials(remote_url)
-
-        if credentials:
-            username, password = credentials
-            # Pass credentials via environment variables (safer than embedding in script)
-            env["GIT_USERNAME"] = username
-            env["GIT_PASSWORD"] = password
-
-            # Create askpass script that reads from environment
-            askpass_script = '''#!/bin/bash
-if [[ "$1" == *"Username"* ]] || [[ "$1" == *"username"* ]]; then
-    echo "$GIT_USERNAME"
-elif [[ "$1" == *"Password"* ]] || [[ "$1" == *"password"* ]]; then
-    echo "$GIT_PASSWORD"
-fi
-'''
-            # Write temporary script
-            import tempfile
-            fd, path = tempfile.mkstemp(prefix="git_askpass_", suffix=".sh")
-            try:
-                os.write(fd, askpass_script.encode())
-                os.close(fd)
-                os.chmod(path, 0o700)
-                env["GIT_ASKPASS"] = path
-                env["GIT_TERMINAL_PROMPT"] = "0"
-                # Store path for cleanup
-                self._askpass_script = path
-            except Exception:
-                pass
-        else:
-            # Disable terminal prompts to trigger auth error
-            env["GIT_TERMINAL_PROMPT"] = "0"
-
+        env, askpass_path = git_auth.build_auth_env(remote_url, credentials, self.repo_path)
+        if askpass_path:
+            # Store path for cleanup (preserves prior behaviour).
+            self._askpass_script = askpass_path
         return env
 
     def _store_credentials(self, remote_url: str, credentials: tuple[str, str]):
         """Store credentials using git credential helper."""
-        username, password = credentials
-
-        # Parse the URL to get protocol and host
-        try:
-            from urllib.parse import urlparse
-            parsed = urlparse(remote_url)
-            protocol = parsed.scheme or "https"
-            host = parsed.hostname or ""
-
-            # Format for git credential
-            credential_input = f"protocol={protocol}\nhost={host}\nusername={username}\npassword={password}\n\n"
-
-            # Use git credential-store directly (more reliable than approve)
-            # This stores credentials in ~/.git-credentials
-            subprocess.run(
-                ["git", "-c", "credential.helper=store", "credential", "approve"],
-                input=credential_input,
-                cwd=str(self.repo_path),
-                capture_output=True,
-                text=True,
-                timeout=5,
-            )
-        except Exception:
-            pass  # Silently fail - credentials will just not be stored
+        git_auth.store_credentials(remote_url, credentials, self.repo_path)

@@ -33,6 +33,19 @@ DEFAULT_SETTINGS = {
         "y": None,
         "maximized": False,
     },
+    "sync": {
+        "enabled": False,
+        "repo_url": "https://github.com/typedev/code-companion-sync",
+        "last_good_commit": "",
+        "mode": "selected",  # "selected" (MVP) | "backup" (post-MVP)
+        # Whitelist of ~/.claude.json project fields to sync. "hasTrustDialogAccepted"
+        # is intentionally excluded (syncing it would auto-trust on the other machine).
+        "claude_json_fields": [
+            "allowedTools",
+            "mcpServers",
+            "enabledMcpjsonServers",
+        ],
+    },
 }
 
 

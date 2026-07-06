@@ -21,5 +21,10 @@ code-companion = "src.main:main"
 [dependency-groups]
 dev = [
     "mypy>=1.19.0",
+    "pytest>=9.1.1",
     "ruff>=0.14.9",
 ]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]

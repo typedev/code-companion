@@ -17,6 +17,8 @@ from .services.project_status_service import (
 )
 from .services.git_service import AuthenticationRequired
 from .services.issues_service import GitHubError
+from .services.sync_service import SyncService
+from .models.sync import ProjectSyncStatus, SyncState
 from .utils.relative_time import humanize_relative
 from .widgets.github_auth import show_github_credentials_dialog
 from .version import __version__, get_version_info
@@ -51,6 +53,9 @@ _BADGE_CSS = b"""
 .cc-badge-pr     { background: alpha(#2ec27e, 0.18); color: #26a269; }
 .cc-badge-issue  { background: alpha(@accent_color, 0.20); color: @accent_color; }
 .cc-badge-local  { background: alpha(@theme_fg_color, 0.10); color: alpha(@theme_fg_color, 0.55); }
+.cc-badge-synced   { background: alpha(#33d17a, 0.18); color: #26a269; }
+.cc-badge-conflict { background: alpha(#e01b24, 0.22); color: #c01c28; }
+.cc-badge-syncoff  { background: alpha(@theme_fg_color, 0.10); color: alpha(@theme_fg_color, 0.55); }
 """
 
 
@@ -62,12 +67,14 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
 
         self.registry = ProjectRegistry()
         self.status_service = ProjectStatusService.get_instance()
+        self.sync_service = SyncService.get_instance()
         self._manager_lock = ManagerLock()
         self._manager_lock.acquire()
 
         # Maps resolved project path -> its ListBoxRow, for async status updates.
         self._rows_by_path: dict[str, Adw.ActionRow] = {}
         self._refreshing = False
+        self._syncing = False
         self._query = ""
 
         self._setup_css()
@@ -125,6 +132,14 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
         self.refresh_button.set_tooltip_text("Refresh git status (fetch, PRs, issues)")
         self.refresh_button.connect("clicked", self._on_refresh_clicked)
         header.pack_start(self.refresh_button)
+
+        # Sync button (pull + push Claude history & memory via the sync repo)
+        self.sync_button = Gtk.Button(icon_name="emblem-synchronizing-symbolic")
+        self.sync_button.set_tooltip_text(
+            "Sync Claude history & memory across machines"
+        )
+        self.sync_button.connect("clicked", self._on_sync_clicked)
+        header.pack_start(self.sync_button)
 
         main_box.append(header)
 
@@ -291,6 +306,7 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
         row.badges_box = badges
         row.local_badges = None
         row.remote_badges = None
+        row.sync_badges = None
         hbox.append(badges)
 
         rename_button = Gtk.Button(icon_name="document-edit-symbolic")
@@ -420,6 +436,10 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
         row = self._rows_by_path.get(resolved_path)
         if row is not None:
             self._render_local_badges(row, status)
+            # Paint the last known sync status instantly (before any Sync run).
+            cached = self.sync_service.get_cached_status(resolved_path)
+            if cached is not None:
+                self._render_sync_badges(row, cached)
         return False
 
     # ------------------------------------------------------------------
@@ -475,6 +495,141 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
         self.refresh_spinner.stop()
         self._update_latest_refresh_label()
         return False
+
+    # ------------------------------------------------------------------
+    # Cross-machine sync
+    # ------------------------------------------------------------------
+    def _render_sync_badges(self, row, status: ProjectSyncStatus):
+        """(Re)render the single sync-state badge on a row (appended last)."""
+        for badge in getattr(row, "sync_badges", None) or []:
+            row.badges_box.remove(badge)
+
+        badge = None
+        state = status.state
+        if state == SyncState.SYNCED:
+            badge = self._make_badge(
+                "cc-badge-synced", "In sync", icon_name="emblem-ok-symbolic"
+            )
+        elif state == SyncState.AHEAD:
+            badge = self._make_badge(
+                "cc-badge-ahead", status.detail or "Pushed to sync", text="⇧ sync"
+            )
+        elif state == SyncState.BEHIND:
+            badge = self._make_badge(
+                "cc-badge-behind", status.detail or "Updated from sync", text="⇩ sync"
+            )
+        elif state == SyncState.CONFLICT:
+            tip = "Sync conflict"
+            if status.conflict_files:
+                tip += ": " + ", ".join(status.conflict_files)
+            badge = self._make_badge("cc-badge-conflict", tip, text="conflict")
+        elif state == SyncState.ERROR:
+            badge = self._make_badge(
+                "cc-badge-conflict", status.detail or "Sync error", text="sync ✕"
+            )
+        elif state == SyncState.PAUSED:
+            badge = self._make_badge("cc-badge-syncoff", "Sync busy on another instance", text="paused")
+        # NOT_CONFIGURED / SYNCING render nothing to keep the row uncluttered.
+
+        badges = [badge] if badge is not None else []
+        for b in badges:
+            row.badges_box.append(b)
+        row.sync_badges = badges
+
+    def _on_sync_clicked(self, _button, credentials: tuple[str, str] | None = None):
+        """Run a bidirectional sync of all registered projects."""
+        if self._syncing:
+            return
+        if not self.sync_service.is_configured():
+            self._show_sync_config_dialog()
+            return
+
+        paths = list(self._rows_by_path.keys())
+        self._syncing = True
+        self.sync_button.set_sensitive(False)
+        self.refresh_spinner.start()
+        self.updated_label.set_text("Syncing…")
+
+        def worker():
+            def progress(status: ProjectSyncStatus):
+                GLib.idle_add(self._apply_sync_status, status)
+
+            try:
+                result = self.sync_service.sync(
+                    paths, credentials=credentials, progress=progress
+                )
+                GLib.idle_add(self._on_sync_done, result)
+            except AuthenticationRequired as exc:
+                GLib.idle_add(self._on_sync_auth_required, exc.remote_url)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _apply_sync_status(self, status: ProjectSyncStatus):
+        row = self._rows_by_path.get(status.local_path)
+        if row is not None:
+            self._render_sync_badges(row, status)
+        return False
+
+    def _on_sync_auth_required(self, remote_url: str):
+        """Prompt for credentials, then retry the whole sync."""
+        self._syncing = False
+        self.sync_button.set_sensitive(True)
+        self.refresh_spinner.stop()
+        show_github_credentials_dialog(self, remote_url, self._retry_sync_with_credentials)
+        return False
+
+    def _retry_sync_with_credentials(self, credentials: tuple[str, str]):
+        self._on_sync_clicked(None, credentials=credentials)
+
+    def _on_sync_done(self, result):
+        self._syncing = False
+        self.sync_button.set_sensitive(True)
+        self.refresh_spinner.stop()
+        if result.error == "busy":
+            self.updated_label.set_text("Sync busy on another instance")
+        elif result.error:
+            self.updated_label.set_text("Sync failed")
+        else:
+            n = len(result.per_project)
+            conflicts = sum(
+                1 for s in result.per_project.values() if s.state == SyncState.CONFLICT
+            )
+            msg = f"Synced {n} project(s)"
+            if conflicts:
+                msg += f" · {conflicts} conflict(s)"
+            self.updated_label.set_text(msg)
+        return False
+
+    def _show_sync_config_dialog(self):
+        """First-run dialog to set the sync repo URL and enable sync."""
+        dialog = Adw.AlertDialog()
+        dialog.set_heading("Configure Sync")
+        dialog.set_body(
+            "Private git repository used to sync Claude history & memory "
+            "between your machines:"
+        )
+        entry = Gtk.Entry()
+        entry.set_text(self.sync_service.settings.get("sync.repo_url", ""))
+        entry.set_activates_default(True)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        box.append(entry)
+        dialog.set_extra_child(box)
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("enable", "Enable & Sync")
+        dialog.set_response_appearance("enable", Adw.ResponseAppearance.SUGGESTED)
+        dialog.set_default_response("enable")
+        dialog.connect("response", self._on_sync_config_response, entry)
+        dialog.present(self)
+
+    def _on_sync_config_response(self, _dialog, response, entry):
+        if response != "enable":
+            return
+        url = entry.get_text().strip()
+        if not url:
+            return
+        self.sync_service.settings.set("sync.repo_url", url)
+        self.sync_service.settings.set("sync.enabled", True)
+        self._on_sync_clicked(None)
 
     def _update_latest_refresh_label(self):
         """Show 'Updated <relative>' from the newest cached refresh timestamp."""
