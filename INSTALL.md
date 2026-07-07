@@ -54,6 +54,11 @@ sudo pacman -S cage grim wlr-randr ydotool
 - `ydotool` — coordinate-level input injection fallback (needs `/dev/uinput`
   access: add your user to the `input` group + a udev rule, and run `ydotoold`)
 
+The semantic layer (read the widget tree, click/type by role+name) also needs the
+**AT-SPI** stack — `at-spi2-core` (`at-spi-bus-launcher` + `at-spi2-registryd`) and the
+`Atspi` GObject-introspection binding. These ship with the GTK4 stack, so they are
+already pulled in by the app's base dependencies; no separate install is required.
+
 The `install.sh` script installs these automatically (non-fatally) when available.
 
 ---

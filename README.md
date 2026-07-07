@@ -107,7 +107,8 @@ lets the assistant launch, drive and screenshot another project's GTK/Qt GUI in
 an isolated headless Wayland compositor. Not required to run the app. Install via
 `sudo dnf install cage grim wlr-randr ydotool` (Fedora) / `sudo apt install cage
 grim wlr-randr ydotool` (Ubuntu/Debian, from repos not Snap) / `sudo pacman -S
-cage grim wlr-randr ydotool` (Arch). See
+cage grim wlr-randr ydotool` (Arch). The semantic tree/click layer also uses the
+AT-SPI stack (`at-spi2-core` + the `Atspi` binding), which ships with GTK4. See
 [INSTALL.md](INSTALL.md#optional-native-gui-test-harness).
 
 ### Python Setup
