@@ -1,9 +1,11 @@
 # MCP Integration & Native GUI Test Harness — Implementation Plan
 
-**Status**: **Part A COMPLETE** — A1 ✅, A2 ✅ (incl. the `mcp.enabled` Preferences
-toggle), A3 ✅ (8 read/present tools), A4 ✅ (3 mutating tools), A5 ✅ (`/refresh`
-endpoint + documented PostToolUse hook). 133 tests. Next: **Part B** (native GUI test
-harness). (Updated 2026-07-07.)
+**Status**: **Part A COMPLETE** (A1–A5, incl. `mcp.enabled` Preferences toggle) and
+**Part B core COMPLETE** — the GUI test harness now does launch / screenshot /
+snapshot_tree / click / type / do_action / stop against a headless cage compositor
+(18 MCP tools total, 166 tests, verified end-to-end). Remaining: the `ydotool`
+coordinate fallback (deferred, non-fatal) and possibly a PR for the branch.
+(Updated 2026-07-07.)
 **Depends on**: Phase 1 (data safety) ✅ and Phase 2 (async layer) ✅ — both code-complete.
 **Parent roadmap**: `docs/plan-stability-roadmap.md` (Phase 7). This document is the
 detailed, de-risked implementation plan for that phase, **plus** a new capability
@@ -227,18 +229,25 @@ Encode this in a service (e.g. `src/services/gui_harness.py`), not shell scripts
 
 ## B3. MCP tools (hosted by the Part A server)
 
-- [ ] `gui_launch(cmd, width?, height?)` — bring up the headless stack + app; return
-      a handle. Lifecycle owned by the harness service; auto-teardown on window
-      close.
-- [ ] `gui_screenshot(handle)` — grim PNG of the output; returned as an MCP image.
-- [ ] `gui_snapshot_tree(handle)` — compact AT-SPI dump (role, name, extents).
-- [ ] `gui_click(handle, target)` / `gui_type(handle, target, text)` — semantic via
-      AT-SPI; `target` by role+name (fall back to coordinates via extents + ydotool).
-- [ ] `gui_do_action(handle, target, action?)` — explicit action invocation.
-- [ ] `gui_stop(handle)` — teardown (kill app, registryd, a11y bus, cage).
-- **Acceptance**: from the embedded Claude session, launch a sample GTK4 app, click a
-  button by name, and confirm via a follow-up screenshot that the UI changed — with
-  the host GNOME session untouched.
+**Implemented** in `src/services/gui_harness.py` + `src/services/gui_agent.py`
+(in-cage session agent, D2), wired as MCP tools in `src/services/mcp_server.py`.
+Increment 1 (commit `92eb44b`) = launch/screenshot/stop lifecycle; increment 2
+(commit `0226ce3`) = the AT-SPI semantic layer.
+
+- [x] `gui_launch(cmd, width?, height?)` — bring up the headless stack + app; return
+      a handle. Auto-teardown via `McpServer.stop()` → `GuiHarnessManager.stop_all()`.
+- [x] `gui_screenshot(handle)` — grim PNG returned as a FastMCP `Image`.
+- [x] `gui_snapshot_tree(handle)` — recursive AT-SPI dump (role, name, extents).
+- [x] `gui_click(handle, role?, name?)` / `gui_type(handle, text, role?, name?)` —
+      semantic via AT-SPI (flat role/name params).
+- [x] `gui_do_action(handle, role?, name?, action?)` — explicit action invocation.
+- [x] `gui_stop(handle)` — teardown (kills app, registryd, a11y bus, cage tree).
+- [ ] Coordinate fallback (extents + `ydotool`) for canvas/custom widgets — **deferred**
+      to a B3-impl increment; `ydotool` is not installed on the dev box.
+- **Acceptance**: ✅ verified end-to-end through the real `GuiHarnessManager` against a
+  headless cage: launched a GTK4 sample app, `gui_click` by role+name flipped its label
+  to `Clicked!` (confirmed by a follow-up `gui_snapshot_tree`), teardown left the host
+  session untouched. Logic-level unit tests in `tests/test_gui_harness.py`.
 
 ## B4. Dependencies (already added to installer, optional/non-fatal)
 
