@@ -30,8 +30,10 @@ class ProjectWindow(Adw.ApplicationWindow):
         self.lock = ProjectLock(str(self.project_path))
         self.file_monitor_service = FileMonitorService(self.project_path)
 
-        self.claude_tab_page: Adw.TabPage | None = None
         self.claude_terminal: TerminalView | None = None
+        self.claude_container: Gtk.Box | None = None
+        self._workspace_collapsed = False
+        self._workspace_split_position = 260
         self.commit_detail_page: Adw.TabPage | None = None
         self.commit_detail_view: CommitDetailView | None = None
         self.session_detail_page: Adw.TabPage | None = None
@@ -148,13 +150,12 @@ class ProjectWindow(Adw.ApplicationWindow):
 
     def _build_ui(self):
         """Build the UI layout."""
-        # Main container: [Vertical Toolbar | Paned[Sidebar | Content]]
+        # Main container: [Paned[Sidebar | Content]]. The old left vertical toolbar
+        # is gone — its view-switcher buttons now live in the header.
         main_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
 
-        # Vertical toolbar on the left
-        self.vertical_toolbar = self._build_vertical_toolbar()
+        # Badge CSS for the activity buttons (built in _build_header)
         self._setup_badge_css()
-        main_box.append(self.vertical_toolbar)
 
         # Main horizontal split with resizable pane
         self.paned = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL)
@@ -204,36 +205,16 @@ class ProjectWindow(Adw.ApplicationWindow):
         header = Adw.HeaderBar()
 
         # Toggle sidebar button
-        sidebar_btn = Gtk.ToggleButton()
-        sidebar_btn.set_icon_name("sidebar-show-symbolic")
-        sidebar_btn.set_tooltip_text("Toggle sidebar")
-        sidebar_btn.set_active(True)
-        sidebar_btn.connect("toggled", self._on_sidebar_toggled)
-        header.pack_start(sidebar_btn)
+        self.sidebar_btn = Gtk.ToggleButton()
+        self.sidebar_btn.set_icon_name("sidebar-show-symbolic")
+        self.sidebar_btn.set_tooltip_text("Toggle sidebar")
+        self.sidebar_btn.set_active(True)
+        self.sidebar_btn.connect("toggled", self._on_sidebar_toggled)
+        header.pack_start(self.sidebar_btn)
 
-        # AI CLI button with Material Design icon
-        self.claude_btn = Gtk.Button()
-        self.claude_btn.set_tooltip_text(f"Start {self.adapter.name} session")
-        self.claude_btn.add_css_class("suggested-action")
-        self.claude_btn.connect("clicked", self._on_claude_clicked)
-
-        claude_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-
-        # Use provider icon from cache (dynamically based on adapter)
-        icon_cache = IconCache()
-        provider_texture = icon_cache.get_provider_texture(self.adapter.icon_name)
-        if provider_texture:
-            claude_icon = Gtk.Image.new_from_paintable(provider_texture)
-            claude_icon.set_pixel_size(16)
-        else:
-            claude_icon = Gtk.Image.new_from_icon_name("utilities-terminal-symbolic")
-
-        claude_label = Gtk.Label(label=self.adapter.name)
-        claude_box.append(claude_icon)
-        claude_box.append(claude_label)
-        self.claude_btn.set_child(claude_box)
-
-        header.pack_start(self.claude_btn)
+        # Sidebar view-switcher (Files/Git/Claude/Notes/Problems/Issues) as a linked
+        # toggle group — moved here from the old left vertical toolbar.
+        header.pack_start(self._build_activity_bar())
 
         # New terminal button
         terminal_btn = Gtk.Button()
@@ -294,62 +275,45 @@ class ProjectWindow(Adw.ApplicationWindow):
         btn.connect("toggled", self._on_tab_toggled, tab_name)
         return btn
 
-    def _build_vertical_toolbar(self) -> Gtk.Box:
-        """Build vertical toolbar with tab buttons on the left."""
-        toolbar = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        toolbar.set_spacing(2)
-        toolbar.set_margin_top(8)
-        toolbar.set_margin_bottom(8)
-        toolbar.set_margin_start(6)
-        toolbar.set_margin_end(6)
+    def _build_activity_bar(self) -> Gtk.Box:
+        """Build the sidebar view-switcher as plain square toggle buttons for the header."""
+        group = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+        group.set_spacing(2)
 
         self._tab_buttons = {}
 
         # Files button
         files_btn = self._create_toolbar_button("folder-open", "Files", "files")
         files_btn.set_active(True)
-        toolbar.append(files_btn)
+        group.append(files_btn)
         self._tab_buttons["files"] = files_btn
 
         # Git button (will be shown/hidden based on git repo status)
         self._git_toolbar_btn = self._create_toolbar_button("git", "Git", "git")
-        toolbar.append(self._git_toolbar_btn)
+        group.append(self._git_toolbar_btn)
         self._tab_buttons["git"] = self._git_toolbar_btn
 
-        # Claude button
+        # Claude button (shows the session-history panel in the sidebar)
         claude_btn = self._create_toolbar_button("claude", "Claude", "claude")
-        toolbar.append(claude_btn)
+        group.append(claude_btn)
         self._tab_buttons["claude"] = claude_btn
 
         # Notes button
         notes_btn = self._create_toolbar_button("file", "Notes", "notes")
-        toolbar.append(notes_btn)
+        group.append(notes_btn)
         self._tab_buttons["notes"] = notes_btn
 
         # Problems button
         problems_btn = self._create_toolbar_button("problems", "Problems (ruff/mypy)", "problems")
-        toolbar.append(problems_btn)
+        group.append(problems_btn)
         self._tab_buttons["problems"] = problems_btn
 
         # Issues button (GitHub Issues)
         self._issues_toolbar_btn = self._create_toolbar_button("todo", "Issues", "issues")
-        toolbar.append(self._issues_toolbar_btn)
+        group.append(self._issues_toolbar_btn)
         self._tab_buttons["issues"] = self._issues_toolbar_btn
 
-        # Spacer to push future buttons to bottom
-        spacer = Gtk.Box()
-        spacer.set_vexpand(True)
-        toolbar.append(spacer)
-
-        # Separator line on the right side
-        separator = Gtk.Separator(orientation=Gtk.Orientation.VERTICAL)
-
-        # Wrap toolbar + separator in horizontal box
-        container = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
-        container.append(toolbar)
-        container.append(separator)
-
-        return container
+        return group
 
     def _setup_badge_css(self):
         """Setup CSS for toolbar badge indicators."""
@@ -362,7 +326,7 @@ class ProjectWindow(Adw.ApplicationWindow):
             padding: 0 3px;
             border-radius: 8px;
             color: white;
-            margin-end: 1px;
+            margin-right: 1px;
             margin-top: 1px;
         }
         .toolbar-badge-red {
@@ -566,6 +530,10 @@ class ProjectWindow(Adw.ApplicationWindow):
             # Skip if sidebar_stack not yet created (during init)
             if not hasattr(self, "sidebar_stack"):
                 return
+            # Activity buttons live in the header now; clicking one reveals the
+            # sidebar they control if it was hidden.
+            if hasattr(self, "sidebar") and not self.sidebar.get_visible():
+                self.sidebar_btn.set_active(True)
             # Lazy build the tab if needed
             if hasattr(self, "_built_tabs"):
                 self._ensure_tab_built(tab_name)
@@ -868,25 +836,181 @@ class ProjectWindow(Adw.ApplicationWindow):
         return box
 
     def _build_content(self) -> Gtk.Box:
-        """Build the main content area with tab view."""
+        """Build the main content area: tab bar + vertical split (tabs / Claude pane)."""
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
 
-        # Tab bar
+        # Tab bar - stays visible even when the tabs area is collapsed
         self.tab_bar = Adw.TabBar()
         self.tab_bar.set_autohide(False)
         box.append(self.tab_bar)
+
+        # Collapse chevron in the tab bar (folds the tabs area down to just this bar)
+        self.workspace_toggle_btn = Gtk.ToggleButton()
+        self.workspace_toggle_btn.set_icon_name("go-down-symbolic")
+        self.workspace_toggle_btn.set_tooltip_text("Collapse tabs area")
+        self.workspace_toggle_btn.add_css_class("flat")
+        self.workspace_toggle_btn.connect("toggled", self._on_workspace_toggle)
+        self.tab_bar.set_end_action_widget(self.workspace_toggle_btn)
 
         # Tab view
         self.tab_view = Adw.TabView()
         self.tab_view.set_vexpand(True)
         self.tab_view.connect("close-page", self._on_tab_close_requested)
         self.tab_view.connect("page-detached", self._on_page_detached)
-        box.append(self.tab_view)
-
-        # Connect tab bar to tab view
+        # Selecting/opening any tab reveals the tabs area if it was collapsed
+        self.tab_view.connect("notify::selected-page", self._on_selected_page_changed)
         self.tab_bar.set_view(self.tab_view)
 
+        # Vertical split: tabs (top) / persistent Claude pane (bottom)
+        self.content_vpaned = Gtk.Paned(orientation=Gtk.Orientation.VERTICAL)
+        self.content_vpaned.set_shrink_start_child(True)   # tabs area can collapse to 0
+        self.content_vpaned.set_shrink_end_child(False)    # Claude keeps its min height
+        self.content_vpaned.set_resize_start_child(True)   # tabs take extra space on resize
+        self.content_vpaned.set_resize_end_child(False)    # Claude keeps ~its size on resize
+        self.content_vpaned.set_start_child(self.tab_view)
+        self.content_vpaned.set_end_child(self._build_claude_pane())
+        self.content_vpaned.set_vexpand(True)
+        box.append(self.content_vpaned)
+
+        # Restore split position + collapsed state
+        self._workspace_split_position = self.settings.get("window.workspace_split_position", 260)
+        self.content_vpaned.set_position(self._workspace_split_position)
+        self.content_vpaned.connect("notify::position", self._on_workspace_split_changed)
+        if self.settings.get("window.workspace_collapsed", False):
+            self.collapse_workspace()
+
         return box
+
+    def _build_claude_pane(self) -> Gtk.Box:
+        """Build the persistent bottom Claude pane (the CLI starts lazily)."""
+        self.claude_container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        self.claude_container.set_size_request(-1, 220)  # minimum height, always visible
+        self._show_claude_placeholder()
+        return self.claude_container
+
+    def _clear_claude_container(self):
+        """Remove all children from the Claude pane container."""
+        child = self.claude_container.get_first_child()
+        while child is not None:
+            nxt = child.get_next_sibling()
+            self.claude_container.remove(child)
+            child = nxt
+
+    def _show_claude_placeholder(self):
+        """Show the 'Start' placeholder in the Claude pane (no CLI running)."""
+        self._clear_claude_container()
+
+        placeholder = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        placeholder.set_valign(Gtk.Align.CENTER)
+        placeholder.set_halign(Gtk.Align.CENTER)
+        placeholder.set_vexpand(True)
+
+        start_btn = Gtk.Button(label=f"Start {self.adapter.name}")
+        start_btn.add_css_class("pill")
+        start_btn.add_css_class("suggested-action")
+        start_btn.connect("clicked", lambda _b: self._start_claude_session())
+        placeholder.append(start_btn)
+
+        self.claude_container.append(placeholder)
+
+    def _start_claude_session(self):
+        """Start the AI CLI in the persistent Claude pane (or focus it if running)."""
+        if self.claude_terminal is not None:
+            self.claude_terminal.terminal.grab_focus()
+            return
+
+        # --- MCP seam (Part A): before spawning the terminal, allocate a free port,
+        #     mint a per-window token, start the MCP server, write a temp
+        #     --strict-mcp-config, and inject CC_MCP_TOKEN / CC_MCP_PORT into the VTE
+        #     envv here. Server lifecycle == session lifecycle. ---
+
+        self._clear_claude_container()
+
+        # AI CLI terminal in project directory
+        terminal = TerminalView(
+            working_directory=str(self.project_path),
+            run_command=self.adapter.cli_command
+        )
+        terminal.set_vexpand(True)
+        self.claude_container.append(terminal)
+
+        # Query editor below terminal
+        query_editor = QueryEditor()
+        query_editor.connect("send-requested", self._on_query_send)
+        query_editor.connect("make-issue-requested", self._on_query_make_issue)
+        self.claude_container.append(query_editor)
+
+        # Snippets bar below query editor
+        snippets_bar = SnippetsBar()
+        snippets_bar.connect("snippet-clicked", self._on_snippet_clicked)
+        self.claude_container.append(snippets_bar)
+
+        # Know when the CLI exits
+        terminal.connect("child-exited", self._on_claude_exited)
+
+        self.claude_terminal = terminal
+        terminal.terminal.grab_focus()
+
+    # --- Workspace collapse/expand (also the future MCP tool surface) ---
+
+    def _on_workspace_toggle(self, button):
+        """Chevron toggled: collapse or expand the tabs area."""
+        if button.get_active():
+            self.collapse_workspace()
+        else:
+            self.expand_workspace()
+
+    def _sync_workspace_toggle(self):
+        """Reflect collapsed state into the chevron without re-triggering it."""
+        btn = self.workspace_toggle_btn
+        btn.handler_block_by_func(self._on_workspace_toggle)
+        btn.set_active(self._workspace_collapsed)
+        btn.set_icon_name("go-up-symbolic" if self._workspace_collapsed else "go-down-symbolic")
+        btn.set_tooltip_text("Expand tabs area" if self._workspace_collapsed else "Collapse tabs area")
+        btn.handler_unblock_by_func(self._on_workspace_toggle)
+
+    def collapse_workspace(self):
+        """Collapse the tabs area down to just the tab bar; Claude fills the height."""
+        if self._workspace_collapsed:
+            return
+        position = self.content_vpaned.get_position()
+        if position > 60:
+            self._workspace_split_position = position
+        self._workspace_collapsed = True
+        self.tab_view.set_visible(False)
+        self._sync_workspace_toggle()
+        self.settings.set("window.workspace_collapsed", True)
+
+    def expand_workspace(self):
+        """Restore the tabs area to its saved split position."""
+        if not self._workspace_collapsed:
+            return
+        self._workspace_collapsed = False
+        self.tab_view.set_visible(True)
+        self.content_vpaned.set_position(self._workspace_split_position)
+        self._sync_workspace_toggle()
+        self.settings.set("window.workspace_collapsed", False)
+
+    def toggle_workspace(self):
+        """Toggle the tabs area collapsed/expanded."""
+        if self._workspace_collapsed:
+            self.expand_workspace()
+        else:
+            self.collapse_workspace()
+
+    def _on_selected_page_changed(self, tab_view, pspec):
+        """Opening/selecting any tab reveals the tabs area if it was collapsed."""
+        if self._workspace_collapsed and tab_view.get_selected_page() is not None:
+            self.expand_workspace()
+
+    def _on_workspace_split_changed(self, paned, pspec):
+        """Persist the tabs/Claude split position."""
+        if self._workspace_collapsed:
+            return
+        position = paned.get_position()
+        if position > 60:
+            self._workspace_split_position = position
+            self.settings.set("window.workspace_split_position", position)
 
     def _load_project(self):
         """Load project data and create initial tabs."""
@@ -938,53 +1062,8 @@ class ProjectWindow(Adw.ApplicationWindow):
             self.sidebar.set_visible(False)
 
     def _on_claude_clicked(self, button):
-        """Start Claude terminal session."""
-        if self.claude_tab_page is not None:
-            # Claude tab already exists, switch to it
-            self.tab_view.set_selected_page(self.claude_tab_page)
-            return
-
-        # Create container for terminal + query editor + snippets bar
-        container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        container.set_vexpand(True)
-
-        # Create AI CLI terminal in project directory
-        terminal = TerminalView(
-            working_directory=str(self.project_path),
-            run_command=self.adapter.cli_command
-        )
-        terminal.set_vexpand(True)
-        container.append(terminal)
-
-        # Add query editor below terminal
-        query_editor = QueryEditor()
-        query_editor.connect("send-requested", self._on_query_send)
-        query_editor.connect("make-issue-requested", self._on_query_make_issue)
-        container.append(query_editor)
-
-        # Add snippets bar below query editor
-        snippets_bar = SnippetsBar()
-        snippets_bar.connect("snippet-clicked", self._on_snippet_clicked)
-        container.append(snippets_bar)
-
-        # Connect to child-exited to know when claude exits
-        terminal.connect("child-exited", self._on_claude_exited)
-
-        # Add tab with Claude icon
-        page = self.tab_view.append(container)
-        page.set_title(self.adapter.name)
-
-        # Use provider icon from cache (dynamically based on adapter)
-        icon_cache = IconCache()
-        provider_gicon = icon_cache.get_provider_gicon(self.adapter.icon_name)
-        page.set_icon(provider_gicon or Gio.ThemedIcon.new("utilities-terminal-symbolic"))
-
-        self.claude_tab_page = page
-        self.claude_terminal = terminal
-        self.tab_view.set_selected_page(page)
-
-        # Disable Claude button
-        self.claude_btn.set_sensitive(False)
+        """Header button: start the Claude session, or focus it if already running."""
+        self._start_claude_session()
 
     def _on_snippet_clicked(self, snippets_bar, text: str):
         """Handle snippet button click - insert text into Claude terminal."""
@@ -1028,12 +1107,11 @@ class ProjectWindow(Adw.ApplicationWindow):
         return False  # Don't repeat
 
     def _on_claude_exited(self, terminal, status):
-        """Handle Claude shell exit - close tab and re-enable button."""
-        if self.claude_tab_page:
-            self.tab_view.close_page(self.claude_tab_page)
-        self.claude_btn.set_sensitive(True)
-        self.claude_tab_page = None
+        """AI CLI exited - tear down the terminal and restore the Start placeholder."""
+        # --- MCP seam (Part A): stop the per-window MCP server, free the port and
+        #     delete the temp --strict-mcp-config here. ---
         self.claude_terminal = None
+        self._show_claude_placeholder()
 
     def _on_new_terminal_clicked(self, button):
         """Create new terminal tab."""
@@ -1596,19 +1674,6 @@ class ProjectWindow(Adw.ApplicationWindow):
             dialog.present(self)
             return True  # Prevent immediate close
 
-        # AI CLI tab - show warning if active
-        if page == self.claude_tab_page:
-            dialog = Adw.AlertDialog()
-            dialog.set_heading(f"Close {self.adapter.name} Session?")
-            dialog.set_body(f"The {self.adapter.name} session may still be active. Close anyway?")
-            dialog.add_response("cancel", "Cancel")
-            dialog.add_response("close", "Close")
-            dialog.set_response_appearance("close", Adw.ResponseAppearance.DESTRUCTIVE)
-            dialog.set_default_response("cancel")
-            dialog.connect("response", self._on_claude_close_response, page)
-            dialog.present(self)
-            return True  # Prevent immediate close, dialog will handle it
-
         # Commit detail tab - clear references when closed
         if page == self.commit_detail_page:
             self.commit_detail_page = None
@@ -1655,14 +1720,6 @@ class ProjectWindow(Adw.ApplicationWindow):
             self.tab_view.close_page_finish(page, True)
         else:  # cancel
             self.tab_view.close_page_finish(page, False)
-
-    def _on_claude_close_response(self, dialog, response, page):
-        """Handle Claude close dialog response."""
-        if response == "close":
-            self.tab_view.close_page_finish(page, True)
-            self.claude_tab_page = None
-            self.claude_terminal = None
-            self.claude_btn.set_sensitive(True)
 
     def _on_close_request(self, window) -> bool:
         """Handle window close request - check for unsaved changes."""
@@ -1739,6 +1796,11 @@ class ProjectWindow(Adw.ApplicationWindow):
                 height = self.get_height()
             self.settings.set("window.width", width)
             self.settings.set("window.height", height)
+
+        # Kill the persistent Claude CLI child + its process group so it doesn't
+        # survive as an orphan (terminal tabs are handled on tab close).
+        if getattr(self, "claude_terminal", None) is not None:
+            self.claude_terminal.cleanup()
 
         # Shutdown file monitor service
         if hasattr(self, "file_monitor_service"):

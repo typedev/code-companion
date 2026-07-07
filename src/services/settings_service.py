@@ -32,6 +32,9 @@ DEFAULT_SETTINGS = {
         "x": None,
         "y": None,
         "maximized": False,
+        # Bottom Claude pane / tabs split
+        "workspace_split_position": 260,  # height of the tabs area above the Claude pane
+        "workspace_collapsed": False,  # tabs area collapsed to the tab bar
     },
     "sync": {
         "enabled": False,
