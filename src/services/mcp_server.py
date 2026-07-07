@@ -230,6 +230,35 @@ class McpServer:
             """
             return self.call_on_main(lambda: self._do_show_commit(commit_hash))
 
+        @mcp.tool()
+        def create_issue(title: str, body: str = "") -> dict:
+            """Create a GitHub issue for this project and refresh the Issues panel.
+
+            Uses the stored GitHub credentials. Returns
+            ``{"ok": bool, "number"?, "url"?, "error"?}``.
+            """
+            # Runs on the FastMCP worker thread; the blocking network call stays here
+            # (NOT via call_on_main, which has a 5s timeout).
+            return self._do_create_issue(title, body)
+
+        @mcp.tool()
+        def run_task(name: str) -> dict:
+            """Run a tasks.json task by its label in a new terminal tab.
+
+            Returns ``{"ok": bool, "label"?, "error"?}``.
+            """
+            return self.call_on_main(lambda: self._do_run_task(name))
+
+        @mcp.tool()
+        def add_note(name: str, content: str) -> dict:
+            """Create or append to a markdown note under ``notes/<name>.md``.
+
+            Returns ``{"ok": bool, "path"?, "error"?}``.
+            """
+            # Filesystem-only; safe to run on the worker thread. The notes panel
+            # auto-refreshes via FileMonitorService.
+            return self._do_add_note(name, content)
+
         return mcp
 
     # -- main-thread tool bodies -------------------------------------- #
@@ -424,3 +453,62 @@ class McpServer:
 
         win._on_commit_view_diff(None, commit_hash)
         return {"ok": True, "short_hash": commit.short_hash}
+
+    # -- tool bodies: mutating --------------------------------------------- #
+    def _do_create_issue(self, title: str, body: str) -> dict:
+        # Lazy imports so mcp_server stays light and the GitHub stack only loads on use.
+        from .git_service import AuthenticationRequired
+        from .issues_service import GitHubError
+
+        service = getattr(self.window, "issues_service", None)
+        if service is None:
+            return {"ok": False, "error": "issues service unavailable"}
+
+        try:
+            issue = service.create_issue(title, body)
+        except AuthenticationRequired:
+            return {"ok": False, "error": "GitHub authentication required"}
+        except GitHubError as exc:
+            return {"ok": False, "error": f"GitHub error: {exc}"}
+
+        # Refresh the panel on the main thread (fast; it spawns its own load thread).
+        def _refresh():
+            panel = getattr(self.window, "issues_panel", None)
+            if panel is not None:
+                panel.refresh()
+            return None
+
+        try:
+            self.call_on_main(_refresh)
+        except Exception:  # noqa: BLE001 - refresh is best-effort; the issue was created
+            pass
+
+        return {"ok": True, "number": issue.number, "url": issue.html_url}
+
+    def _do_run_task(self, name: str) -> dict:
+        panel = getattr(self.window, "tasks_panel", None)
+        if panel is None:
+            return {"ok": False, "error": "tasks unavailable"}
+
+        service = panel.service
+        service.load()
+        task = next((t for t in service.get_tasks() if t.label == name), None)
+        if task is None:
+            return {"ok": False, "error": f"task not found: {name}"}
+
+        command = service.substitute_variables(task.command)
+        self.window._on_task_run(None, task.label, command)
+        return {"ok": True, "label": task.label}
+
+    def _do_add_note(self, name: str, content: str) -> dict:
+        from ..utils.atomic_write import atomic_write_text
+
+        notes_dir = Path(self.window.project_path) / "notes"
+        notes_dir.mkdir(parents=True, exist_ok=True)
+        filename = name if name.endswith(".md") else f"{name}.md"
+        path = notes_dir / filename
+
+        existing = path.read_text(encoding="utf-8") if path.is_file() else ""
+        text = f"{existing}\n{content}" if existing else content
+        atomic_write_text(path, text)
+        return {"ok": True, "path": str(path)}

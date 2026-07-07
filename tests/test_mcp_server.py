@@ -682,3 +682,163 @@ def test_show_commit_no_git():
 
     result = srv._do_show_commit("abc123")
     assert result == {"ok": False, "error": "no git repository"}
+
+
+# --------------------------------------------------------------------------- #
+# Mutating tools: create_issue / run_task / add_note
+# --------------------------------------------------------------------------- #
+class _FakeIssue:
+    def __init__(self, number, html_url):
+        self.number = number
+        self.html_url = html_url
+
+
+class _FakeIssuesService:
+    def __init__(self, issue=None, raises=None):
+        self._issue = issue
+        self._raises = raises
+        self.calls = []
+
+    def create_issue(self, title, body="", credentials=None):
+        self.calls.append((title, body))
+        if self._raises is not None:
+            raise self._raises
+        return self._issue
+
+
+class _FakeIssuesPanel:
+    def __init__(self):
+        self.refreshed = 0
+
+    def refresh(self, credentials=None):
+        self.refreshed += 1
+
+
+class _IssuesWindow:
+    def __init__(self, issues_service, issues_panel=_MISSING):
+        self.issues_service = issues_service
+        if issues_panel is not _MISSING:
+            self.issues_panel = issues_panel
+
+
+def test_create_issue_success_refreshes(sync_idle_add):
+    panel = _FakeIssuesPanel()
+    service = _FakeIssuesService(issue=_FakeIssue(42, "https://gh/i/42"))
+    srv = McpServer(_IssuesWindow(service, panel))
+
+    result = srv._do_create_issue("Title", "Body")
+    assert result == {"ok": True, "number": 42, "url": "https://gh/i/42"}
+    assert service.calls == [("Title", "Body")]
+    assert panel.refreshed == 1
+
+
+def test_create_issue_success_without_panel(sync_idle_add):
+    service = _FakeIssuesService(issue=_FakeIssue(7, "https://gh/i/7"))
+    srv = McpServer(_IssuesWindow(service))  # no issues_panel attribute
+
+    result = srv._do_create_issue("T", "")
+    assert result == {"ok": True, "number": 7, "url": "https://gh/i/7"}
+
+
+def test_create_issue_auth_error():
+    from src.services.git_service import AuthenticationRequired
+
+    service = _FakeIssuesService(raises=AuthenticationRequired("nope", "url"))
+    srv = McpServer(_IssuesWindow(service))
+
+    result = srv._do_create_issue("T", "B")
+    assert result == {"ok": False, "error": "GitHub authentication required"}
+
+
+def test_create_issue_github_error():
+    from src.services.issues_service import GitHubError
+
+    service = _FakeIssuesService(raises=GitHubError(500, "server boom"))
+    srv = McpServer(_IssuesWindow(service))
+
+    result = srv._do_create_issue("T", "B")
+    assert result["ok"] is False
+    assert "server boom" in result["error"]
+
+
+def test_create_issue_no_service():
+    srv = McpServer(_FakeWindow())  # no issues_service attribute
+    result = srv._do_create_issue("T", "B")
+    assert result == {"ok": False, "error": "issues service unavailable"}
+
+
+# -- run_task -------------------------------------------------------------- #
+class _RunTaskService:
+    def __init__(self, tasks):
+        self._tasks = tasks
+        self.loaded = False
+
+    def load(self):
+        self.loaded = True
+
+    def get_tasks(self):
+        return list(self._tasks)
+
+    def substitute_variables(self, command, context=None):
+        return command + " [subst]"
+
+
+class _RunTaskWindow:
+    def __init__(self, tasks):
+        self.tasks_panel = _FakeTasksPanel(_RunTaskService(tasks))
+        self.calls = []
+
+    def _on_task_run(self, panel, label, command):
+        self.calls.append((label, command))
+
+
+def test_run_task_found_substitutes_and_runs():
+    win = _RunTaskWindow([_FakeTask("Build", "make ${workspaceFolder}")])
+    srv = McpServer(win)
+
+    result = srv._do_run_task("Build")
+    assert result == {"ok": True, "label": "Build"}
+    assert win.calls == [("Build", "make ${workspaceFolder} [subst]")]
+
+
+def test_run_task_label_not_found():
+    win = _RunTaskWindow([_FakeTask("Build", "make")])
+    srv = McpServer(win)
+
+    result = srv._do_run_task("Nope")
+    assert result["ok"] is False
+    assert "not found" in result["error"]
+    assert win.calls == []  # UI untouched
+
+
+def test_run_task_no_panel():
+    srv = McpServer(_FakeWindow())
+    result = srv._do_run_task("Build")
+    assert result == {"ok": False, "error": "tasks unavailable"}
+
+
+# -- add_note -------------------------------------------------------------- #
+def test_add_note_creates_new(tmp_path):
+    srv = McpServer(_RecordingWindow(str(tmp_path)))
+
+    result = srv._do_add_note("ideas", "first line")
+    path = tmp_path / "notes" / "ideas.md"
+    assert result == {"ok": True, "path": str(path)}
+    assert path.read_text() == "first line"
+
+
+def test_add_note_appends_to_existing(tmp_path):
+    notes = tmp_path / "notes"
+    notes.mkdir()
+    (notes / "log.md").write_text("day one")
+    srv = McpServer(_RecordingWindow(str(tmp_path)))
+
+    result = srv._do_add_note("log.md", "day two")
+    assert result["ok"] is True
+    assert (notes / "log.md").read_text() == "day one\nday two"
+
+
+def test_add_note_adds_md_suffix(tmp_path):
+    srv = McpServer(_RecordingWindow(str(tmp_path)))
+    srv._do_add_note("todo", "x")
+    assert (tmp_path / "notes" / "todo.md").is_file()
