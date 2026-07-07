@@ -176,6 +176,11 @@ class MarkdownPreview(Gtk.Box):
         self.set_hexpand(True)
 
         self.settings = SettingsService.get_instance()
+        # HTML queued while the WebView is not yet mapped. Calling load_html() on
+        # an unrealized WebKitGTK 6.0 view leaves a black surface that never
+        # repaints (issue detail renders in __init__, before it is in a tab).
+        # We stash it here and flush on "map". (path, html)
+        self._pending_html = None
         self._build_ui()
 
     def _build_ui(self):
@@ -184,6 +189,7 @@ class MarkdownPreview(Gtk.Box):
         self.webview = WebKit.WebView()
         self.webview.set_vexpand(True)
         self.webview.set_hexpand(True)
+        self.webview.connect("map", self._on_webview_map)
 
         # Configure settings for proper rendering
         settings = self.webview.get_settings()
@@ -195,6 +201,13 @@ class MarkdownPreview(Gtk.Box):
         self.webview.connect("decide-policy", self._on_decide_policy)
 
         self.append(self.webview)
+
+    def _on_webview_map(self, _webview):
+        """Flush any HTML that was queued before the WebView was mapped."""
+        if self._pending_html is not None:
+            base_path, full_html = self._pending_html
+            self._pending_html = None
+            self.webview.load_html(full_html, base_path)
 
     def _on_decide_policy(self, webview, decision, decision_type):
         """Handle navigation policy - block user-initiated external links."""
@@ -311,5 +324,11 @@ class MarkdownPreview(Gtk.Box):
         full_html = full_html.replace(_HLJS_CSS_MARKER, hljs_css)
         full_html = full_html.replace(_HLJS_JS_MARKER, hljs_js)
 
-        # Load HTML into WebView
-        self.webview.load_html(full_html, base_path or "file:///")
+        # Load HTML into WebView. If the view is not mapped yet, loading now
+        # leaves a black surface that never repaints, so queue it for the "map"
+        # signal instead (see _on_webview_map).
+        base = base_path or "file:///"
+        if self.webview.get_mapped():
+            self.webview.load_html(full_html, base)
+        else:
+            self._pending_html = (base, full_html)
