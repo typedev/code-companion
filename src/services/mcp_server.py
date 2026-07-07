@@ -339,6 +339,32 @@ class McpServer:
             """Tear down a launched GUI harness (app + headless compositor)."""
             return self._do_gui_stop(handle)
 
+        @mcp.tool()
+        def gui_snapshot_tree(handle: str) -> dict:
+            """Return the launched GUI's accessibility tree (roles, names, extents).
+
+            Returns ``{"ok": true, "tree": {...}}`` or ``{"ok": false, "error"}``.
+            """
+            return self._do_gui_snapshot_tree(handle)
+
+        @mcp.tool()
+        def gui_click(handle: str, role: str | None = None,
+                      name: str | None = None) -> dict:
+            """Click a widget in the launched GUI, located by accessibility role/name."""
+            return self._do_gui_action(handle, "click", role, name, None, None)
+
+        @mcp.tool()
+        def gui_type(handle: str, text: str, role: str | None = None,
+                     name: str | None = None) -> dict:
+            """Set the text of an editable widget, located by role/name."""
+            return self._do_gui_action(handle, "type", role, name, None, text)
+
+        @mcp.tool()
+        def gui_do_action(handle: str, role: str | None = None,
+                          name: str | None = None, action: str | None = None) -> dict:
+            """Invoke a named accessibility action on a widget (default: first action)."""
+            return self._do_gui_action(handle, "do_action", role, name, action, None)
+
         return mcp
 
     # -- main-thread tool bodies -------------------------------------- #
@@ -643,5 +669,24 @@ class McpServer:
         try:
             self.gui.stop(handle)
         except GuiHarnessError as exc:
+            return {"ok": False, "error": str(exc)}
+        return {"ok": True}
+
+    def _do_gui_snapshot_tree(self, handle: str) -> dict:
+        try:
+            tree = self.gui.snapshot_tree(handle)
+        except (GuiHarnessError, OSError, ValueError) as exc:
+            return {"ok": False, "error": str(exc)}
+        return {"ok": True, "tree": tree}
+
+    def _do_gui_action(self, handle: str, kind: str, role, name, action, text) -> dict:
+        try:
+            if kind == "click":
+                self.gui.click(handle, role, name)
+            elif kind == "type":
+                self.gui.type_text(handle, role, name, text)
+            else:
+                self.gui.do_action(handle, role, name, action)
+        except (GuiHarnessError, OSError, ValueError) as exc:
             return {"ok": False, "error": str(exc)}
         return {"ok": True}

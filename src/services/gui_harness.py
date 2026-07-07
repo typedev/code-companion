@@ -110,7 +110,7 @@ class GuiHarnessManager:
 
     # -- lifecycle ----------------------------------------------------- #
     def launch(self, cmd: str, width: int = 1280, height: int = 800,
-               timeout: float = 20) -> str:
+               timeout: float = 30) -> str:
         self._counter += 1
         handle = f"gui-{self._counter}"
         workdir = tempfile.mkdtemp(prefix="cc-gui-")
@@ -136,6 +136,30 @@ class GuiHarnessManager:
             raise GuiHarnessError(reply.get("error", "screenshot failed"))
         import base64
         return base64.b64decode(reply["png_b64"])
+
+    def snapshot_tree(self, handle: str) -> dict:
+        reply = self._get(handle).command({"cmd": "tree"})
+        if not reply.get("ok"):
+            raise GuiHarnessError(reply.get("error", "tree failed"))
+        return reply["tree"]
+
+    def click(self, handle: str, role=None, name=None) -> None:
+        self._command_ok(handle, {"cmd": "click", "role": role, "name": name})
+
+    def type_text(self, handle: str, role=None, name=None, text: str = "") -> None:
+        self._command_ok(
+            handle, {"cmd": "type", "role": role, "name": name, "text": text}
+        )
+
+    def do_action(self, handle: str, role=None, name=None, action=None) -> None:
+        self._command_ok(
+            handle, {"cmd": "do_action", "role": role, "name": name, "action": action}
+        )
+
+    def _command_ok(self, handle: str, payload: dict) -> None:
+        reply = self._get(handle).command(payload)
+        if not reply.get("ok"):
+            raise GuiHarnessError(reply.get("error", "command failed"))
 
     def stop(self, handle: str) -> None:
         harness = self._harnesses.pop(handle, None)

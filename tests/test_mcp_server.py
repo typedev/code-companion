@@ -973,13 +973,18 @@ def test_refresh_endpoint_bad_json(refresh_server):
 # --------------------------------------------------------------------------- #
 class _FakeGui:
     def __init__(self, handle="gui-1", png=b"PNGDATA", launch_error=None,
-                 screenshot_error=None, stop_error=None):
+                 screenshot_error=None, stop_error=None, tree=None, tree_error=None,
+                 action_error=None):
         self._handle = handle
         self._png = png
         self._launch_error = launch_error
         self._screenshot_error = screenshot_error
         self._stop_error = stop_error
+        self._tree = tree if tree is not None else {"role": "application"}
+        self._tree_error = tree_error
+        self._action_error = action_error
         self.stopped = []
+        self.actions = []
 
     def launch(self, cmd, width, height):
         if self._launch_error:
@@ -995,6 +1000,26 @@ class _FakeGui:
         if self._stop_error:
             raise self._stop_error
         self.stopped.append(handle)
+
+    def snapshot_tree(self, handle):
+        if self._tree_error:
+            raise self._tree_error
+        return self._tree
+
+    def click(self, handle, role, name):
+        if self._action_error:
+            raise self._action_error
+        self.actions.append(("click", role, name))
+
+    def type_text(self, handle, role, name, text):
+        if self._action_error:
+            raise self._action_error
+        self.actions.append(("type", role, name, text))
+
+    def do_action(self, handle, role, name, action):
+        if self._action_error:
+            raise self._action_error
+        self.actions.append(("do_action", role, name, action))
 
 
 def test_gui_launch_ok():
@@ -1048,3 +1073,56 @@ def test_gui_stop_error():
     result = srv._do_gui_stop("gui-9")
     assert result["ok"] is False
     assert "unknown handle" in result["error"]
+
+
+def test_gui_snapshot_tree_ok():
+    srv = McpServer(_FakeWindow())
+    srv.gui = _FakeGui(tree={"role": "application", "name": "app"})
+    result = srv._do_gui_snapshot_tree("gui-1")
+    assert result == {"ok": True, "tree": {"role": "application", "name": "app"}}
+
+
+def test_gui_snapshot_tree_error():
+    from src.services.gui_harness import GuiHarnessError
+
+    srv = McpServer(_FakeWindow())
+    srv.gui = _FakeGui(tree_error=GuiHarnessError("app not found"))
+    result = srv._do_gui_snapshot_tree("gui-1")
+    assert result["ok"] is False
+    assert "app not found" in result["error"]
+
+
+def test_gui_click_ok():
+    srv = McpServer(_FakeWindow())
+    fake = _FakeGui()
+    srv.gui = fake
+    assert srv._do_gui_action("gui-1", "click", "button", "Click Me", None, None) == {
+        "ok": True
+    }
+    assert fake.actions == [("click", "button", "Click Me")]
+
+
+def test_gui_type_ok():
+    srv = McpServer(_FakeWindow())
+    fake = _FakeGui()
+    srv.gui = fake
+    srv._do_gui_action("gui-1", "type", "text", "field", None, "hello")
+    assert fake.actions == [("type", "text", "field", "hello")]
+
+
+def test_gui_do_action_ok():
+    srv = McpServer(_FakeWindow())
+    fake = _FakeGui()
+    srv.gui = fake
+    srv._do_gui_action("gui-1", "do_action", "button", "Save", "click", None)
+    assert fake.actions == [("do_action", "button", "Save", "click")]
+
+
+def test_gui_action_error():
+    from src.services.gui_harness import GuiHarnessError
+
+    srv = McpServer(_FakeWindow())
+    srv.gui = _FakeGui(action_error=GuiHarnessError("no node matching"))
+    result = srv._do_gui_action("gui-1", "click", "button", "X", None, None)
+    assert result["ok"] is False
+    assert "no node matching" in result["error"]

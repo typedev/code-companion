@@ -171,3 +171,136 @@ def test_screenshot_unknown_handle_raises():
     mgr = GuiHarnessManager()
     with pytest.raises(GuiHarnessError, match="unknown handle"):
         mgr.screenshot("nope")
+
+
+# --------------------------------------------------------------------------- #
+# AT-SPI tree helpers (fake nodes) — src/services/gui_agent.py
+# --------------------------------------------------------------------------- #
+from src.services.gui_agent import (  # noqa: E402
+    find_node, find_target_app, serialize_tree,
+)
+
+
+class _FakeNode:
+    def __init__(self, role, name, children=None):
+        self._role = role
+        self._name = name
+        self._children = children or []
+
+    def get_role_name(self):
+        return self._role
+
+    def get_name(self):
+        return self._name
+
+    def get_child_count(self):
+        return len(self._children)
+
+    def get_child_at_index(self, i):
+        return self._children[i]
+
+
+def _sample_app_tree():
+    button = _FakeNode("button", "Click Me", [_FakeNode("label", "Click Me")])
+    frame = _FakeNode("frame", "", [_FakeNode("label", "HELLO"), button])
+    return _FakeNode("application", "python3", [frame])
+
+
+def test_serialize_tree_structure():
+    tree = serialize_tree(_sample_app_tree())
+    assert tree["role"] == "application"
+    assert tree["name"] == "python3"
+    assert tree["extents"] is None  # fake nodes have no Component interface
+    frame = tree["children"][0]
+    assert frame["role"] == "frame"
+    button = frame["children"][1]
+    assert button["role"] == "button"
+    assert button["name"] == "Click Me"
+    assert button["children"][0]["role"] == "label"
+
+
+def test_find_node_by_role_and_name():
+    app = _sample_app_tree()
+    node = find_node(app, role="button", name="Click Me")
+    assert node is not None and node.get_name() == "Click Me"
+
+
+def test_find_node_by_name_only():
+    app = _sample_app_tree()
+    assert find_node(app, name="HELLO").get_role_name() == "label"
+
+
+def test_find_node_absent_returns_none():
+    assert find_node(_sample_app_tree(), role="button", name="Nope") is None
+
+
+def test_find_target_app_skips_infra():
+    portal = _FakeNode("application", "xdg-desktop-portal-gtk")
+    app = _FakeNode("application", "python3")
+    desktop = _FakeNode("desktop frame", "main", [portal, app])
+    assert find_target_app(desktop) is app
+
+
+def test_find_target_app_none_when_only_infra():
+    desktop = _FakeNode("desktop frame", "main",
+                        [_FakeNode("application", "xdg-desktop-portal-gtk")])
+    assert find_target_app(desktop) is None
+
+
+# --------------------------------------------------------------------------- #
+# Manager semantic passthroughs (stubbed connection)
+# --------------------------------------------------------------------------- #
+class _FakeCmdHarness:
+    def __init__(self, reply):
+        self._reply = reply
+        self.sent = []
+
+    def command(self, payload, timeout=20):
+        self.sent.append(payload)
+        return self._reply
+
+
+def _mgr_with(reply):
+    mgr = GuiHarnessManager()
+    harness = _FakeCmdHarness(reply)
+    mgr._harnesses["gui-1"] = harness
+    return mgr, harness
+
+
+def test_snapshot_tree_returns_tree():
+    mgr, _ = _mgr_with({"ok": True, "tree": {"role": "application"}})
+    assert mgr.snapshot_tree("gui-1") == {"role": "application"}
+
+
+def test_snapshot_tree_error_raises():
+    mgr, _ = _mgr_with({"ok": False, "error": "app not found"})
+    with pytest.raises(GuiHarnessError, match="app not found"):
+        mgr.snapshot_tree("gui-1")
+
+
+def test_click_sends_command():
+    mgr, harness = _mgr_with({"ok": True})
+    mgr.click("gui-1", role="button", name="Click Me")
+    assert harness.sent == [{"cmd": "click", "role": "button", "name": "Click Me"}]
+
+
+def test_click_error_raises():
+    mgr, _ = _mgr_with({"ok": False, "error": "no node matching"})
+    with pytest.raises(GuiHarnessError, match="no node matching"):
+        mgr.click("gui-1", role="button", name="X")
+
+
+def test_type_text_sends_command():
+    mgr, harness = _mgr_with({"ok": True})
+    mgr.type_text("gui-1", role="text", name="field", text="hello")
+    assert harness.sent == [
+        {"cmd": "type", "role": "text", "name": "field", "text": "hello"}
+    ]
+
+
+def test_do_action_sends_command():
+    mgr, harness = _mgr_with({"ok": True})
+    mgr.do_action("gui-1", role="button", name="Save", action="click")
+    assert harness.sent == [
+        {"cmd": "do_action", "role": "button", "name": "Save", "action": "click"}
+    ]
