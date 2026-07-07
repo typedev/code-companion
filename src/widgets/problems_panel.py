@@ -24,6 +24,9 @@ class ProblemsPanel(Gtk.Box):
         self._icon_cache = IconCache()
         self._problems: dict[str, FileProblems] = {}
         self._loading = False
+        # True once linters have completed at least once, so consumers can tell
+        # "clean (ran, no problems)" apart from "never ran" (both give an empty dict).
+        self._has_run = False
 
         self._build_ui()
         self._setup_css()
@@ -201,6 +204,7 @@ class ProblemsPanel(Gtk.Box):
     def _on_linters_done(self, problems: dict[str, FileProblems]):
         """Handle linters completion on main thread."""
         self._loading = False
+        self._has_run = True
         self.spinner.stop()
         self.spinner.set_visible(False)
         self._problems = problems

@@ -24,6 +24,7 @@ from __future__ import annotations
 import asyncio
 import threading
 from concurrent.futures import Future
+from pathlib import Path
 
 import gi
 
@@ -34,6 +35,10 @@ import uvicorn  # noqa: E402
 from mcp.server.fastmcp import FastMCP  # noqa: E402
 
 from .toast_service import ToastService  # noqa: E402
+
+# Cap on selection text returned by get_selection, so a huge selection can't bloat
+# the tool response; the ``truncated`` flag signals when the cap was hit.
+_MAX_SELECTION_CHARS = 100_000
 
 
 class _BearerAuthMiddleware:
@@ -169,6 +174,62 @@ class McpServer:
             """
             return self.call_on_main(self._do_get_workspace_state)
 
+        @mcp.tool()
+        def get_selection() -> dict:
+            """Return the current text selection in the active editor.
+
+            Reports the file path, the selected range (1-based lines, 0-based
+            columns), and the selected text. ``has_selection`` is false when nothing
+            is selected or the active tab is not an editor.
+            """
+            return self.call_on_main(self._do_get_selection)
+
+        @mcp.tool()
+        def get_problems(path: str | None = None) -> dict:
+            """Return the current ruff/mypy findings shown in the Problems panel.
+
+            Read-only snapshot of the panel's cached results; it does not re-run the
+            linters. ``has_run`` is false until the linters have completed at least
+            once (open the Problems tab to populate them). Pass ``path`` to filter to
+            a single file.
+            """
+            return self.call_on_main(lambda: self._do_get_problems(path))
+
+        @mcp.tool()
+        def list_tasks() -> dict:
+            """Return the tasks defined in the project's .vscode/tasks.json."""
+            return self.call_on_main(self._do_list_tasks)
+
+        @mcp.tool()
+        def open_file(
+            path: str, line: int | None = None, end_line: int | None = None
+        ) -> dict:
+            """Open a file in a tab and (optionally) scroll to / highlight a range.
+
+            ``path`` may be absolute or project-relative. With ``line`` the editor
+            scrolls to that 1-based line; with both ``line`` and ``end_line`` the
+            whole line range is selected. Returns ``{"ok": bool, "path", "error"?}``.
+            """
+            return self.call_on_main(
+                lambda: self._do_open_file(path, line, end_line)
+            )
+
+        @mcp.tool()
+        def show_diff(path: str) -> dict:
+            """Open the working-tree diff view for a file (project-relative or absolute).
+
+            Returns ``{"ok": bool, "path", "error"?}``.
+            """
+            return self.call_on_main(lambda: self._do_show_diff(path))
+
+        @mcp.tool()
+        def show_commit(commit_hash: str) -> dict:
+            """Open the commit-detail tab for a commit hash.
+
+            Returns ``{"ok": bool, "short_hash"?, "error"?}``.
+            """
+            return self.call_on_main(lambda: self._do_show_commit(commit_hash))
+
         return mcp
 
     # -- main-thread tool bodies -------------------------------------- #
@@ -209,3 +270,157 @@ class McpServer:
             "cursor_line": cursor_line,
             "open_tabs": tabs,
         }
+
+    def _active_editor(self):
+        """Return the FileEditor in the active tab, or None if it isn't an editor."""
+        tab_view = getattr(self.window, "tab_view", None)
+        if tab_view is None:
+            return None
+        page = tab_view.get_selected_page()
+        if page is None:
+            return None
+        child = page.get_child()
+        # Non-editor tabs (terminals, diff/detail views) also live in the tab view.
+        if not hasattr(child, "buffer") or not hasattr(child, "file_path"):
+            return None
+        return child
+
+    def _do_get_selection(self) -> dict:
+        empty = {
+            "path": None,
+            "has_selection": False,
+            "start_line": None,
+            "start_column": None,
+            "end_line": None,
+            "end_column": None,
+            "text": None,
+            "truncated": False,
+        }
+        editor = self._active_editor()
+        if editor is None:
+            return empty
+
+        path = editor.file_path
+        buffer = editor.buffer
+        if not buffer.get_has_selection():
+            return {**empty, "path": path}
+
+        start, end = buffer.get_selection_bounds()
+        text = buffer.get_text(start, end, False)
+        truncated = len(text) > _MAX_SELECTION_CHARS
+        if truncated:
+            text = text[:_MAX_SELECTION_CHARS]
+
+        return {
+            "path": path,
+            "has_selection": True,
+            "start_line": start.get_line() + 1,
+            "start_column": start.get_line_offset(),
+            "end_line": end.get_line() + 1,
+            "end_column": end.get_line_offset(),
+            "text": text,
+            "truncated": truncated,
+        }
+
+    def _do_get_problems(self, path: str | None) -> dict:
+        panel = getattr(self.window, "problems_panel", None)
+        if panel is None:
+            return {"problems": [], "counts": {"error": 0, "warning": 0, "total": 0},
+                    "has_run": False}
+
+        problems: list[dict] = []
+        for file_problems in panel._problems.values():
+            for p in file_problems.problems:
+                if path is not None and p.file != path:
+                    continue
+                problems.append({
+                    "file": p.file,
+                    "line": p.line,
+                    "column": p.column,
+                    "code": p.code,
+                    "message": p.message,
+                    "severity": p.severity,
+                    "source": p.source,
+                })
+
+        errors = sum(1 for p in problems if p["severity"] == "error")
+        warnings = sum(1 for p in problems if p["severity"] == "warning")
+        return {
+            "problems": problems,
+            "counts": {
+                "error": errors,
+                "warning": warnings,
+                "total": len(problems),
+            },
+            "has_run": bool(getattr(panel, "_has_run", False)),
+        }
+
+    def _do_list_tasks(self) -> dict:
+        panel = getattr(self.window, "tasks_panel", None)
+        if panel is None:
+            return {"tasks": [], "has_tasks_file": False}
+
+        service = panel.service
+        service.load()
+        tasks = [
+            {
+                "label": t.label,
+                "command": t.command,
+                "type": t.type,
+                "group": t.group,
+            }
+            for t in service.get_tasks()
+        ]
+        return {"tasks": tasks, "has_tasks_file": service.has_tasks_file()}
+
+    # -- main-thread tool bodies: UI-mutating ------------------------------- #
+    def _do_open_file(self, path: str, line: int | None, end_line: int | None) -> dict:
+        project_root = Path(self.window.project_path)
+        p = Path(path).expanduser()
+        resolved = str(p if p.is_absolute() else project_root / p)
+        if not Path(resolved).is_file():
+            return {"ok": False, "error": f"file not found: {resolved}"}
+
+        win = self.window
+        win._on_file_activated(None, resolved)
+        # Defer navigation so the freshly-created editor is realized first
+        # (mirrors _on_search_open_file_at_line).
+        if line is not None and end_line is not None:
+            GLib.idle_add(win._select_lines_in_editor, resolved, line, end_line)
+        elif line is not None:
+            GLib.idle_add(win._go_to_line_in_editor, resolved, line)
+        return {"ok": True, "path": resolved}
+
+    def _do_show_diff(self, path: str) -> dict:
+        win = self.window
+        if getattr(win, "git_service", None) is None:
+            return {"ok": False, "error": "no git repository"}
+
+        project_root = Path(win.project_path)
+        p = Path(path).expanduser()
+        if p.is_absolute():
+            try:
+                rel = str(p.relative_to(project_root))
+            except ValueError:
+                return {"ok": False, "error": "path is outside the project"}
+        else:
+            rel = path
+
+        try:
+            win._on_git_file_clicked(None, rel, False)
+        except Exception as exc:  # noqa: BLE001 - surfaced as a tool error, not a hang
+            return {"ok": False, "error": f"could not diff {rel}: {exc}"}
+        return {"ok": True, "path": rel}
+
+    def _do_show_commit(self, commit_hash: str) -> dict:
+        win = self.window
+        git_service = getattr(win, "git_service", None)
+        if git_service is None:
+            return {"ok": False, "error": "no git repository"}
+
+        commit = git_service.get_commit(commit_hash)
+        if not commit:
+            return {"ok": False, "error": f"commit not found: {commit_hash}"}
+
+        win._on_commit_view_diff(None, commit_hash)
+        return {"ok": True, "short_hash": commit.short_hash}

@@ -1,0 +1,684 @@
+"""MCP control-surface tests (Part A, increment 1).
+
+Locks in the A1/A2 acceptance criteria so they don't regress:
+- bearer-token auth rejects missing/wrong tokens (401);
+- an ``initialize`` round-trip reaches FastMCP and returns our server info;
+- ``stop()`` frees the port (window-close criterion);
+- ``call_on_main`` marshals results, times out instead of hanging, and forwards
+  exceptions;
+- the read-only tool body reflects the (fake) window state.
+"""
+
+import socket
+import threading
+import time
+
+import gi
+import httpx
+import pytest
+
+gi.require_version("Gtk", "4.0")
+from gi.repository import GLib  # noqa: E402
+
+from src.services.mcp_server import McpServer  # noqa: E402
+
+
+# --------------------------------------------------------------------------- #
+# Fakes
+# --------------------------------------------------------------------------- #
+class _FakeTabView:
+    def __init__(self, pages=None, selected=None):
+        self._pages = pages or []
+        self._selected = selected
+
+    def get_selected_page(self):
+        return self._selected
+
+    def get_n_pages(self):
+        return len(self._pages)
+
+    def get_nth_page(self, i):
+        return self._pages[i]
+
+
+class _FakeWindow:
+    def __init__(self, tab_view=None, active=True, problems_panel=None, tasks_panel=None):
+        self.tab_view = tab_view
+        self._active = active
+        if problems_panel is not None:
+            self.problems_panel = problems_panel
+        if tasks_panel is not None:
+            self.tasks_panel = tasks_panel
+
+    def is_active(self):
+        return self._active
+
+    def get_application(self):
+        return None
+
+
+def _free_port() -> int:
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.close()
+    return port
+
+
+def _wait_until_listening(port: int, timeout: float = 5.0) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=0.2):
+                return
+        except OSError:
+            time.sleep(0.02)
+    raise TimeoutError(f"server never listened on {port}")
+
+
+# --------------------------------------------------------------------------- #
+# Fixtures
+# --------------------------------------------------------------------------- #
+@pytest.fixture
+def running_server():
+    """A started McpServer with a fake empty window; token + base URL provided."""
+    srv = McpServer(_FakeWindow(_FakeTabView()))
+    port = _free_port()
+    token = "test-token-123"
+    srv.start(port, token)
+    _wait_until_listening(port)
+    base = f"http://127.0.0.1:{port}/mcp"
+    try:
+        yield srv, base, token
+    finally:
+        srv.stop()
+
+
+# --------------------------------------------------------------------------- #
+# Auth
+# --------------------------------------------------------------------------- #
+def test_rejects_without_token(running_server):
+    _srv, base, _token = running_server
+    r = httpx.get(base)
+    assert r.status_code == 401
+
+
+def test_rejects_wrong_token(running_server):
+    _srv, base, _token = running_server
+    r = httpx.get(base, headers={"Authorization": "Bearer nope"})
+    assert r.status_code == 401
+
+
+# --------------------------------------------------------------------------- #
+# Round-trip
+# --------------------------------------------------------------------------- #
+def test_initialize_round_trip(running_server):
+    _srv, base, token = running_server
+    body = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+            "protocolVersion": "2025-06-18",
+            "capabilities": {},
+            "clientInfo": {"name": "pytest", "version": "0"},
+        },
+    }
+    r = httpx.post(
+        base,
+        json=body,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/json, text/event-stream",
+        },
+    )
+    assert r.status_code == 200
+    # Body carries our FastMCP server name regardless of JSON vs SSE framing.
+    assert "code-companion" in r.text
+
+
+# --------------------------------------------------------------------------- #
+# Lifecycle
+# --------------------------------------------------------------------------- #
+def test_stop_frees_port():
+    srv = McpServer(_FakeWindow(_FakeTabView()))
+    port = _free_port()
+    srv.start(port, "tok")
+    _wait_until_listening(port)
+    srv.stop()
+    # The port must be rebindable immediately after a clean stop.
+    s = socket.socket()
+    try:
+        s.bind(("127.0.0.1", port))
+    finally:
+        s.close()
+
+
+def test_start_is_idempotent(running_server):
+    srv, _base, _token = running_server
+    thread = srv._thread
+    srv.start(_free_port(), "other")  # second start is a no-op
+    assert srv._thread is thread
+
+
+# --------------------------------------------------------------------------- #
+# call_on_main marshaling
+# --------------------------------------------------------------------------- #
+def _with_glib_loop(fn):
+    """Run ``fn`` while a GLib main loop services the default context."""
+    loop = GLib.MainLoop()
+    t = threading.Thread(target=loop.run, daemon=True)
+    t.start()
+    try:
+        # Give the loop a moment to start iterating.
+        time.sleep(0.05)
+        return fn()
+    finally:
+        loop.quit()
+        t.join(2)
+
+
+def test_call_on_main_returns_result():
+    srv = McpServer(_FakeWindow())
+    result = _with_glib_loop(lambda: srv.call_on_main(lambda: 21 * 2))
+    assert result == 42
+
+
+def test_call_on_main_times_out_without_loop():
+    srv = McpServer(_FakeWindow())
+    # No GLib loop is iterating the default context -> the idle never runs.
+    with pytest.raises(TimeoutError):
+        srv.call_on_main(lambda: "never", timeout=0.3)
+
+
+def test_call_on_main_forwards_exception():
+    srv = McpServer(_FakeWindow())
+
+    def boom():
+        raise ValueError("kaboom")
+
+    with pytest.raises(ValueError, match="kaboom"):
+        _with_glib_loop(lambda: srv.call_on_main(boom))
+
+
+# --------------------------------------------------------------------------- #
+# Read-only tool body
+# --------------------------------------------------------------------------- #
+class _FakePage:
+    def __init__(self, title, child):
+        self._title = title
+        self._child = child
+
+    def get_title(self):
+        return self._title
+
+    def get_child(self):
+        return self._child
+
+
+class _FakeEditor:
+    def __init__(self, path, modified=False, line=None):
+        self.file_path = path
+        self._modified = modified
+        self._line = line
+
+    def is_modified(self):
+        return self._modified
+
+    def _get_cursor_line(self):
+        return self._line
+
+
+def test_get_workspace_state_empty():
+    srv = McpServer(_FakeWindow(_FakeTabView()))
+    state = srv._do_get_workspace_state()
+    assert state == {"active_file": None, "cursor_line": None, "open_tabs": []}
+
+
+def test_get_workspace_state_reports_active_and_dirty():
+    editor = _FakeEditor("/proj/a.py", modified=True, line=12)
+    other = _FakeEditor("/proj/b.py", modified=False, line=1)
+    page_a = _FakePage("a.py", editor)
+    page_b = _FakePage("b.py", other)
+    tab_view = _FakeTabView(pages=[page_a, page_b], selected=page_a)
+
+    srv = McpServer(_FakeWindow(tab_view))
+    state = srv._do_get_workspace_state()
+
+    assert state["active_file"] == "/proj/a.py"
+    assert state["cursor_line"] == 12
+    assert state["open_tabs"] == [
+        {"title": "a.py", "path": "/proj/a.py", "dirty": True},
+        {"title": "b.py", "path": "/proj/b.py", "dirty": False},
+    ]
+
+
+# --------------------------------------------------------------------------- #
+# get_selection
+# --------------------------------------------------------------------------- #
+class _FakeIter:
+    def __init__(self, line, offset):  # line/offset are 0-based (GTK convention)
+        self._line = line
+        self._offset = offset
+
+    def get_line(self):
+        return self._line
+
+    def get_line_offset(self):
+        return self._offset
+
+
+class _FakeBuffer:
+    def __init__(self, text=None, start=None, end=None):
+        self._text = text
+        self._start = start
+        self._end = end
+
+    def get_has_selection(self):
+        return self._text is not None
+
+    def get_selection_bounds(self):
+        return (self._start, self._end)
+
+    def get_text(self, start, end, include_hidden):
+        return self._text
+
+
+class _EditorTab:
+    """A tab child that looks like a FileEditor (has ``buffer`` + ``file_path``)."""
+
+    def __init__(self, file_path, buffer):
+        self.file_path = file_path
+        self.buffer = buffer
+
+
+class _NonEditorTab:
+    """A tab child with neither ``buffer`` nor ``file_path`` (e.g. a terminal)."""
+
+
+def test_get_selection_no_editor_tab():
+    page = _FakePage("term", _NonEditorTab())
+    tab_view = _FakeTabView(pages=[page], selected=page)
+    srv = McpServer(_FakeWindow(tab_view))
+
+    result = srv._do_get_selection()
+    assert result["path"] is None
+    assert result["has_selection"] is False
+    assert result["text"] is None
+
+
+def test_get_selection_with_selection():
+    buffer = _FakeBuffer(
+        text="hello\nworld",
+        start=_FakeIter(2, 4),   # line 3, column 4
+        end=_FakeIter(5, 0),     # line 6, column 0
+    )
+    page = _FakePage("a.py", _EditorTab("/proj/a.py", buffer))
+    tab_view = _FakeTabView(pages=[page], selected=page)
+    srv = McpServer(_FakeWindow(tab_view))
+
+    result = srv._do_get_selection()
+    assert result == {
+        "path": "/proj/a.py",
+        "has_selection": True,
+        "start_line": 3,
+        "start_column": 4,
+        "end_line": 6,
+        "end_column": 0,
+        "text": "hello\nworld",
+        "truncated": False,
+    }
+
+
+def test_get_selection_without_selection_reports_path():
+    page = _FakePage("a.py", _EditorTab("/proj/a.py", _FakeBuffer(text=None)))
+    tab_view = _FakeTabView(pages=[page], selected=page)
+    srv = McpServer(_FakeWindow(tab_view))
+
+    result = srv._do_get_selection()
+    assert result["path"] == "/proj/a.py"
+    assert result["has_selection"] is False
+    assert result["start_line"] is None
+
+
+def test_get_selection_truncates_large_text():
+    from src.services.mcp_server import _MAX_SELECTION_CHARS
+
+    big = "x" * (_MAX_SELECTION_CHARS + 100)
+    buffer = _FakeBuffer(text=big, start=_FakeIter(0, 0), end=_FakeIter(0, 0))
+    page = _FakePage("a.py", _EditorTab("/proj/a.py", buffer))
+    tab_view = _FakeTabView(pages=[page], selected=page)
+    srv = McpServer(_FakeWindow(tab_view))
+
+    result = srv._do_get_selection()
+    assert result["truncated"] is True
+    assert len(result["text"]) == _MAX_SELECTION_CHARS
+
+
+# --------------------------------------------------------------------------- #
+# get_problems
+# --------------------------------------------------------------------------- #
+class _FakeProblem:
+    def __init__(self, file, line, column, code, message, severity, source):
+        self.file = file
+        self.line = line
+        self.column = column
+        self.code = code
+        self.message = message
+        self.severity = severity
+        self.source = source
+
+
+class _FakeFileProblems:
+    def __init__(self, problems):
+        self.problems = problems
+
+
+class _FakeProblemsPanel:
+    def __init__(self, problems_by_file=None, has_run=False):
+        self._problems = problems_by_file or {}
+        self._has_run = has_run
+
+
+def _problem(file, code, severity, line=1):
+    return _FakeProblem(file, line, 0, code, f"{code} msg", severity, "ruff")
+
+
+def test_get_problems_empty_not_run():
+    panel = _FakeProblemsPanel(has_run=False)
+    srv = McpServer(_FakeWindow(problems_panel=panel))
+
+    result = srv._do_get_problems(None)
+    assert result["problems"] == []
+    assert result["counts"] == {"error": 0, "warning": 0, "total": 0}
+    assert result["has_run"] is False
+
+
+def test_get_problems_populated_counts():
+    panel = _FakeProblemsPanel(
+        problems_by_file={
+            "/proj/a.py": _FakeFileProblems([
+                _problem("/proj/a.py", "E501", "error"),
+                _problem("/proj/a.py", "F401", "warning"),
+            ]),
+            "/proj/b.py": _FakeFileProblems([
+                _problem("/proj/b.py", "E302", "error"),
+            ]),
+        },
+        has_run=True,
+    )
+    srv = McpServer(_FakeWindow(problems_panel=panel))
+
+    result = srv._do_get_problems(None)
+    assert result["has_run"] is True
+    assert result["counts"] == {"error": 2, "warning": 1, "total": 3}
+    assert {p["code"] for p in result["problems"]} == {"E501", "F401", "E302"}
+
+
+def test_get_problems_filters_by_path():
+    panel = _FakeProblemsPanel(
+        problems_by_file={
+            "/proj/a.py": _FakeFileProblems([_problem("/proj/a.py", "E501", "error")]),
+            "/proj/b.py": _FakeFileProblems([_problem("/proj/b.py", "E302", "error")]),
+        },
+        has_run=True,
+    )
+    srv = McpServer(_FakeWindow(problems_panel=panel))
+
+    result = srv._do_get_problems("/proj/a.py")
+    assert result["counts"]["total"] == 1
+    assert result["problems"][0]["file"] == "/proj/a.py"
+
+
+def test_get_problems_no_panel():
+    srv = McpServer(_FakeWindow())
+    result = srv._do_get_problems(None)
+    assert result == {
+        "problems": [],
+        "counts": {"error": 0, "warning": 0, "total": 0},
+        "has_run": False,
+    }
+
+
+# --------------------------------------------------------------------------- #
+# list_tasks
+# --------------------------------------------------------------------------- #
+class _FakeTask:
+    def __init__(self, label, command, type="shell", group=None):
+        self.label = label
+        self.command = command
+        self.type = type
+        self.group = group
+
+
+class _FakeTasksService:
+    def __init__(self, tasks=None, has_file=True):
+        self._tasks = tasks or []
+        self._has_file = has_file
+        self.loaded = False
+
+    def load(self):
+        self.loaded = True
+        return self._has_file
+
+    def get_tasks(self):
+        return list(self._tasks)
+
+    def has_tasks_file(self):
+        return self._has_file
+
+
+class _FakeTasksPanel:
+    def __init__(self, service):
+        self.service = service
+
+
+def test_list_tasks_no_file():
+    panel = _FakeTasksPanel(_FakeTasksService(tasks=[], has_file=False))
+    srv = McpServer(_FakeWindow(tasks_panel=panel))
+
+    result = srv._do_list_tasks()
+    assert result == {"tasks": [], "has_tasks_file": False}
+    assert panel.service.loaded is True
+
+
+def test_list_tasks_with_tasks():
+    service = _FakeTasksService(
+        tasks=[
+            _FakeTask("Run", "pytest", group="test"),
+            _FakeTask("Build", "make", type="process"),
+        ]
+    )
+    srv = McpServer(_FakeWindow(tasks_panel=_FakeTasksPanel(service)))
+
+    result = srv._do_list_tasks()
+    assert result["has_tasks_file"] is True
+    assert result["tasks"] == [
+        {"label": "Run", "command": "pytest", "type": "shell", "group": "test"},
+        {"label": "Build", "command": "make", "type": "process", "group": None},
+    ]
+
+
+def test_list_tasks_no_panel():
+    srv = McpServer(_FakeWindow())
+    assert srv._do_list_tasks() == {"tasks": [], "has_tasks_file": False}
+
+
+# --------------------------------------------------------------------------- #
+# UI-mutating tools: open_file / show_diff / show_commit
+# --------------------------------------------------------------------------- #
+_MISSING = object()
+
+
+class _FakeCommit:
+    def __init__(self, short_hash):
+        self.short_hash = short_hash
+
+
+class _FakeGitService:
+    def __init__(self, commits=None, diff_raises_on=None):
+        self._commits = commits or {}         # hash -> _FakeCommit
+        self._diff_raises_on = diff_raises_on  # rel path that should raise
+
+    def get_commit(self, commit_hash):
+        return self._commits.get(commit_hash)
+
+
+class _RecordingWindow:
+    """A window that records which UI handlers were invoked (and with what)."""
+
+    def __init__(self, project_path, git_service=_MISSING):
+        self.project_path = project_path
+        self.calls = []
+        if git_service is not _MISSING:
+            self.git_service = git_service
+
+    def _on_file_activated(self, tree, path):
+        self.calls.append(("open", path))
+
+    def _go_to_line_in_editor(self, path, line):
+        self.calls.append(("goto", path, line))
+
+    def _select_lines_in_editor(self, path, start, end):
+        self.calls.append(("range", path, start, end))
+
+    def _on_git_file_clicked(self, panel, path, staged):
+        gs = getattr(self, "git_service", None)
+        if gs is not None and gs._diff_raises_on == path:
+            raise KeyError(path)
+        self.calls.append(("diff", path, staged))
+
+    def _on_commit_view_diff(self, panel, commit_hash):
+        self.calls.append(("commit", commit_hash))
+
+
+@pytest.fixture
+def sync_idle_add(monkeypatch):
+    """Make GLib.idle_add run its callback synchronously so tests are deterministic."""
+    from src.services import mcp_server as mod
+
+    def run_now(fn, *args):
+        fn(*args)
+        return False
+
+    monkeypatch.setattr(mod.GLib, "idle_add", run_now)
+
+
+# -- open_file ------------------------------------------------------------- #
+def test_open_file_relative_resolves_and_opens(tmp_path, sync_idle_add):
+    (tmp_path / "a.py").write_text("x = 1\n")
+    win = _RecordingWindow(str(tmp_path))
+    srv = McpServer(win)
+
+    result = srv._do_open_file("a.py", None, None)
+    resolved = str(tmp_path / "a.py")
+    assert result == {"ok": True, "path": resolved}
+    assert win.calls == [("open", resolved)]
+
+
+def test_open_file_absolute_with_line(tmp_path, sync_idle_add):
+    f = tmp_path / "a.py"
+    f.write_text("x = 1\n")
+    win = _RecordingWindow(str(tmp_path))
+    srv = McpServer(win)
+
+    result = srv._do_open_file(str(f), 3, None)
+    assert result["ok"] is True
+    assert win.calls == [("open", str(f)), ("goto", str(f), 3)]
+
+
+def test_open_file_with_range(tmp_path, sync_idle_add):
+    f = tmp_path / "a.py"
+    f.write_text("x = 1\n")
+    win = _RecordingWindow(str(tmp_path))
+    srv = McpServer(win)
+
+    result = srv._do_open_file("a.py", 2, 5)
+    resolved = str(tmp_path / "a.py")
+    assert result["ok"] is True
+    assert win.calls == [("open", resolved), ("range", resolved, 2, 5)]
+
+
+def test_open_file_missing_returns_error(tmp_path, sync_idle_add):
+    win = _RecordingWindow(str(tmp_path))
+    srv = McpServer(win)
+
+    result = srv._do_open_file("nope.py", None, None)
+    assert result["ok"] is False
+    assert "not found" in result["error"]
+    assert win.calls == []  # UI untouched
+
+
+# -- show_diff ------------------------------------------------------------- #
+def test_show_diff_relative(tmp_path):
+    win = _RecordingWindow(str(tmp_path), git_service=_FakeGitService())
+    srv = McpServer(win)
+
+    result = srv._do_show_diff("src/a.py")
+    assert result == {"ok": True, "path": "src/a.py"}
+    assert win.calls == [("diff", "src/a.py", False)]
+
+
+def test_show_diff_absolute_inside_project(tmp_path):
+    win = _RecordingWindow(str(tmp_path), git_service=_FakeGitService())
+    srv = McpServer(win)
+
+    abs_path = str(tmp_path / "src" / "a.py")
+    result = srv._do_show_diff(abs_path)
+    assert result == {"ok": True, "path": "src/a.py"}
+
+
+def test_show_diff_absolute_outside_project(tmp_path):
+    win = _RecordingWindow(str(tmp_path), git_service=_FakeGitService())
+    srv = McpServer(win)
+
+    result = srv._do_show_diff("/etc/passwd")
+    assert result["ok"] is False
+    assert "outside" in result["error"]
+
+
+def test_show_diff_no_git():
+    win = _RecordingWindow("/proj")  # no git_service attribute
+    srv = McpServer(win)
+
+    result = srv._do_show_diff("a.py")
+    assert result == {"ok": False, "error": "no git repository"}
+
+
+def test_show_diff_handler_error_is_caught(tmp_path):
+    gs = _FakeGitService(diff_raises_on="bad.py")
+    win = _RecordingWindow(str(tmp_path), git_service=gs)
+    srv = McpServer(win)
+
+    result = srv._do_show_diff("bad.py")
+    assert result["ok"] is False
+    assert "could not diff" in result["error"]
+
+
+# -- show_commit ----------------------------------------------------------- #
+def test_show_commit_found():
+    gs = _FakeGitService(commits={"abc123": _FakeCommit("abc123")})
+    win = _RecordingWindow("/proj", git_service=gs)
+    srv = McpServer(win)
+
+    result = srv._do_show_commit("abc123")
+    assert result == {"ok": True, "short_hash": "abc123"}
+    assert win.calls == [("commit", "abc123")]
+
+
+def test_show_commit_not_found():
+    win = _RecordingWindow("/proj", git_service=_FakeGitService())
+    srv = McpServer(win)
+
+    result = srv._do_show_commit("deadbeef")
+    assert result["ok"] is False
+    assert "not found" in result["error"]
+    assert win.calls == []  # UI untouched
+
+
+def test_show_commit_no_git():
+    win = _RecordingWindow("/proj")  # no git_service attribute
+    srv = McpServer(win)
+
+    result = srv._do_show_commit("abc123")
+    assert result == {"ok": False, "error": "no git repository"}

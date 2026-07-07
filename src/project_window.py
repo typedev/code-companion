@@ -713,6 +713,17 @@ class ProjectWindow(Adw.ApplicationWindow):
                 break
         return False
 
+    def _select_lines_in_editor(self, file_path: str, start_line: int, end_line: int):
+        """Select a line range in an already-open editor (mirrors _go_to_line_in_editor)."""
+        for i in range(self.tab_view.get_n_pages()):
+            page = self.tab_view.get_nth_page(i)
+            child = page.get_child()
+            if hasattr(child, "file_path") and child.file_path == file_path:
+                if hasattr(child, "select_line_range"):
+                    child.select_line_range(start_line, end_line)
+                break
+        return False
+
     def _build_files_page(self) -> Gtk.Box:
         """Build the Files tab content."""
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)

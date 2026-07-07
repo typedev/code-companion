@@ -747,6 +747,25 @@ class FileEditor(Gtk.Box):
         )
         return False  # Don't repeat
 
+    def select_line_range(self, start_line: int, end_line: int):
+        """Select whole lines from start_line to end_line (1-based) and scroll there.
+
+        The cursor (insert) is placed at the start of the range so the scroll lands
+        on its beginning. When end_line is past the file, the selection extends to the
+        end of the buffer.
+        """
+        ok_start, start_iter = self.buffer.get_iter_at_line(max(start_line - 1, 0))
+        if not ok_start:
+            return
+        ok_end, end_iter = self.buffer.get_iter_at_line(max(end_line - 1, 0))
+        if not ok_end:
+            end_iter = self.buffer.get_end_iter()
+        else:
+            end_iter.forward_to_line_end()
+        # First arg becomes the insert mark -> _scroll_to_cursor lands on the start.
+        self.buffer.select_range(start_iter, end_iter)
+        GLib.idle_add(self._scroll_to_cursor)
+
     def _update_outline(self):
         """Update outline in script toolbar."""
         ext = Path(self.file_path).suffix.lower()
