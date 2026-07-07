@@ -184,6 +184,12 @@ class TerminalView(Gtk.Box):
         self.terminal.search_set_regex(None, 0)
         self.terminal.grab_focus()
 
+    def get_selected_text(self) -> str | None:
+        """Return the text currently selected in the terminal, or None."""
+        if self.terminal is None or not self.terminal.get_has_selection():
+            return None
+        return self.terminal.get_text_selected(Vte.Format.TEXT)
+
     def _on_search_changed(self, *args):
         """Handle search text or options change."""
         text = self.search_entry.get_text()

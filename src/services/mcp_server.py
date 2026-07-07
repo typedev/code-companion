@@ -234,11 +234,12 @@ class McpServer:
 
         @mcp.tool()
         def get_selection() -> dict:
-            """Return the current text selection in the active editor.
+            """Return the current text selection in the active editor or terminal.
 
-            Reports the file path, the selected range (1-based lines, 0-based
-            columns), and the selected text. ``has_selection`` is false when nothing
-            is selected or the active tab is not an editor.
+            ``source`` is ``"editor"``, ``"terminal"``, or null. For an editor it also
+            reports the file path and the selected range (1-based lines, 0-based
+            columns); for a terminal only the selected text (path/lines are null).
+            ``has_selection`` is false when nothing is selected.
             """
             return self.call_on_main(self._do_get_selection)
 
@@ -406,22 +407,16 @@ class McpServer:
             "open_tabs": tabs,
         }
 
-    def _active_editor(self):
-        """Return the FileEditor in the active tab, or None if it isn't an editor."""
+    def _active_child(self):
         tab_view = getattr(self.window, "tab_view", None)
         if tab_view is None:
             return None
         page = tab_view.get_selected_page()
-        if page is None:
-            return None
-        child = page.get_child()
-        # Non-editor tabs (terminals, diff/detail views) also live in the tab view.
-        if not hasattr(child, "buffer") or not hasattr(child, "file_path"):
-            return None
-        return child
+        return page.get_child() if page is not None else None
 
     def _do_get_selection(self) -> dict:
         empty = {
+            "source": None,
             "path": None,
             "has_selection": False,
             "start_line": None,
@@ -431,23 +426,35 @@ class McpServer:
             "text": None,
             "truncated": False,
         }
-        editor = self._active_editor()
-        if editor is None:
+        child = self._active_child()
+        if child is None:
             return empty
 
-        path = editor.file_path
+        # Editor tab: selection with a path + line/column range.
+        if hasattr(child, "buffer") and hasattr(child, "file_path"):
+            return self._editor_selection(child, empty)
+
+        # Terminal tab: selected text only (no path/lines).
+        if hasattr(child, "get_selected_text"):
+            text = child.get_selected_text()
+            if not text:
+                return {**empty, "source": "terminal"}
+            text, truncated = self._cap_selection(text)
+            return {**empty, "source": "terminal", "has_selection": True,
+                    "text": text, "truncated": truncated}
+
+        return empty
+
+    def _editor_selection(self, editor, empty: dict) -> dict:
         buffer = editor.buffer
         if not buffer.get_has_selection():
-            return {**empty, "path": path}
+            return {**empty, "source": "editor", "path": editor.file_path}
 
         start, end = buffer.get_selection_bounds()
-        text = buffer.get_text(start, end, False)
-        truncated = len(text) > _MAX_SELECTION_CHARS
-        if truncated:
-            text = text[:_MAX_SELECTION_CHARS]
-
+        text, truncated = self._cap_selection(buffer.get_text(start, end, False))
         return {
-            "path": path,
+            "source": "editor",
+            "path": editor.file_path,
             "has_selection": True,
             "start_line": start.get_line() + 1,
             "start_column": start.get_line_offset(),
@@ -456,6 +463,11 @@ class McpServer:
             "text": text,
             "truncated": truncated,
         }
+
+    @staticmethod
+    def _cap_selection(text: str) -> tuple[str, bool]:
+        truncated = len(text) > _MAX_SELECTION_CHARS
+        return (text[:_MAX_SELECTION_CHARS] if truncated else text), truncated
 
     def _do_get_problems(self, path: str | None) -> dict:
         panel = getattr(self.window, "problems_panel", None)

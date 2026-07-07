@@ -296,12 +296,23 @@ class _NonEditorTab:
     """A tab child with neither ``buffer`` nor ``file_path`` (e.g. a terminal)."""
 
 
+class _TerminalTab:
+    """A tab child that looks like a TerminalView (has ``get_selected_text``)."""
+
+    def __init__(self, selected_text=None):
+        self._selected_text = selected_text
+
+    def get_selected_text(self):
+        return self._selected_text
+
+
 def test_get_selection_no_editor_tab():
     page = _FakePage("term", _NonEditorTab())
     tab_view = _FakeTabView(pages=[page], selected=page)
     srv = McpServer(_FakeWindow(tab_view))
 
     result = srv._do_get_selection()
+    assert result["source"] is None
     assert result["path"] is None
     assert result["has_selection"] is False
     assert result["text"] is None
@@ -319,6 +330,7 @@ def test_get_selection_with_selection():
 
     result = srv._do_get_selection()
     assert result == {
+        "source": "editor",
         "path": "/proj/a.py",
         "has_selection": True,
         "start_line": 3,
@@ -328,6 +340,44 @@ def test_get_selection_with_selection():
         "text": "hello\nworld",
         "truncated": False,
     }
+
+
+def test_get_selection_terminal_with_selection():
+    page = _FakePage("Terminal 1", _TerminalTab(selected_text="Traceback...\n  line 2"))
+    tab_view = _FakeTabView(pages=[page], selected=page)
+    srv = McpServer(_FakeWindow(tab_view))
+
+    result = srv._do_get_selection()
+    assert result["source"] == "terminal"
+    assert result["has_selection"] is True
+    assert result["text"] == "Traceback...\n  line 2"
+    assert result["path"] is None
+    assert result["start_line"] is None
+
+
+def test_get_selection_terminal_no_selection():
+    page = _FakePage("Terminal 1", _TerminalTab(selected_text=None))
+    tab_view = _FakeTabView(pages=[page], selected=page)
+    srv = McpServer(_FakeWindow(tab_view))
+
+    result = srv._do_get_selection()
+    assert result["source"] == "terminal"
+    assert result["has_selection"] is False
+    assert result["text"] is None
+
+
+def test_get_selection_terminal_truncates():
+    from src.services.mcp_server import _MAX_SELECTION_CHARS
+
+    big = "y" * (_MAX_SELECTION_CHARS + 50)
+    page = _FakePage("Terminal 1", _TerminalTab(selected_text=big))
+    tab_view = _FakeTabView(pages=[page], selected=page)
+    srv = McpServer(_FakeWindow(tab_view))
+
+    result = srv._do_get_selection()
+    assert result["source"] == "terminal"
+    assert result["truncated"] is True
+    assert len(result["text"]) == _MAX_SELECTION_CHARS
 
 
 def test_get_selection_without_selection_reports_path():
