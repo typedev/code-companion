@@ -1,8 +1,10 @@
 # MCP Integration & Native GUI Test Harness — Implementation Plan
 
-**Status**: Part A in progress — A1 ✅, A2 mostly ✅ (Preferences toggle pending),
-A3 ✅ all 8 read/present tools (increments 1–3, 33 tests). Next: A4 (mutating tools).
-Part B (GUI harness) not started. (Updated 2026-07-07.)
+**Status**: **Part A essentially complete** — A1 ✅, A2 mostly ✅ (Preferences toggle is
+the one open item), A3 ✅ (8 read/present tools), A4 ✅ (3 mutating tools), A5 ✅
+(`/refresh` endpoint + documented PostToolUse hook). 133 tests. Only remaining Part-A
+tail: the `mcp.enabled` Preferences toggle. Part B (GUI harness) not started.
+(Updated 2026-07-07.)
 **Depends on**: Phase 1 (data safety) ✅ and Phase 2 (async layer) ✅ — both code-complete.
 **Parent roadmap**: `docs/plan-stability-roadmap.md` (Phase 7). This document is the
 detailed, de-risked implementation plan for that phase, **plus** a new capability
@@ -113,19 +115,58 @@ the secret isn't echoed into the terminal scrollback.
   reads the panel cache). UI tools return `{"ok": bool, ...}` and normalize paths
   per-tool (`open_file` absolute, `show_diff` project-relative).
 
-## A4. Tools v1 — mutating (explicit, few)
+## A4. Tools v1 — mutating (explicit, few) ✅ (increment 4, commit `53a314d`)
 
-- [ ] `create_issue(title, body)` + `refresh_issues()` (via `IssuesService`).
-- [ ] `run_task(name)` — run a tasks.json task in the app's terminal.
-- [ ] `add_note(name, content)` — write/append `notes/<name>.md`.
-- **Acceptance**: each mutating tool triggers the relevant panel refresh through
-  existing signals.
+- [x] `create_issue(title, body)` — via `IssuesService.create_issue`; refreshes the
+      Issues panel. Blocking network runs on the FastMCP worker thread (not
+      `call_on_main`); catches `AuthenticationRequired` / `GitHubError`.
+- [x] `run_task(name)` — resolves the label via `TasksService`, applies
+      `substitute_variables`, reuses `ProjectWindow._on_task_run` (new terminal tab).
+- [x] `add_note(name, content)` — create-or-append `notes/<name>.md` via
+      `atomic_write_text`; `NotesPanel` auto-refreshes via `FileMonitorService`.
+- **Acceptance**: ✅ covered by `tests/test_mcp_server.py`; all 11 Part-A tools verified
+  via an official MCP-client `tools/list`.
 
-## A5. Hook hybrid
+## A5. Hook hybrid ✅ (increment 5)
 
-- [ ] Expose one plain-HTTP `/refresh` endpoint alongside MCP; document a
-      `PostToolUse` hook snippet that POSTs to it after `gh issue create` /
-      `git commit`, so panels refresh even when the model doesn't call a tool.
+- [x] Plain-HTTP `POST /refresh` endpoint alongside MCP on the same port. Implemented as
+      a pure-ASGI `_RefreshEndpoint` composed under the bearer-auth layer
+      (`uvicorn → _BearerAuthMiddleware → _RefreshEndpoint → mcp_app`), so it inherits the
+      token auth and leaves the MCP session lifespan intact. Body `{"target": "git" |
+      "issues" | "notes" | "all"}` (default `all`) → refreshes the matching panels on the
+      GTK main thread; responds `{"refreshed": [...]}`.
+- **Acceptance**: ✅ `POST /refresh` with the token → 200 + refreshed list; without →
+      401; `/mcp` still round-trips (delegation/lifespan intact). Locked by
+      `tests/test_mcp_server.py`.
+
+### PostToolUse hook snippet
+
+Panels also refresh when the model changes state directly in the terminal (no tool call).
+Add to the project's `.claude/settings.json` — it uses the `CC_MCP_PORT` / `CC_MCP_TOKEN`
+env vars already injected into the `claude` process:
+
+```json
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cmd=$(jq -r '.tool_input.command // empty'); case \"$cmd\" in *\"git commit\"*) t=git;; *\"gh issue create\"*) t=issues;; *) exit 0;; esac; curl -s -m 2 -X POST -H \"Authorization: Bearer $CC_MCP_TOKEN\" -H 'Content-Type: application/json' -d \"{\\\"target\\\":\\\"$t\\\"}\" \"http://127.0.0.1:$CC_MCP_PORT/refresh\" >/dev/null 2>&1 || true"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+The hook reads the Bash command from the PostToolUse payload (`jq`), maps `git commit` →
+`git` and `gh issue create` → `issues`, and POSTs to `/refresh`; anything else exits 0.
+It fails open (`|| true`, `-m 2`) so a stopped server never blocks the tool. v1 is
+**documentation only** — the app does not write this hook itself.
 
 ---
 

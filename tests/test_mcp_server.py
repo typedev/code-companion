@@ -842,3 +842,127 @@ def test_add_note_adds_md_suffix(tmp_path):
     srv = McpServer(_RecordingWindow(str(tmp_path)))
     srv._do_add_note("todo", "x")
     assert (tmp_path / "notes" / "todo.md").is_file()
+
+
+# --------------------------------------------------------------------------- #
+# /refresh endpoint
+# --------------------------------------------------------------------------- #
+class _RefreshPanel:
+    def __init__(self):
+        self.count = 0
+
+    def refresh(self, *args, **kwargs):
+        self.count += 1
+
+
+class _RefreshWindow:
+    def __init__(self, **panels):
+        for name, panel in panels.items():
+            setattr(self, name, panel)
+
+
+def _refresh_window(include_issues=True):
+    panels = {
+        "git_changes_panel": _RefreshPanel(),
+        "git_history_panel": _RefreshPanel(),
+        "notes_panel": _RefreshPanel(),
+    }
+    if include_issues:
+        panels["issues_panel"] = _RefreshPanel()
+    return _RefreshWindow(**panels)
+
+
+def test_refresh_targets_git_only():
+    win = _refresh_window()
+    srv = McpServer(win)
+
+    assert srv._refresh_targets("git") == ["git_changes", "git_history"]
+    assert win.git_changes_panel.count == 1
+    assert win.git_history_panel.count == 1
+    assert win.issues_panel.count == 0
+    assert win.notes_panel.count == 0
+
+
+def test_refresh_targets_issues_only():
+    win = _refresh_window()
+    srv = McpServer(win)
+    assert srv._refresh_targets("issues") == ["issues"]
+    assert win.issues_panel.count == 1
+    assert win.git_changes_panel.count == 0
+
+
+def test_refresh_targets_notes_only():
+    win = _refresh_window()
+    srv = McpServer(win)
+    assert srv._refresh_targets("notes") == ["notes"]
+    assert win.notes_panel.count == 1
+
+
+def test_refresh_targets_all():
+    win = _refresh_window()
+    srv = McpServer(win)
+    assert srv._refresh_targets("all") == [
+        "git_changes", "git_history", "issues", "notes",
+    ]
+
+
+def test_refresh_targets_all_skips_missing_lazy_panel():
+    win = _refresh_window(include_issues=False)  # issues_panel not built yet
+    srv = McpServer(win)
+    assert srv._refresh_targets("all") == ["git_changes", "git_history", "notes"]
+
+
+def test_refresh_targets_unknown():
+    win = _refresh_window()
+    srv = McpServer(win)
+    assert srv._refresh_targets("bogus") == []
+    assert win.git_changes_panel.count == 0
+
+
+@pytest.fixture
+def refresh_server():
+    """Server bound to a window with recording panels, with a GLib loop running so
+    call_on_main resolves (the panels are plain Python, so no real GTK affinity)."""
+    win = _refresh_window()
+    srv = McpServer(win)
+    port = _free_port()
+    token = "refresh-token"
+    srv.start(port, token)
+    _wait_until_listening(port)
+    loop = GLib.MainLoop()
+    thread = threading.Thread(target=loop.run, daemon=True)
+    thread.start()
+    try:
+        yield srv, f"http://127.0.0.1:{port}", token, win
+    finally:
+        loop.quit()
+        thread.join(2)
+        srv.stop()
+
+
+def test_refresh_endpoint_ok(refresh_server):
+    _srv, root, token, win = refresh_server
+    r = httpx.post(
+        root + "/refresh",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"target": "git"},
+    )
+    assert r.status_code == 200
+    assert set(r.json()["refreshed"]) == {"git_changes", "git_history"}
+    assert win.git_changes_panel.count == 1
+
+
+def test_refresh_endpoint_requires_token(refresh_server):
+    _srv, root, _token, _win = refresh_server
+    r = httpx.post(root + "/refresh", json={"target": "all"})
+    assert r.status_code == 401
+
+
+def test_refresh_endpoint_bad_json(refresh_server):
+    _srv, root, token, _win = refresh_server
+    r = httpx.post(
+        root + "/refresh",
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+        content=b"not json",
+    )
+    assert r.status_code == 400

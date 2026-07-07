@@ -22,6 +22,7 @@ Design (see docs/plan-mcp-integration.md, decisions D1-D4):
 from __future__ import annotations
 
 import asyncio
+import json
 import threading
 from concurrent.futures import Future
 from pathlib import Path
@@ -33,6 +34,7 @@ from gi.repository import GLib, Gio  # noqa: E402
 
 import uvicorn  # noqa: E402
 from mcp.server.fastmcp import FastMCP  # noqa: E402
+from starlette.concurrency import run_in_threadpool  # noqa: E402
 
 from .toast_service import ToastService  # noqa: E402
 
@@ -66,6 +68,55 @@ class _BearerAuthMiddleware:
             await send({"type": "http.response.body", "body": b"Unauthorized"})
             return
         await self.app(scope, receive, send)
+
+
+class _RefreshEndpoint:
+    """Pure-ASGI shim: handle ``POST /refresh``, delegate everything else.
+
+    Lets a hook (or the model) refresh the app's panels after a terminal action
+    (``git commit`` / ``gh issue create``) that did not go through an MCP tool.
+    Sits behind :class:`_BearerAuthMiddleware`, so it already requires the token.
+    """
+
+    def __init__(self, app, server: "McpServer"):
+        self.app = app
+        self.server = server
+
+    async def __call__(self, scope, receive, send):
+        if not (
+            scope["type"] == "http"
+            and scope.get("path") == "/refresh"
+            and scope.get("method") == "POST"
+        ):
+            await self.app(scope, receive, send)
+            return
+
+        body = b""
+        while True:
+            message = await receive()
+            body += message.get("body", b"")
+            if not message.get("more_body"):
+                break
+
+        try:
+            target = (json.loads(body) if body else {}).get("target", "all")
+        except (ValueError, AttributeError):
+            await self._respond(send, 400, {"error": "invalid JSON body"})
+            return
+
+        # Offload so the event loop is not blocked while the main thread refreshes.
+        refreshed = await run_in_threadpool(self.server._do_refresh, target)
+        await self._respond(send, 200, {"refreshed": refreshed})
+
+    @staticmethod
+    async def _respond(send, status: int, payload: dict) -> None:
+        data = json.dumps(payload).encode()
+        await send({
+            "type": "http.response.start",
+            "status": status,
+            "headers": [(b"content-type", b"application/json")],
+        })
+        await send({"type": "http.response.body", "body": data})
 
 
 class McpServer:
@@ -110,8 +161,11 @@ class McpServer:
             return
         self.port = port
 
-        app = self._build_mcp().streamable_http_app()
-        app.add_middleware(_BearerAuthMiddleware, token=token)
+        # Compose pure-ASGI layers around the FastMCP app (not Starlette
+        # add_middleware) so /refresh can be added without touching Starlette
+        # internals; non-http scopes (incl. the session lifespan) pass through.
+        mcp_app = self._build_mcp().streamable_http_app()
+        app = _BearerAuthMiddleware(_RefreshEndpoint(mcp_app, self), token=token)
 
         config = uvicorn.Config(
             app,
@@ -512,3 +566,34 @@ class McpServer:
         text = f"{existing}\n{content}" if existing else content
         atomic_write_text(path, text)
         return {"ok": True, "path": str(path)}
+
+    # -- /refresh endpoint -------------------------------------------------- #
+    def _do_refresh(self, target: str) -> list[str]:
+        """Worker-thread entry for POST /refresh; marshals the work to the main loop."""
+        return self.call_on_main(lambda: self._refresh_targets(target))
+
+    def _refresh_targets(self, target: str) -> list[str]:
+        """Refresh the panels matching ``target`` on the GTK main thread.
+
+        ``target`` is one of ``git`` / ``issues`` / ``notes`` / ``all`` (default).
+        Every panel is guarded — some are built lazily. Returns the keys refreshed.
+        """
+        win = self.window
+        want_all = target == "all"
+        refreshed: list[str] = []
+
+        def _refresh(key: str, panel_attr: str):
+            panel = getattr(win, panel_attr, None)
+            if panel is not None:
+                panel.refresh()
+                refreshed.append(key)
+
+        if want_all or target == "git":
+            _refresh("git_changes", "git_changes_panel")
+            _refresh("git_history", "git_history_panel")
+        if want_all or target == "issues":
+            _refresh("issues", "issues_panel")
+        if want_all or target == "notes":
+            _refresh("notes", "notes_panel")
+
+        return refreshed
