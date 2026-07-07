@@ -895,6 +895,40 @@ def test_add_note_adds_md_suffix(tmp_path):
 
 
 # --------------------------------------------------------------------------- #
+# session summary
+# --------------------------------------------------------------------------- #
+def test_set_and_get_session_summary(tmp_path, monkeypatch):
+    from src.services import session_summary_service
+
+    monkeypatch.setattr(session_summary_service, "get_config_dir", lambda: tmp_path)
+    win = _FakeWindow()
+    win.project_path = "/proj/x"
+    srv = McpServer(win)
+
+    result = srv._do_set_session_summary("hello body", "Title")
+    assert result["ok"] is True
+    assert (tmp_path / "session-summaries").is_dir()
+
+    got = srv._do_get_session_summary()
+    assert got == {
+        "ok": True, "exists": True,
+        "title": "Title", "updated": got["updated"], "content": "hello body",
+    }
+    assert got["updated"]  # timestamp stamped
+
+
+def test_get_session_summary_missing(tmp_path, monkeypatch):
+    from src.services import session_summary_service
+
+    monkeypatch.setattr(session_summary_service, "get_config_dir", lambda: tmp_path)
+    win = _FakeWindow()
+    win.project_path = "/proj/none"
+    srv = McpServer(win)
+
+    assert srv._do_get_session_summary() == {"ok": True, "exists": False}
+
+
+# --------------------------------------------------------------------------- #
 # /refresh endpoint
 # --------------------------------------------------------------------------- #
 class _RefreshPanel:

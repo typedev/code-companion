@@ -68,6 +68,20 @@ def seed_sessions(home: Path, project_path: Path, files: dict[str, str]) -> None
         (d / name).write_text(text, encoding="utf-8")
 
 
+def seed_summary(home: Path, project_path: Path, content: str, title: str = "") -> str:
+    """Write a session summary under home's config dir; return its project_id key."""
+    from src.utils.project_identity import resolve_project_identity
+
+    d = home / ".config" / "code-companion" / "session-summaries"
+    d.mkdir(parents=True, exist_ok=True)
+    key = resolve_project_identity(project_path).project_id
+    (d / f"{key}.md").write_text(
+        f"---\ntitle: {title}\nupdated: 2026-01-01T00:00:00\n---\n{content}",
+        encoding="utf-8",
+    )
+    return key
+
+
 def read_repo_file(tmp_path: Path, bare: Path, rel: str) -> str | None:
     """Clone the bare remote fresh and read a file from it."""
     check = tmp_path / f"check-{abs(hash(rel)) % 10000}"
@@ -253,3 +267,40 @@ def test_restore_project_clones_and_registers(tmp_path):
     from src.services.project_registry import ProjectRegistry
 
     assert ProjectRegistry().is_registered(new_path)
+
+
+def test_session_summary_rides_the_sync(tmp_path):
+    bare = make_bare(tmp_path)
+    origin = "https://github.com/test/proj.git"
+
+    # Machine A: save a session summary, then sync (seeds the repo).
+    homeA = tmp_path / "mA"
+    projA = make_project(homeA, "proj", origin)
+    svcA = fresh_service(homeA, str(bare))  # sets HOME=homeA
+    enc = seed_summary(homeA, projA, "next: ship it\n", title="Handoff")
+    resA = svcA.sync([str(projA)])
+    assert resA.error is None
+
+    # Backed up to the repo's global layer.
+    repo_body = read_repo_file(tmp_path, bare, f"global/session-summaries/{enc}.md")
+    assert repo_body is not None and "next: ship it" in repo_body
+
+    # Machine B: a fresh clone materializes the global summary into B's config dir.
+    homeB = tmp_path / "mB"
+    projB = make_project(homeB, "proj-elsewhere", origin)
+    svcB = fresh_service(homeB, str(bare))  # sets HOME=homeB
+    resB = svcB.sync([str(projB)])
+    assert resB.error is None
+
+    materialized = (
+        homeB / ".config" / "code-companion" / "session-summaries" / f"{enc}.md"
+    )
+    assert materialized.exists()
+    assert "next: ship it" in materialized.read_text(encoding="utf-8")
+
+    # Cross-machine remap: B's project (same origin => same project_id, DIFFERENT path)
+    # resolves to the same summary — parity with how memory follows a project.
+    from src.services import session_summary_service
+
+    loaded = session_summary_service.load(str(projB))
+    assert loaded is not None and "next: ship it" in loaded["content"]

@@ -319,6 +319,25 @@ class McpServer:
             return self._do_add_note(name, content)
 
         @mcp.tool()
+        def set_session_summary(content: str, title: str = "") -> dict:
+            """Save a résumé / next-session plan for this project.
+
+            Overwrites the project's single summary; surfaced on its card in the
+            Project Manager. Use at session end to hand off state. Returns
+            ``{"ok": true, "path": ...}``.
+            """
+            return self._do_set_session_summary(content, title)
+
+        @mcp.tool()
+        def get_session_summary() -> dict:
+            """Return the last saved session summary for this project.
+
+            ``{"ok": true, "exists": bool, "title", "updated", "content"}`` — read your
+            own handoff at the start of a session.
+            """
+            return self._do_get_session_summary()
+
+        @mcp.tool()
         def gui_launch(cmd: str, width: int = 1280, height: int = 800) -> dict:
             """Launch a GUI app in an isolated headless compositor for inspection.
 
@@ -630,6 +649,20 @@ class McpServer:
         text = f"{existing}\n{content}" if existing else content
         atomic_write_text(path, text)
         return {"ok": True, "path": str(path)}
+
+    def _do_set_session_summary(self, content: str, title: str) -> dict:
+        from . import session_summary_service
+
+        path = session_summary_service.save(self.window.project_path, content, title)
+        return {"ok": True, "path": str(path)}
+
+    def _do_get_session_summary(self) -> dict:
+        from . import session_summary_service
+
+        summary = session_summary_service.load(self.window.project_path)
+        if summary is None:
+            return {"ok": True, "exists": False}
+        return {"ok": True, "exists": True, **summary}
 
     # -- /refresh endpoint -------------------------------------------------- #
     def _do_refresh(self, target: str) -> list[str]:

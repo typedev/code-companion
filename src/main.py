@@ -9,7 +9,7 @@ import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 
-from gi.repository import Adw, Gio
+from gi.repository import Adw, Gio, Gtk, Gdk
 
 from .project_manager import ProjectManagerWindow
 from .project_window import ProjectWindow
@@ -28,6 +28,14 @@ class Application(Adw.Application):
     def do_startup(self):
         """Set up application-wide actions and accelerators."""
         Adw.Application.do_startup(self)
+
+        # Register the bundled symbolic icons so they recolor with the theme.
+        display = Gdk.Display.get_default()
+        if display is not None:
+            theme = Gtk.IconTheme.get_for_display(display)
+            theme.add_search_path(
+                str(Path(__file__).parent / "resources" / "icons-symbolic")
+            )
 
         quit_action = Gio.SimpleAction.new("quit", None)
         quit_action.connect("activate", self._on_quit)

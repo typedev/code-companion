@@ -25,6 +25,7 @@ from ..utils.project_identity import (
     origin_url,
     resolve_project_identity,
 )
+from . import session_summary_service
 from . import sync_engine as E
 from .config_path import get_config_dir
 from .git_service import AuthenticationRequired
@@ -325,12 +326,16 @@ class SyncService:
         global_dir = repo.worktree() / "global"
         plans_local = claude_paths.plans_dir()
         settings_local = claude_paths.settings_json()
+        summaries_local = session_summary_service.summaries_dir()
 
         def local_bytes() -> dict[str, bytes]:
             out: dict[str, bytes] = {}
             if plans_local.exists():
                 for p in sorted(plans_local.glob("*.md")):
                     out["plans/" + p.name] = p.read_bytes()
+            if summaries_local.exists():
+                for p in sorted(summaries_local.glob("*.md")):
+                    out["session-summaries/" + p.name] = p.read_bytes()
             if settings_local.exists():
                 out["settings.json"] = settings_local.read_bytes()
             return out
@@ -341,6 +346,10 @@ class SyncService:
             if rp.exists():
                 for p in sorted(rp.glob("*.md")):
                     out["plans/" + p.name] = p.read_bytes()
+            rs = global_dir / "session-summaries"
+            if rs.exists():
+                for p in sorted(rs.glob("*.md")):
+                    out["session-summaries/" + p.name] = p.read_bytes()
             sj = global_dir / "settings.json"
             if sj.exists():
                 out["settings.json"] = sj.read_bytes()
@@ -349,6 +358,8 @@ class SyncService:
         def local_target(rel: str) -> Path:
             if rel.startswith("plans/"):
                 return plans_local / rel[len("plans/"):]
+            if rel.startswith("session-summaries/"):
+                return summaries_local / rel[len("session-summaries/"):]
             return settings_local  # settings.json
 
         def repo_target(rel: str) -> Path:

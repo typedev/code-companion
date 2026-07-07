@@ -18,9 +18,11 @@ from .services.project_status_service import (
 from .services.git_service import AuthenticationRequired
 from .services.issues_service import GitHubError
 from .services.sync_service import SyncService
+from .services import session_summary_service
 from .services.icon_cache import IconCache
 from .models.sync import ProjectSyncStatus, SyncState
-from .utils.relative_time import humanize_relative
+from .utils.relative_time import humanize_relative, humanize_relative_iso
+from .utils.markdown_markup import markdown_to_pango
 from .widgets.github_auth import show_github_credentials_dialog
 from .version import __version__, get_version_info
 
@@ -318,6 +320,19 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
         row.sync_badges = None
         hbox.append(badges)
 
+        # Session summary button — shown only when a summary exists for this project.
+        summary_button = Gtk.Button(icon_name="cc-file-symbolic")
+        summary_button.add_css_class("flat")
+        summary_button.set_valign(Gtk.Align.CENTER)
+        summary_button.set_tooltip_text("Last session summary")
+        summary_button.connect("clicked", self._on_summary_clicked, str(path))
+        hbox.append(summary_button)
+        row.summary_button = summary_button
+        pid = self._cached_project_id(str(path))
+        summary_button.set_visible(
+            session_summary_service.load(str(path), project_id=pid) is not None
+        )
+
         rename_button = Gtk.Button(icon_name="document-edit-symbolic")
         rename_button.add_css_class("flat")
         rename_button.set_valign(Gtk.Align.CENTER)
@@ -327,6 +342,68 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
 
         row.set_child(hbox)
         return row
+
+    def _cached_project_id(self, resolved_or_path: str) -> str | None:
+        """The project_id from the sync status cache, if any (no git call)."""
+        cached = self.sync_service.get_cached_status(
+            str(Path(resolved_or_path).resolve())
+        )
+        return cached.project_id if cached and cached.project_id else None
+
+    def _on_summary_clicked(self, button: Gtk.Button, project_path: str) -> None:
+        """Open a popover showing the project's last session summary."""
+        pid = self._cached_project_id(project_path)
+        summary = session_summary_service.load(project_path, project_id=pid)
+        if summary is None:
+            return
+
+        popover = Gtk.Popover()
+        popover.set_parent(button)
+        popover.set_position(Gtk.PositionType.BOTTOM)
+
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        box.set_margin_top(12)
+        box.set_margin_bottom(12)
+        box.set_margin_start(12)
+        box.set_margin_end(12)
+
+        when = humanize_relative_iso(summary["updated"]) if summary["updated"] else ""
+        header = "Last session" + (f" · {when}" if when else "")
+        header_label = Gtk.Label()
+        header_label.set_markup(f"<small>{GLib.markup_escape_text(header)}</small>")
+        header_label.set_xalign(0)
+        header_label.add_css_class("dim-label")
+        box.append(header_label)
+
+        if summary["title"]:
+            title_label = Gtk.Label()
+            title_label.set_markup(
+                f"<b>{GLib.markup_escape_text(summary['title'])}</b>"
+            )
+            title_label.set_xalign(0)
+            box.append(title_label)
+
+        body_label = Gtk.Label()
+        body_label.set_markup(markdown_to_pango(summary["content"]))
+        body_label.set_xalign(0)
+        body_label.set_wrap(True)
+        body_label.set_selectable(True)
+        # Don't take popup focus, so the text isn't auto-selected on open (mouse
+        # drag-selection for copying still works).
+        body_label.set_focusable(False)
+        body_label.set_max_width_chars(60)
+
+        scroller = Gtk.ScrolledWindow()
+        scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        scroller.set_max_content_height(400)
+        scroller.set_propagate_natural_height(True)
+        scroller.set_propagate_natural_width(True)
+        scroller.set_child(body_label)
+        box.append(scroller)
+
+        popover.set_child(box)
+        popover.connect("closed", lambda p: p.unparent())
+        popover.popup()
 
     # ------------------------------------------------------------------
     # Status badges
