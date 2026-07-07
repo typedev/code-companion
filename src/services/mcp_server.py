@@ -33,9 +33,10 @@ gi.require_version("Gtk", "4.0")
 from gi.repository import GLib, Gio  # noqa: E402
 
 import uvicorn  # noqa: E402
-from mcp.server.fastmcp import FastMCP  # noqa: E402
+from mcp.server.fastmcp import FastMCP, Image  # noqa: E402
 from starlette.concurrency import run_in_threadpool  # noqa: E402
 
+from .gui_harness import GuiHarnessError, GuiHarnessManager  # noqa: E402
 from .toast_service import ToastService  # noqa: E402
 
 # Cap on selection text returned by get_selection, so a huge selection can't bloat
@@ -124,6 +125,7 @@ class McpServer:
 
     def __init__(self, window):
         self.window = window
+        self.gui = GuiHarnessManager()
         self._server: uvicorn.Server | None = None
         self._thread: threading.Thread | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -196,6 +198,8 @@ class McpServer:
 
     def stop(self, timeout: float = 5) -> None:
         """Signal graceful shutdown and wait for the server thread to exit."""
+        # Tear down any GUI harnesses first (kills their headless compositor trees).
+        self.gui.stop_all()
         if self._server is not None:
             self._server.should_exit = True  # checked on the next serve() tick
         if self._thread is not None:
@@ -312,6 +316,28 @@ class McpServer:
             # Filesystem-only; safe to run on the worker thread. The notes panel
             # auto-refreshes via FileMonitorService.
             return self._do_add_note(name, content)
+
+        @mcp.tool()
+        def gui_launch(cmd: str, width: int = 1280, height: int = 800) -> dict:
+            """Launch a GUI app in an isolated headless compositor for inspection.
+
+            Returns a ``handle`` to screenshot/stop later. ``cmd`` is the shell command
+            to run the app. Returns ``{"ok": bool, "handle"?, "error"?}``.
+            """
+            return self._do_gui_launch(cmd, width, height)
+
+        @mcp.tool()
+        def gui_screenshot(handle: str):
+            """Capture the current frame of a launched GUI as a PNG image.
+
+            Returns an MCP image on success, or ``{"ok": false, "error"}``.
+            """
+            return self._do_gui_screenshot(handle)
+
+        @mcp.tool()
+        def gui_stop(handle: str) -> dict:
+            """Tear down a launched GUI harness (app + headless compositor)."""
+            return self._do_gui_stop(handle)
 
         return mcp
 
@@ -597,3 +623,25 @@ class McpServer:
             _refresh("notes", "notes_panel")
 
         return refreshed
+
+    # -- GUI harness tool bodies (worker thread; subprocess I/O, no GTK) ---- #
+    def _do_gui_launch(self, cmd: str, width: int, height: int) -> dict:
+        try:
+            handle = self.gui.launch(cmd, width, height)
+        except (GuiHarnessError, OSError) as exc:
+            return {"ok": False, "error": str(exc)}
+        return {"ok": True, "handle": handle}
+
+    def _do_gui_screenshot(self, handle: str):
+        try:
+            png = self.gui.screenshot(handle)
+        except (GuiHarnessError, OSError, ValueError) as exc:
+            return {"ok": False, "error": str(exc)}
+        return Image(data=png, format="png")
+
+    def _do_gui_stop(self, handle: str) -> dict:
+        try:
+            self.gui.stop(handle)
+        except GuiHarnessError as exc:
+            return {"ok": False, "error": str(exc)}
+        return {"ok": True}

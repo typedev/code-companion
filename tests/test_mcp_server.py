@@ -966,3 +966,85 @@ def test_refresh_endpoint_bad_json(refresh_server):
         content=b"not json",
     )
     assert r.status_code == 400
+
+
+# --------------------------------------------------------------------------- #
+# GUI harness tool bodies
+# --------------------------------------------------------------------------- #
+class _FakeGui:
+    def __init__(self, handle="gui-1", png=b"PNGDATA", launch_error=None,
+                 screenshot_error=None, stop_error=None):
+        self._handle = handle
+        self._png = png
+        self._launch_error = launch_error
+        self._screenshot_error = screenshot_error
+        self._stop_error = stop_error
+        self.stopped = []
+
+    def launch(self, cmd, width, height):
+        if self._launch_error:
+            raise self._launch_error
+        return self._handle
+
+    def screenshot(self, handle):
+        if self._screenshot_error:
+            raise self._screenshot_error
+        return self._png
+
+    def stop(self, handle):
+        if self._stop_error:
+            raise self._stop_error
+        self.stopped.append(handle)
+
+
+def test_gui_launch_ok():
+    srv = McpServer(_FakeWindow())
+    srv.gui = _FakeGui(handle="gui-7")
+    assert srv._do_gui_launch("app", 1280, 800) == {"ok": True, "handle": "gui-7"}
+
+
+def test_gui_launch_error():
+    from src.services.gui_harness import GuiHarnessError
+
+    srv = McpServer(_FakeWindow())
+    srv.gui = _FakeGui(launch_error=GuiHarnessError("cage missing"))
+    result = srv._do_gui_launch("app", 1280, 800)
+    assert result["ok"] is False
+    assert "cage missing" in result["error"]
+
+
+def test_gui_screenshot_returns_image():
+    from mcp.server.fastmcp import Image
+
+    srv = McpServer(_FakeWindow())
+    srv.gui = _FakeGui(png=b"\x89PNG-bytes")
+    result = srv._do_gui_screenshot("gui-1")
+    assert isinstance(result, Image)
+
+
+def test_gui_screenshot_error():
+    from src.services.gui_harness import GuiHarnessError
+
+    srv = McpServer(_FakeWindow())
+    srv.gui = _FakeGui(screenshot_error=GuiHarnessError("no such handle"))
+    result = srv._do_gui_screenshot("gui-1")
+    assert result["ok"] is False
+    assert "no such handle" in result["error"]
+
+
+def test_gui_stop_ok():
+    srv = McpServer(_FakeWindow())
+    fake = _FakeGui()
+    srv.gui = fake
+    assert srv._do_gui_stop("gui-1") == {"ok": True}
+    assert fake.stopped == ["gui-1"]
+
+
+def test_gui_stop_error():
+    from src.services.gui_harness import GuiHarnessError
+
+    srv = McpServer(_FakeWindow())
+    srv.gui = _FakeGui(stop_error=GuiHarnessError("unknown handle: gui-9"))
+    result = srv._do_gui_stop("gui-9")
+    assert result["ok"] is False
+    assert "unknown handle" in result["error"]
