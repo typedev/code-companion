@@ -1,10 +1,9 @@
 # MCP Integration & Native GUI Test Harness — Implementation Plan
 
-**Status**: **Part A essentially complete** — A1 ✅, A2 mostly ✅ (Preferences toggle is
-the one open item), A3 ✅ (8 read/present tools), A4 ✅ (3 mutating tools), A5 ✅
-(`/refresh` endpoint + documented PostToolUse hook). 133 tests. Only remaining Part-A
-tail: the `mcp.enabled` Preferences toggle. Part B (GUI harness) not started.
-(Updated 2026-07-07.)
+**Status**: **Part A COMPLETE** — A1 ✅, A2 ✅ (incl. the `mcp.enabled` Preferences
+toggle), A3 ✅ (8 read/present tools), A4 ✅ (3 mutating tools), A5 ✅ (`/refresh`
+endpoint + documented PostToolUse hook). 133 tests. Next: **Part B** (native GUI test
+harness). (Updated 2026-07-07.)
 **Depends on**: Phase 1 (data safety) ✅ and Phase 2 (async layer) ✅ — both code-complete.
 **Parent roadmap**: `docs/plan-stability-roadmap.md` (Phase 7). This document is the
 detailed, de-risked implementation plan for that phase, **plus** a new capability
@@ -85,15 +84,16 @@ the secret isn't echoed into the terminal scrollback.
   listed, both return); clean `stop()` frees the port in ~0.1s; a raising tool maps to
   an MCP error, not a hang. Locked by `tests/test_mcp_server.py`.
 
-## A2. Registration & settings — mostly done (commit `1f6d78b`)
+## A2. Registration & settings ✅
 
 - [x] Generate the temp MCP config + token/port at Claude-tab launch; wire env into
-      the VTE PTY; launch with `--strict-mcp-config --mcp-config`.
+      the VTE PTY; launch with `--strict-mcp-config --mcp-config`. (commit `1f6d78b`)
 - [x] Setting `mcp.enabled` (default `true`); when off, launch `claude` bare.
-- [ ] **Preferences toggle** for `mcp.enabled` — the setting is honored, but no UI
-      switch exists yet in `preferences_dialog.py`.
-- **Acceptance**: env/config wiring verified in a headless GUI run; `/mcp` lists
-  `code-companion`. Preferences-toggle round-trip still pending the UI switch.
+- [x] **Preferences toggle** for `mcp.enabled` — `Adw.SwitchRow` in the AI page
+      (`preferences_dialog.py`, "MCP Control Surface" group); applies on the next Claude
+      session start (read at `project_window.py:988`).
+- **Acceptance**: ✅ env/config wiring verified in a headless GUI run; `/mcp` lists
+  `code-companion`; the toggle writes `mcp.enabled` and off → bare `claude`.
 
 ## A3. Tools v1 — read & present ✅ (increments 2–3)
 

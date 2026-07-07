@@ -265,6 +265,23 @@ class PreferencesDialog(Adw.PreferencesDialog):
         provider_group.add(info_label)
 
         page.add(provider_group)
+
+        # MCP control surface group
+        mcp_group = Adw.PreferencesGroup()
+        mcp_group.set_title("MCP Control Surface")
+        mcp_group.set_description(
+            "Local server that lets the embedded Claude session act on this window "
+            "(read the workspace, open files, run tasks, refresh panels)"
+        )
+
+        mcp_row = Adw.SwitchRow()
+        mcp_row.set_title("Enable MCP server")
+        mcp_row.set_subtitle("Applies the next time you start the Claude session")
+        mcp_row.set_active(self.settings.get("mcp.enabled", True))
+        mcp_row.connect("notify::active", self._on_mcp_enabled_changed)
+        mcp_group.add(mcp_row)
+
+        page.add(mcp_group)
         self.add(page)
 
     # Signal handlers
@@ -304,6 +321,10 @@ class PreferencesDialog(Adw.PreferencesDialog):
     def _on_word_wrap_changed(self, row, pspec):
         """Handle word wrap toggle."""
         self.settings.set("editor.word_wrap", row.get_active())
+
+    def _on_mcp_enabled_changed(self, row, pspec):
+        """Handle MCP server enabled toggle."""
+        self.settings.set("mcp.enabled", row.get_active())
 
     def _on_ruff_enabled_changed(self, row, pspec):
         """Handle ruff enabled toggle."""
