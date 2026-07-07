@@ -1,6 +1,8 @@
 # MCP Integration & Native GUI Test Harness — Implementation Plan
 
-**Status**: Design settled & de-risked (2026-07-07). Not yet implemented.
+**Status**: Part A in progress — A1 ✅, A2 mostly ✅ (Preferences toggle pending),
+A3 ✅ all 8 read/present tools (increments 1–3, 33 tests). Next: A4 (mutating tools).
+Part B (GUI harness) not started. (Updated 2026-07-07.)
 **Depends on**: Phase 1 (data safety) ✅ and Phase 2 (async layer) ✅ — both code-complete.
 **Parent roadmap**: `docs/plan-stability-roadmap.md` (Phase 7). This document is the
 detailed, de-risked implementation plan for that phase, **plus** a new capability
@@ -68,42 +70,48 @@ the config file. Options (pick at 7.2): pass env at `spawn_async` PTY setup, or
 `export CC_MCP_TOKEN=… CC_MCP_PORT=…` before the `claude …` line. Prefer PTY env so
 the secret isn't echoed into the terminal scrollback.
 
-## A1. Server infrastructure — `src/services/mcp_server.py`
+## A1. Server infrastructure — `src/services/mcp_server.py` ✅ (commit `1f6d78b`)
 
-- [ ] FastMCP (Python MCP SDK), streamable HTTP, background thread + asyncio loop.
-- [ ] Lifecycle bound to `ProjectWindow`: start on window init (if `mcp.enabled`),
+- [x] FastMCP (Python MCP SDK), streamable HTTP, background thread + asyncio loop.
+- [x] Lifecycle bound to `ProjectWindow`: start on window init (if `mcp.enabled`),
       stop on destroy.
-- [ ] `call_on_main(fn, timeout=5)` marshaling helper (via `GLib.idle_add` +
+- [x] `call_on_main(fn, timeout=5)` marshaling helper (via `GLib.idle_add` +
       `concurrent.futures.Future`), used by every tool handler.
-- [ ] Bearer-token middleware.
-- **New dependency**: add the MCP SDK to `pyproject.toml` (via `uv`).
-- **Acceptance**: a tool call from the embedded Claude session round-trips; closing
-  the window frees the port; a tool that raises returns an MCP error, not a hang.
+- [x] Bearer-token middleware.
+- [x] **New dependency**: `mcp>=1.28,<2` added to `pyproject.toml`.
+- **Acceptance**: ✅ verified — real MCP-client round-trip (401 without token, tools
+  listed, both return); clean `stop()` frees the port in ~0.1s; a raising tool maps to
+  an MCP error, not a hang. Locked by `tests/test_mcp_server.py`.
 
-## A2. Registration & settings
+## A2. Registration & settings — mostly done (commit `1f6d78b`)
 
-- [ ] Generate the temp MCP config + token/port at Claude-tab launch; wire env into
+- [x] Generate the temp MCP config + token/port at Claude-tab launch; wire env into
       the VTE PTY; launch with `--strict-mcp-config --mcp-config`.
-- [ ] Setting `mcp.enabled` (default `true`) + Preferences toggle; when off, launch
-      `claude` bare.
-- **Acceptance**: toggling the setting and restarting the Claude tab adds/removes the
-  server (`/mcp` in Claude lists `code-companion`).
+- [x] Setting `mcp.enabled` (default `true`); when off, launch `claude` bare.
+- [ ] **Preferences toggle** for `mcp.enabled` — the setting is honored, but no UI
+      switch exists yet in `preferences_dialog.py`.
+- **Acceptance**: env/config wiring verified in a headless GUI run; `/mcp` lists
+  `code-companion`. Preferences-toggle round-trip still pending the UI switch.
 
-## A3. Tools v1 — read & present
+## A3. Tools v1 — read & present ✅ (increments 2–3)
 
-| Tool | Effect |
-|------|--------|
-| `get_workspace_state()` | Active file, cursor line, open tabs + dirty flags |
-| `get_selection()` | Current editor selection (path, range, text) |
-| `open_file(path, line?, end_line?)` | Open tab, scroll, highlight range |
-| `show_diff(path)` | Open working-tree diff view |
-| `show_commit(hash)` | Open commit detail tab |
-| `get_problems(path?)` | Current ruff/mypy findings |
-| `list_tasks()` | Names from tasks.json |
-| `notify(message)` | Toast + desktop notification if unfocused |
+| Tool | Effect | Status |
+|------|--------|--------|
+| `get_workspace_state()` | Active file, cursor line, open tabs + dirty flags | ✅ inc1 |
+| `notify(message)` | Toast + desktop notification if unfocused | ✅ inc1 |
+| `get_selection()` | Current editor selection (path, range, text) | ✅ inc2 |
+| `get_problems(path?)` | Current ruff/mypy findings (cached; `has_run` flag) | ✅ inc2 |
+| `list_tasks()` | Names from tasks.json | ✅ inc2 |
+| `open_file(path, line?, end_line?)` | Open tab, scroll, highlight range | ✅ inc3 |
+| `show_diff(path)` | Open working-tree diff view | ✅ inc3 |
+| `show_commit(hash)` | Open commit detail tab | ✅ inc3 |
 
-- **Acceptance**: each read tool returns data matching what the UI shows; `notify`
-  raises a desktop notification when the window is unfocused.
+- **Acceptance**: ✅ each tool covered by `tests/test_mcp_server.py` (33 tests). Read
+  tools also proven end-to-end against **real GTK widgets** via an official MCP client
+  (scratchpad harness); `select_line_range` verified on a real `GtkSource.Buffer`.
+- **Notes**: read tools never block the main loop (no linter re-runs — `get_problems`
+  reads the panel cache). UI tools return `{"ok": bool, ...}` and normalize paths
+  per-tool (`open_file` absolute, `show_diff` project-relative).
 
 ## A4. Tools v1 — mutating (explicit, few)
 
