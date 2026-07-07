@@ -1,0 +1,211 @@
+"""Per-window MCP control surface.
+
+Hosts a local Model Context Protocol server (streamable HTTP on 127.0.0.1) so the
+embedded Claude session can act on *this running window* — read the workspace state,
+raise a notification, and (in later increments) open files, show diffs, etc.
+
+Design (see docs/plan-mcp-integration.md, decisions D1-D4):
+- One server per ``ProjectWindow`` (NON_UNIQUE process -> own random port -> free
+  per-window isolation). Lifecycle == Claude-session lifecycle.
+- Transport: the official ``mcp`` SDK's FastMCP ``streamable_http_app()`` ASGI app,
+  run under programmatic uvicorn in a background thread with its own asyncio loop.
+  Running under ``Server.serve()`` drives the ASGI lifespan, which starts the
+  streamable-HTTP session-manager task group (skipping it -> "Task group is not
+  initialized").
+- Auth: a per-window bearer token checked by a pure-ASGI middleware (pure ASGI, not
+  Starlette ``BaseHTTPMiddleware``, so SSE streaming responses are not buffered).
+- Threading: tool handlers run on the server thread; every GTK touch is marshalled
+  to the main loop via :meth:`McpServer.call_on_main`. Never touch GTK from the
+  server thread; never block the main loop on the server.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import threading
+from concurrent.futures import Future
+
+import gi
+
+gi.require_version("Gtk", "4.0")
+from gi.repository import GLib, Gio  # noqa: E402
+
+import uvicorn  # noqa: E402
+from mcp.server.fastmcp import FastMCP  # noqa: E402
+
+from .toast_service import ToastService  # noqa: E402
+
+
+class _BearerAuthMiddleware:
+    """Pure-ASGI middleware: reject requests without a matching bearer token.
+
+    Pure ASGI (not ``BaseHTTPMiddleware``) so it does not buffer the streaming /
+    SSE responses the MCP transport relies on.
+    """
+
+    def __init__(self, app, token: str):
+        self.app = app
+        self._expected = f"Bearer {token}".encode()
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        headers = dict(scope.get("headers") or [])
+        if headers.get(b"authorization") != self._expected:
+            await send({
+                "type": "http.response.start",
+                "status": 401,
+                "headers": [(b"content-type", b"text/plain")],
+            })
+            await send({"type": "http.response.body", "body": b"Unauthorized"})
+            return
+        await self.app(scope, receive, send)
+
+
+class McpServer:
+    """Local MCP server bound to a single ``ProjectWindow``."""
+
+    def __init__(self, window):
+        self.window = window
+        self._server: uvicorn.Server | None = None
+        self._thread: threading.Thread | None = None
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self.port: int | None = None
+
+    # ------------------------------------------------------------------ #
+    # Main-thread marshaling
+    # ------------------------------------------------------------------ #
+    def call_on_main(self, fn, timeout: float = 5):
+        """Run ``fn`` on the GTK main loop from the server thread; return its result.
+
+        Blocks the calling (server) thread until the main loop runs ``fn``. Raises
+        ``TimeoutError`` if the main loop does not service it in time, or re-raises
+        whatever ``fn`` raised — either way the MCP layer maps it to a tool error
+        instead of hanging.
+        """
+        fut: Future = Future()
+
+        def _run():
+            try:
+                fut.set_result(fn())
+            except Exception as exc:  # noqa: BLE001 - forwarded to the caller
+                fut.set_exception(exc)
+            return False  # GLib.SOURCE_REMOVE
+
+        GLib.idle_add(_run)
+        return fut.result(timeout)
+
+    # ------------------------------------------------------------------ #
+    # Lifecycle
+    # ------------------------------------------------------------------ #
+    def start(self, port: int, token: str) -> None:
+        """Start the server thread bound to ``127.0.0.1:port`` with ``token`` auth."""
+        if self._thread is not None:
+            return
+        self.port = port
+
+        app = self._build_mcp().streamable_http_app()
+        app.add_middleware(_BearerAuthMiddleware, token=token)
+
+        config = uvicorn.Config(
+            app,
+            host="127.0.0.1",
+            port=port,
+            log_level="warning",
+            access_log=False,
+            loop="asyncio",
+        )
+        self._server = uvicorn.Server(config)
+        # uvicorn installs SIGINT/SIGTERM handlers in serve(); signal.signal() only
+        # works on the main thread, so disable it for our background thread.
+        self._server.install_signal_handlers = lambda: None
+
+        self._thread = threading.Thread(
+            target=self._run, name="mcp-server", daemon=True
+        )
+        self._thread.start()
+
+    def _run(self) -> None:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        self._loop = loop
+        try:
+            loop.run_until_complete(self._server.serve())
+        finally:
+            loop.close()
+
+    def stop(self, timeout: float = 5) -> None:
+        """Signal graceful shutdown and wait for the server thread to exit."""
+        if self._server is not None:
+            self._server.should_exit = True  # checked on the next serve() tick
+        if self._thread is not None:
+            self._thread.join(timeout)
+        self._server = None
+        self._thread = None
+        self._loop = None
+        self.port = None
+
+    # ------------------------------------------------------------------ #
+    # Tools
+    # ------------------------------------------------------------------ #
+    def _build_mcp(self) -> FastMCP:
+        mcp = FastMCP("code-companion")
+
+        @mcp.tool()
+        def notify(message: str) -> str:
+            """Show a message to the user in the Code Companion window.
+
+            Displays a toast; if the window is not focused, also raises a desktop
+            notification.
+            """
+            return self.call_on_main(lambda: self._do_notify(message))
+
+        @mcp.tool()
+        def get_workspace_state() -> dict:
+            """Return the active file, its cursor line, and the open editor tabs.
+
+            Read-only snapshot of what the user currently has open in the window.
+            """
+            return self.call_on_main(self._do_get_workspace_state)
+
+        return mcp
+
+    # -- main-thread tool bodies -------------------------------------- #
+    def _do_notify(self, message: str) -> str:
+        ToastService.show(message)
+        if not self.window.is_active():
+            app = self.window.get_application()
+            if app is not None:
+                notification = Gio.Notification.new("Code Companion")
+                notification.set_body(message)
+                app.send_notification(None, notification)
+        return f"Notified: {message}"
+
+    def _do_get_workspace_state(self) -> dict:
+        tab_view = getattr(self.window, "tab_view", None)
+        tabs: list[dict] = []
+        active_file = None
+        cursor_line = None
+
+        if tab_view is not None:
+            selected = tab_view.get_selected_page()
+            for i in range(tab_view.get_n_pages()):
+                page = tab_view.get_nth_page(i)
+                child = page.get_child()
+                file_path = getattr(child, "file_path", None)
+                entry = {"title": page.get_title(), "path": file_path}
+                if hasattr(child, "is_modified"):
+                    entry["dirty"] = bool(child.is_modified())
+                tabs.append(entry)
+
+                if page is selected:
+                    active_file = file_path
+                    if file_path is not None and hasattr(child, "_get_cursor_line"):
+                        cursor_line = child._get_cursor_line()
+
+        return {
+            "active_file": active_file,
+            "cursor_line": cursor_line,
+            "open_tabs": tabs,
+        }

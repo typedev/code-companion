@@ -45,12 +45,21 @@ class TerminalView(Gtk.Box):
         "child-exited": (GObject.SignalFlags.RUN_FIRST, None, (int,)),
     }
 
-    def __init__(self, working_directory: str | None = None, run_command: str | None = None):
+    def __init__(
+        self,
+        working_directory: str | None = None,
+        run_command: str | None = None,
+        env: dict[str, str] | None = None,
+    ):
         super().__init__(orientation=Gtk.Orientation.VERTICAL)
 
         self.terminal = None
         self.current_directory = working_directory
         self._initial_command = run_command
+        # Extra env vars for the child shell (merged over os.environ). Stored so
+        # respawns keep them. VTE's envv *replaces* the environment, so we must
+        # pass the full merged list, not just these.
+        self._extra_env = env or {}
         self._respawn_on_exit = True
 
         self._build_ui()
@@ -278,12 +287,21 @@ class TerminalView(Gtk.Box):
         cwd = working_directory or os.path.expanduser("~")
         self.current_directory = cwd
 
+        # Build the child environment. VTE's envv replaces (not merges) the
+        # environment, so start from os.environ and layer any extra vars on top;
+        # otherwise the shell would lose PATH etc.
+        envv = None
+        if self._extra_env:
+            merged = dict(os.environ)
+            merged.update(self._extra_env)
+            envv = [f"{k}={v}" for k, v in merged.items()]
+
         # Spawn the shell
         self.terminal.spawn_async(
             Vte.PtyFlags.DEFAULT,
             cwd,
             [shell],
-            None,  # Environment (inherit)
+            envv,  # None = inherit; list = replace (already merged with os.environ)
             GLib.SpawnFlags.DEFAULT,
             None,  # Child setup callback
             None,  # Child setup data

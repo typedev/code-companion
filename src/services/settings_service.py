@@ -49,6 +49,11 @@ DEFAULT_SETTINGS = {
             "enabledMcpjsonServers",
         ],
     },
+    "mcp": {
+        # Per-window MCP control surface for the embedded AI session (open files,
+        # read workspace state, notify). When off, the CLI launches bare.
+        "enabled": True,
+    },
 }
 
 

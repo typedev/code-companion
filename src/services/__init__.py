@@ -19,6 +19,7 @@ from .file_monitor_service import FileMonitorService
 from .problems_service import ProblemsService, Problem, FileProblems, LinterStatus
 from .python_outline import parse_python_outline, parse_python_file, OutlineItem
 from .markdown_outline import parse_markdown_outline, MarkdownHeading
+from .mcp_server import McpServer
 
 __all__ = [
     "HistoryService",
@@ -64,4 +65,5 @@ __all__ = [
     "OutlineItem",
     "parse_markdown_outline",
     "MarkdownHeading",
+    "McpServer",
 ]

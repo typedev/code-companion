@@ -1,12 +1,17 @@
 """Project workspace window."""
 
+import json
+import os
+import secrets
+import socket
 import subprocess
+import tempfile
 from pathlib import Path
 
 from gi.repository import Adw, Gtk, GLib, Gdk, Gio
 
 from .models import Session
-from .services import get_adapter, ProjectLock, ProjectRegistry, GitService, IconCache, ToastService, SettingsService, FileMonitorService, IssuesService, run_async
+from .services import get_adapter, ProjectLock, ProjectRegistry, GitService, IconCache, ToastService, SettingsService, FileMonitorService, IssuesService, McpServer, run_async
 from .utils import git_auth
 from .widgets import SessionView, TerminalView, FileTree, FileEditor, TasksPanel, GitChangesPanel, GitHistoryPanel, DiffView, CommitDetailView, ClaudeHistoryPanel, FileSearchDialog, UnifiedSearch, NotesPanel, PreferencesDialog, SnippetsBar, QueryEditor, ProblemsPanel, ProblemsDetailView, IssuesPanel, IssueDetailView, ImageViewer, SvgEditor, BinaryFileView
 from .utils.text_files import is_binary
@@ -32,6 +37,9 @@ class ProjectWindow(Adw.ApplicationWindow):
 
         self.claude_terminal: TerminalView | None = None
         self.claude_container: Gtk.Box | None = None
+        # Per-window MCP control surface (started with the Claude session).
+        self.mcp_server: McpServer | None = None
+        self._mcp_config_path: str | None = None
         self._workspace_collapsed = False
         self._workspace_split_position = 260
         self.commit_detail_page: Adw.TabPage | None = None
@@ -919,17 +927,25 @@ class ProjectWindow(Adw.ApplicationWindow):
             self.claude_terminal.terminal.grab_focus()
             return
 
-        # --- MCP seam (Part A): before spawning the terminal, allocate a free port,
-        #     mint a per-window token, start the MCP server, write a temp
-        #     --strict-mcp-config, and inject CC_MCP_TOKEN / CC_MCP_PORT into the VTE
-        #     envv here. Server lifecycle == session lifecycle. ---
+        # Start the per-window MCP control surface (Part A). On success it returns
+        # env vars to inject into the CLI's shell and we append the --mcp-config
+        # flags; when disabled or on failure we launch the CLI bare. Server
+        # lifecycle == session lifecycle.
+        mcp_env = self._start_mcp_server()
+        cli_command = self.adapter.cli_command
+        if mcp_env is not None:
+            cli_command = (
+                f"{cli_command} --strict-mcp-config "
+                f"--mcp-config {GLib.shell_quote(self._mcp_config_path)}"
+            )
 
         self._clear_claude_container()
 
         # AI CLI terminal in project directory
         terminal = TerminalView(
             working_directory=str(self.project_path),
-            run_command=self.adapter.cli_command
+            run_command=cli_command,
+            env=mcp_env,
         )
         terminal.set_vexpand(True)
         self.claude_container.append(terminal)
@@ -950,6 +966,60 @@ class ProjectWindow(Adw.ApplicationWindow):
 
         self.claude_terminal = terminal
         terminal.terminal.grab_focus()
+
+    def _start_mcp_server(self) -> dict | None:
+        """Start the per-window MCP server; return env vars for the CLI, or None.
+
+        Returns a ``{CC_MCP_PORT, CC_MCP_TOKEN}`` dict to inject into the terminal,
+        or None when MCP is disabled or startup failed (caller then launches the CLI
+        bare). On success sets ``self.mcp_server`` and ``self._mcp_config_path``.
+        """
+        if not self.settings.get("mcp.enabled", True):
+            return None
+        try:
+            # Pick a free loopback port (bind to 0, read it back, release).
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+                sock.bind(("127.0.0.1", 0))
+                port = sock.getsockname()[1]
+            token = secrets.token_urlsafe(32)
+
+            server = McpServer(self)
+            server.start(port, token)
+
+            # Temp --strict-mcp-config referencing the secret by env var, so the
+            # plaintext token never lands on disk.
+            config = {
+                "mcpServers": {
+                    "code-companion": {
+                        "type": "http",
+                        "url": "http://127.0.0.1:${CC_MCP_PORT}/mcp",
+                        "headers": {"Authorization": "Bearer ${CC_MCP_TOKEN}"},
+                    }
+                }
+            }
+            fd, config_path = tempfile.mkstemp(prefix="cc_mcp_", suffix=".json")
+            os.write(fd, json.dumps(config).encode())
+            os.close(fd)
+
+            self.mcp_server = server
+            self._mcp_config_path = config_path
+            return {"CC_MCP_PORT": str(port), "CC_MCP_TOKEN": token}
+        except Exception as exc:  # noqa: BLE001 - MCP is optional; fall back to bare CLI
+            ToastService.show_error(f"MCP server failed to start: {exc}")
+            self._stop_mcp_server()
+            return None
+
+    def _stop_mcp_server(self) -> None:
+        """Stop the MCP server and delete its temp config (idempotent)."""
+        if getattr(self, "mcp_server", None) is not None:
+            self.mcp_server.stop()
+            self.mcp_server = None
+        if getattr(self, "_mcp_config_path", None):
+            try:
+                os.unlink(self._mcp_config_path)
+            except OSError:
+                pass
+            self._mcp_config_path = None
 
     # --- Workspace collapse/expand (also the future MCP tool surface) ---
 
@@ -1108,8 +1178,9 @@ class ProjectWindow(Adw.ApplicationWindow):
 
     def _on_claude_exited(self, terminal, status):
         """AI CLI exited - tear down the terminal and restore the Start placeholder."""
-        # --- MCP seam (Part A): stop the per-window MCP server, free the port and
-        #     delete the temp --strict-mcp-config here. ---
+        # Server lifecycle == session lifecycle: stop it, free the port, delete
+        # the temp --strict-mcp-config.
+        self._stop_mcp_server()
         self.claude_terminal = None
         self._show_claude_placeholder()
 
@@ -1801,6 +1872,10 @@ class ProjectWindow(Adw.ApplicationWindow):
         # survive as an orphan (terminal tabs are handled on tab close).
         if getattr(self, "claude_terminal", None) is not None:
             self.claude_terminal.cleanup()
+
+        # Backstop: stop the MCP server + delete its temp config on window close /
+        # crash (the normal path is _on_claude_exited).
+        self._stop_mcp_server()
 
         # Shutdown file monitor service
         if hasattr(self, "file_monitor_service"):
