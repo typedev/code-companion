@@ -96,11 +96,51 @@ install_system_deps() {
         warn "  - python3 development files"
         warn "  - meson and ninja build tools"
         warn "  - ripgrep and fd (recommended, for fast file/content search)"
+        warn "  - cage, grim, wlr-randr, ydotool (optional, for the native GUI test harness)"
         read -p "Continue anyway? [y/N] " -n 1 -r
         echo
         if [[ ! $REPLY =~ ^[Yy]$ ]]; then
             exit 1
         fi
+    fi
+}
+
+# Optional dependencies for the native GUI test harness: a headless Wayland
+# compositor (cage) to run a project's GUI in isolation, a screenshot tool
+# (grim) so the assistant can visually inspect it, output sizing (wlr-randr),
+# and input injection (ydotool) as a coordinate-level fallback. Not required to
+# run Code Companion itself — failure here is non-fatal and never aborts install.
+install_gui_test_deps() {
+    info "Checking optional GUI test harness dependencies (cage, grim, wlr-randr, ydotool)..."
+
+    # Package names are identical across Fedora, Debian/Ubuntu and Arch.
+    local PACKAGES="cage grim wlr-randr ydotool"
+    local MISSING="" installer=""
+
+    if command -v dnf &> /dev/null; then
+        installer="sudo dnf install -y"
+        for pkg in $PACKAGES; do rpm -q "$pkg" &> /dev/null || MISSING="$MISSING $pkg"; done
+    elif command -v apt-get &> /dev/null; then
+        installer="sudo apt-get install -y"
+        for pkg in $PACKAGES; do dpkg -s "$pkg" &> /dev/null 2>&1 || MISSING="$MISSING $pkg"; done
+    elif command -v pacman &> /dev/null; then
+        installer="sudo pacman -S --noconfirm"
+        for pkg in $PACKAGES; do pacman -Q "$pkg" &> /dev/null 2>&1 || MISSING="$MISSING $pkg"; done
+    else
+        warn "Unknown package manager; skipping optional GUI test deps ($PACKAGES)."
+        return 0
+    fi
+
+    if [ -z "$MISSING" ]; then
+        info "GUI test harness dependencies are already installed"
+        return 0
+    fi
+
+    info "Installing optional GUI test packages:$MISSING"
+    if ! $installer $MISSING; then
+        warn "Could not install optional GUI test deps ($MISSING). The app works"
+        warn "without them; the native GUI test harness will be unavailable until"
+        warn "they are installed. Continuing."
     fi
 }
 
@@ -123,6 +163,9 @@ install() {
 
     # Install system dependencies (cairo, gtk4, etc.)
     install_system_deps
+
+    # Install optional GUI test harness dependencies (cage, grim, ydotool)
+    install_gui_test_deps
 
     # Install Python dependencies
     info "Installing Python dependencies..."
@@ -185,6 +228,9 @@ update() {
 
     # Check/install system dependencies
     install_system_deps
+
+    # Check/install optional GUI test harness dependencies (cage, grim, ydotool)
+    install_gui_test_deps
 
     # Update dependencies
     info "Updating Python dependencies..."

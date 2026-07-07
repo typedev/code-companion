@@ -102,6 +102,14 @@ sudo apt install libgtk-4-dev libadwaita-1-dev libgtksourceview-5-dev \
     ripgrep fd-find
 ```
 
+**Optional — native GUI test harness** (`cage`, `grim`, `wlr-randr`, `ydotool`):
+lets the assistant launch, drive and screenshot another project's GTK/Qt GUI in
+an isolated headless Wayland compositor. Not required to run the app. Install via
+`sudo dnf install cage grim wlr-randr ydotool` (Fedora) / `sudo apt install cage
+grim wlr-randr ydotool` (Ubuntu/Debian, from repos not Snap) / `sudo pacman -S
+cage grim wlr-randr ydotool` (Arch). See
+[INSTALL.md](INSTALL.md#optional-native-gui-test-harness).
+
 ### Python Setup
 
 ```bash

@@ -26,6 +26,36 @@ sudo apt install libgtk-4-dev libadwaita-1-dev libgtksourceview-5-dev \
     ripgrep fd-find
 ```
 
+> **Ubuntu note:** install `cage`/`grim`/`ydotool` from the distro repos, not as
+> Snaps — Snap confinement can block access to `/dev/uinput` and Wayland sockets
+> the harness needs.
+
+### Optional: native GUI test harness
+
+These let the assistant launch, drive and screenshot **another project's** GTK/Qt
+GUI in an isolated headless Wayland compositor — so it can visually inspect and
+test native UIs the way Playwright handles the web. Not required to run Code
+Companion itself; the app works fine without them.
+
+```bash
+# Fedora
+sudo dnf install cage grim wlr-randr ydotool
+
+# Ubuntu/Debian (from repos, not Snap — see note above)
+sudo apt install cage grim wlr-randr ydotool
+
+# Arch
+sudo pacman -S cage grim wlr-randr ydotool
+```
+
+- `cage` — headless [wlroots](https://gitlab.freedesktop.org/wlroots/wlroots) compositor that hosts the app under test
+- `grim` — captures the compositor's output as PNG for visual inspection
+- `wlr-randr` — sizes the headless output to the desired canvas (`--custom-mode`)
+- `ydotool` — coordinate-level input injection fallback (needs `/dev/uinput`
+  access: add your user to the `input` group + a udev rule, and run `ydotoold`)
+
+The `install.sh` script installs these automatically (non-fatally) when available.
+
 ---
 
 ## Quick Install
