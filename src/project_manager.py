@@ -61,6 +61,8 @@ _BADGE_CSS = b"""
 .cc-badge-conflict { background: alpha(#e01b24, 0.22); color: #c01c28; }
 .cc-badge-syncoff  { background: alpha(@theme_fg_color, 0.10); color: alpha(@theme_fg_color, 0.55); }
 .cc-live-dot { color: #2ec27e; -gtk-icon-size: 12px; }
+.cc-live-dot-attention { color: #e5a50a; -gtk-icon-size: 12px; }
+.cc-orphan-btn { color: #c07f00; font-weight: bold; }
 """
 
 
@@ -153,6 +155,14 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
         self.sync_menu_button.set_tooltip_text("Sync options")
         self.sync_menu_button.set_menu_model(self._build_sync_menu())
         header.pack_start(self.sync_menu_button)
+
+        # Orphan-session affordance: live Claude sessions with no project in the
+        # list (hidden unless there are any; populated by _refresh_live_indicators).
+        self.orphan_button = Gtk.MenuButton(label="")
+        self.orphan_button.set_tooltip_text("Background Claude sessions not in your list")
+        self.orphan_button.add_css_class("cc-orphan-btn")
+        self.orphan_button.set_visible(False)
+        header.pack_end(self.orphan_button)
 
         main_box.append(header)
 
@@ -261,18 +271,84 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
         self._refresh_live_indicators()
 
     def _refresh_live_indicators(self):
-        """Toggle each card's live-session dot from the running tmux sessions.
+        """Reflect running tmux sessions on the cards (dot + kill action) and
+        surface orphan sessions in the header.
 
         Also used as a recurring GLib timeout, so it always returns True.
         """
         live = claude_session.live_session_names()
+        known = set()
         for row in getattr(self, "_rows_by_path", {}).values():
+            name = claude_session.session_name(row.project_path)
+            known.add(name)
+            is_live = name in live
             indicator = getattr(row, "live_indicator", None)
             if indicator is not None:
-                indicator.set_visible(
-                    claude_session.session_name(row.project_path) in live
-                )
+                indicator.set_visible(is_live)
+            kill_btn = getattr(row, "kill_session_btn", None)
+            if kill_btn is not None:
+                kill_btn.set_sensitive(is_live)
+        # Orphans: live cc-* sessions with no registered project.
+        self._orphan_sessions = sorted(live - known)
+        self._update_orphan_affordance()
         return True
+
+    def _update_orphan_affordance(self):
+        """Show/hide the header 'N background session(s)' button.
+
+        Only rebuilds the popover when the orphan set actually changes, so an
+        open popover isn't torn down by the 4s poll.
+        """
+        button = getattr(self, "orphan_button", None)
+        if button is None:
+            return
+        orphans = getattr(self, "_orphan_sessions", [])
+        if orphans == getattr(self, "_orphan_rendered", None):
+            return
+        self._orphan_rendered = list(orphans)
+        button.set_visible(bool(orphans))
+        if orphans:
+            button.set_label(f"⚠ {len(orphans)} background")
+            button.set_popover(self._build_orphan_popover(orphans))
+
+    def _build_orphan_popover(self, orphans: list[str]) -> Gtk.Popover:
+        """Popover listing orphan sessions (path + Kill) — sessions with no card."""
+        popover = Gtk.Popover()
+        popover.set_position(Gtk.PositionType.BOTTOM)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        box.set_margin_top(8)
+        box.set_margin_bottom(8)
+        box.set_margin_start(8)
+        box.set_margin_end(8)
+
+        heading = Gtk.Label(label="Claude sessions with no project in your list:")
+        heading.add_css_class("dim-label")
+        heading.set_xalign(0)
+        box.append(heading)
+
+        for name in orphans:
+            path = claude_session.session_cwd(name) or "(unknown path)"
+            line = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+            lbl = Gtk.Label(label=path)
+            lbl.set_xalign(0)
+            lbl.set_hexpand(True)
+            lbl.set_ellipsize(3)
+            line.append(lbl)
+            kill = Gtk.Button(label="Kill")
+            kill.add_css_class("destructive-action")
+            kill.connect(
+                "clicked",
+                lambda _b, n=name: (
+                    popover.popdown(),
+                    claude_session.kill_session(n),
+                    self._refresh_live_indicators(),
+                ),
+            )
+            line.append(kill)
+            box.append(line)
+
+        popover.set_child(box)
+        return popover
 
     def _show_empty_state(self):
         """Show empty state message."""
@@ -393,6 +469,20 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
         )
         box.append(rename_btn)
 
+        # Kill the running Claude session — only sensitive while one is live
+        # (toggled in _refresh_live_indicators).
+        kill_btn = Gtk.Button()
+        kill_btn.add_css_class("flat")
+        kill_btn.set_child(self._menu_row("process-stop-symbolic", "Kill session"))
+        kill_btn.update_property([Gtk.AccessibleProperty.LABEL], ["Kill Claude session"])
+        kill_btn.set_sensitive(False)
+        kill_btn.connect(
+            "clicked",
+            lambda _b: (popover.popdown(), self._on_kill_session(row)),
+        )
+        box.append(kill_btn)
+        row.kill_session_btn = kill_btn
+
         remove_btn = Gtk.Button()
         remove_btn.add_css_class("flat")
         remove_btn.set_child(self._menu_row("user-trash-symbolic", "Remove…"))
@@ -405,6 +495,29 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
 
         popover.set_child(box)
         return popover
+
+    def _on_kill_session(self, row: Gtk.ListBoxRow):
+        """Confirm, then kill the project's running Claude tmux session."""
+        name = claude_session.session_name(row.project_path)
+        label = row.name_label.get_text() if hasattr(row, "name_label") else row.project_path
+        dialog = Adw.AlertDialog(
+            heading="Kill Claude session",
+            body=f"Stop the running Claude session for “{label}”?\n\n"
+            "Its conversation is saved to disk (resumable), but the live process "
+            "and its in-memory context end.",
+        )
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("kill", "Kill session")
+        dialog.set_response_appearance("kill", Adw.ResponseAppearance.DESTRUCTIVE)
+        dialog.set_default_response("cancel")
+        dialog.set_close_response("cancel")
+        dialog.connect("response", self._on_kill_session_response, name)
+        dialog.present(self)
+
+    def _on_kill_session_response(self, _dialog, response: str, name: str):
+        if response == "kill":
+            claude_session.kill_session(name)
+            self._refresh_live_indicators()
 
     @staticmethod
     def _menu_row(icon_name: str, label: str) -> Gtk.Box:

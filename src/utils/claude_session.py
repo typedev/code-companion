@@ -44,3 +44,34 @@ def live_session_names() -> set[str]:
         for line in result.stdout.splitlines()
         if line.strip().startswith(_PREFIX)
     }
+
+
+def session_cwd(name: str) -> str | None:
+    """Working directory of a tmux session's active pane, or None."""
+    # NB: no "=" exact-match prefix here — it makes display-message resolve to an
+    # empty pane target. Session names are unique hashes, so a plain name is safe.
+    try:
+        result = subprocess.run(
+            ["tmux", "display-message", "-t", name, "-p", "#{pane_current_path}"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    path = result.stdout.strip()
+    return path if result.returncode == 0 and path else None
+
+
+def kill_session(name: str) -> bool:
+    """Kill a tmux session by exact name. Returns True if it is gone afterwards."""
+    try:
+        subprocess.run(
+            ["tmux", "kill-session", "-t", f"={name}"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return name not in live_session_names()
