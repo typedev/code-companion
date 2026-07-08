@@ -332,16 +332,9 @@ class GitChangesPanel(Gtk.Box):
             except Exception:
                 pass
             # Status is the change list — a failure here must surface, not read
-            # as "No changes".
+            # as "No changes". get_porcelain_status is the single status source.
             try:
-                r = subprocess.run(
-                    ["git", "status", "--porcelain", "-z"],
-                    capture_output=True, cwd=project_dir, timeout=30, env=env,
-                )
-                if r.returncode != 0:
-                    error = r.stderr.decode("utf-8", errors="replace").strip() or "git status failed"
-                else:
-                    staged, unstaged = self._parse_porcelain_to_file_status(r.stdout)
+                staged, unstaged = self.service.get_porcelain_status(env=env)
             except Exception as e:
                 error = str(e)
             return (branch, ahead, behind, staged, unstaged, error)
@@ -349,50 +342,6 @@ class GitChangesPanel(Gtk.Box):
         # run_async gives a generation token (only the newest refresh renders) and a
         # liveness guard for free (roadmap 2.4).
         run_async(self, worker=_fetch, on_done=lambda data: self._apply_refresh(*data), key="refresh")
-
-    @staticmethod
-    def _parse_porcelain_to_file_status(data: bytes) -> tuple[list, list]:
-        """Parse `git status --porcelain -z` into (staged, unstaged) file lists."""
-        status_map = {
-            "M": FileStatus.MODIFIED,
-            "A": FileStatus.ADDED,
-            "D": FileStatus.DELETED,
-            "R": FileStatus.RENAMED,
-            "T": FileStatus.TYPECHANGE,
-            "?": FileStatus.UNTRACKED,
-        }
-
-        staged: list[GitFileStatus] = []
-        unstaged: list[GitFileStatus] = []
-        entries = data.split(b"\x00")
-        i = 0
-        while i < len(entries):
-            entry = entries[i]
-            if len(entry) < 4:
-                i += 1
-                continue
-
-            index_code = chr(entry[0])
-            wt_code = chr(entry[1])
-            path = entry[3:].decode("utf-8", errors="replace")
-
-            # Index (staged) status
-            if index_code in status_map and index_code != "?":
-                staged.append(GitFileStatus(path, status_map[index_code], staged=True))
-
-            # Working tree (unstaged) status
-            if wt_code in status_map:
-                unstaged.append(GitFileStatus(path, status_map[wt_code], staged=False))
-
-            # Renames have an extra entry for the original path
-            if index_code == "R" or wt_code == "R":
-                i += 1
-
-            i += 1
-
-        staged.sort(key=lambda x: x.path)
-        unstaged.sort(key=lambda x: x.path)
-        return staged, unstaged
 
     def _apply_refresh(self, branch, ahead, behind, staged, unstaged, error=None):
         """Apply fetched git data to the UI (runs on main thread)."""
@@ -632,10 +581,15 @@ class GitChangesPanel(Gtk.Box):
         file_btn.set_hexpand(True)
 
         display_name = Path(file_status.path).name
+        tooltip = file_status.path
+        # Show renames as "old → new" so the pairing isn't lost.
+        if file_status.old_path:
+            display_name = f"{Path(file_status.old_path).name} → {display_name}"
+            tooltip = f"{file_status.old_path} → {file_status.path}"
         file_label = Gtk.Label(label=display_name)
         file_label.set_xalign(0)
         file_label.set_ellipsize(2)  # PANGO_ELLIPSIZE_MIDDLE
-        file_label.set_tooltip_text(file_status.path)  # Full path in tooltip
+        file_label.set_tooltip_text(tooltip)  # Full path in tooltip
         file_label.add_css_class("git-file-label")
         if css_class:
             file_label.add_css_class(css_class)

@@ -9,6 +9,7 @@ from pathlib import Path
 import pygit2
 
 from ..utils import git_auth
+from ..utils.text_files import is_binary_bytes, human_size
 
 
 class AuthenticationRequired(Exception):
@@ -93,51 +94,75 @@ class GitService:
         except pygit2.GitError:
             return "unknown"
 
-    def get_status(self) -> list[GitFileStatus]:
-        """Get status of all changed files."""
-        result = []
+    # Status code letters from `git status --porcelain`.
+    _PORCELAIN_STATUS = {
+        "M": FileStatus.MODIFIED,
+        "A": FileStatus.ADDED,
+        "D": FileStatus.DELETED,
+        "R": FileStatus.RENAMED,
+        "C": FileStatus.RENAMED,  # copy — treat like a rename for display
+        "T": FileStatus.TYPECHANGE,
+        "?": FileStatus.UNTRACKED,
+    }
 
-        try:
-            status = self.repo.status()
-        except pygit2.GitError:
-            return result
+    def get_porcelain_status(self, env=None) -> tuple[list[GitFileStatus], list[GitFileStatus]]:
+        """The single source of truth for working-tree status: (staged, unstaged).
 
-        for path, flags in status.items():
-            # Check staged status (index)
-            if flags & pygit2.GIT_STATUS_INDEX_NEW:
-                result.append(GitFileStatus(path, FileStatus.ADDED, staged=True))
-            elif flags & pygit2.GIT_STATUS_INDEX_MODIFIED:
-                result.append(GitFileStatus(path, FileStatus.MODIFIED, staged=True))
-            elif flags & pygit2.GIT_STATUS_INDEX_DELETED:
-                result.append(GitFileStatus(path, FileStatus.DELETED, staged=True))
-            elif flags & pygit2.GIT_STATUS_INDEX_RENAMED:
-                result.append(GitFileStatus(path, FileStatus.RENAMED, staged=True))
-            elif flags & pygit2.GIT_STATUS_INDEX_TYPECHANGE:
-                result.append(GitFileStatus(path, FileStatus.TYPECHANGE, staged=True))
+        Uses ``git status --porcelain -z`` (reads the on-disk index, so it stays
+        correct after external index changes) — the one status parser in the app,
+        replacing the former pygit2 ``get_status`` path so the changes panel, the
+        notes-panel badges and the pull pre-check can never disagree.
 
-            # Check working tree status
-            if flags & pygit2.GIT_STATUS_WT_NEW:
-                result.append(GitFileStatus(path, FileStatus.UNTRACKED, staged=False))
-            elif flags & pygit2.GIT_STATUS_WT_MODIFIED:
-                result.append(GitFileStatus(path, FileStatus.MODIFIED, staged=False))
-            elif flags & pygit2.GIT_STATUS_WT_DELETED:
-                result.append(GitFileStatus(path, FileStatus.DELETED, staged=False))
-            elif flags & pygit2.GIT_STATUS_WT_RENAMED:
-                result.append(GitFileStatus(path, FileStatus.RENAMED, staged=False))
-            elif flags & pygit2.GIT_STATUS_WT_TYPECHANGE:
-                result.append(GitFileStatus(path, FileStatus.TYPECHANGE, staged=False))
+        Raises ``RuntimeError`` if git fails, so callers surface it (roadmap 3.2)
+        rather than reading a failure as "no changes".
+        """
+        result = subprocess.run(
+            ["git", "status", "--porcelain", "-z"],
+            capture_output=True, cwd=str(self.repo_path), timeout=30,
+            env=env or git_auth.build_git_env(),
+        )
+        if result.returncode != 0:
+            raise RuntimeError(
+                result.stderr.decode("utf-8", errors="replace").strip() or "git status failed"
+            )
+        return self._parse_porcelain(result.stdout)
 
-        # Sort: staged first, then by path
-        result.sort(key=lambda x: (not x.staged, x.path))
-        return result
+    @classmethod
+    def _parse_porcelain(cls, data: bytes) -> tuple[list[GitFileStatus], list[GitFileStatus]]:
+        """Parse ``git status --porcelain -z`` bytes into (staged, unstaged)."""
+        staged: list[GitFileStatus] = []
+        unstaged: list[GitFileStatus] = []
+        entries = data.split(b"\x00")
+        i = 0
+        while i < len(entries):
+            entry = entries[i]
+            if len(entry) < 4:
+                i += 1
+                continue
 
-    def get_staged_files(self) -> list[GitFileStatus]:
-        """Get only staged files."""
-        return [f for f in self.get_status() if f.staged]
+            index_code = chr(entry[0])
+            wt_code = chr(entry[1])
+            path = entry[3:].decode("utf-8", errors="replace")
 
-    def get_unstaged_files(self) -> list[GitFileStatus]:
-        """Get only unstaged/untracked files."""
-        return [f for f in self.get_status() if not f.staged]
+            # A rename/copy is followed by a NUL-separated original path.
+            old_path = None
+            if index_code in ("R", "C") or wt_code in ("R", "C"):
+                if i + 1 < len(entries):
+                    old_path = entries[i + 1].decode("utf-8", errors="replace")
+                i += 1  # consume the original-path token
+
+            if index_code in cls._PORCELAIN_STATUS and index_code != "?":
+                staged.append(GitFileStatus(
+                    path, cls._PORCELAIN_STATUS[index_code], staged=True, old_path=old_path))
+            if wt_code in cls._PORCELAIN_STATUS:
+                unstaged.append(GitFileStatus(
+                    path, cls._PORCELAIN_STATUS[wt_code], staged=False, old_path=old_path))
+
+            i += 1
+
+        staged.sort(key=lambda x: x.path)
+        unstaged.sort(key=lambda x: x.path)
+        return staged, unstaged
 
     def stage(self, path: str) -> None:
         """Stage a file."""
@@ -261,9 +286,13 @@ class GitService:
         """
         Get diff for a file.
         Returns (old_content, new_content) tuple for DiffView.
+
+        Content is read as raw bytes and decoded only if textual: a binary file
+        is short-circuited to a human "Binary file (size)" note on each side so
+        the diff view never renders decoded-garbage line noise.
         """
-        old_content = ""
-        new_content = ""
+        old_bytes = b""
+        new_bytes = b""
         full_path = self.repo_path / path
 
         try:
@@ -271,39 +300,39 @@ class GitService:
                 # Diff between HEAD and index
                 head = self.repo.head.peel(pygit2.Commit)
                 if path in head.tree:
-                    blob = self.repo.get(head.tree[path].id)
-                    old_content = blob.data.decode("utf-8", errors="replace")
-
+                    old_bytes = self.repo.get(head.tree[path].id).data
                 # Get content from index
                 if path in self.repo.index:
-                    entry = self.repo.index[path]
-                    blob = self.repo.get(entry.id)
-                    new_content = blob.data.decode("utf-8", errors="replace")
+                    new_bytes = self.repo.get(self.repo.index[path].id).data
             else:
-                # Diff between index (or HEAD) and working tree
-                # Get base content (from index if staged, else from HEAD)
+                # Base content (from index if present, else from HEAD)
                 if path in self.repo.index:
-                    entry = self.repo.index[path]
-                    blob = self.repo.get(entry.id)
-                    old_content = blob.data.decode("utf-8", errors="replace")
+                    old_bytes = self.repo.get(self.repo.index[path].id).data
                 else:
-                    # Try HEAD
                     try:
                         head = self.repo.head.peel(pygit2.Commit)
                         if path in head.tree:
-                            blob = self.repo.get(head.tree[path].id)
-                            old_content = blob.data.decode("utf-8", errors="replace")
+                            old_bytes = self.repo.get(head.tree[path].id).data
                     except pygit2.GitError:
                         pass
-
-                # Get working tree content
+                # Working tree content
                 if full_path.exists():
-                    new_content = full_path.read_text(errors="replace")
+                    new_bytes = full_path.read_bytes()
 
-        except (pygit2.GitError, OSError, UnicodeDecodeError):
+        except (pygit2.GitError, OSError):
             pass
 
-        return old_content, new_content
+        if is_binary_bytes(old_bytes) or is_binary_bytes(new_bytes):
+            def note(data: bytes) -> str:
+                return f"Binary file ({human_size(len(data))})" if data else ""
+            return note(old_bytes), note(new_bytes)
+
+        # Decode both sides the same way (bytes → text, CRLF preserved) so a
+        # CRLF file doesn't show spurious ^M diffs from mixed read paths.
+        return (
+            old_bytes.decode("utf-8", errors="replace"),
+            new_bytes.decode("utf-8", errors="replace"),
+        )
 
     def get_remote(self) -> pygit2.Remote | None:
         """Get the origin remote."""
@@ -344,11 +373,11 @@ class GitService:
 
     def has_uncommitted_changes(self) -> bool:
         """Check if there are uncommitted changes (staged or unstaged)."""
-        if not self.repo:
+        try:
+            staged, unstaged = self.get_porcelain_status()
+        except (RuntimeError, OSError):
             return False
-
-        status = self.repo.status()
-        return len(status) > 0
+        return bool(staged or unstaged)
 
     def pull(self, credentials: tuple[str, str] | None = None) -> str:
         """Pull from remote using git CLI. Returns status message.
@@ -452,9 +481,13 @@ class GitService:
             raise RuntimeError("git command not found")
 
     def get_file_status_map(self) -> dict[str, FileStatus]:
-        """Get a map of path -> status for FileTree indicators."""
+        """Get a map of path -> status for FileTree indicators (single source)."""
         result = {}
-        for file_status in self.get_status():
+        try:
+            staged, unstaged = self.get_porcelain_status()
+        except (RuntimeError, OSError):
+            return result
+        for file_status in staged + unstaged:
             # Prefer unstaged status for display (more urgent)
             if file_status.path not in result or not file_status.staged:
                 result[file_status.path] = file_status.status

@@ -63,6 +63,11 @@ def read_text_file(path: str | os.PathLike) -> ReadResult:
     return ReadResult(normalized, line_ending, True)
 
 
+def is_binary_bytes(data: bytes) -> bool:
+    """Return True if ``data`` looks binary (a null byte in the first 8 KB)."""
+    return b"\x00" in data[:_BINARY_SNIFF_BYTES]
+
+
 def is_binary(path: str | os.PathLike) -> bool:
     """Return True if ``path`` looks binary (a null byte in the first 8 KB)."""
     try:
@@ -70,7 +75,7 @@ def is_binary(path: str | os.PathLike) -> bool:
             chunk = f.read(_BINARY_SNIFF_BYTES)
     except OSError:
         return False
-    return b"\x00" in chunk
+    return is_binary_bytes(chunk)
 
 
 def capture_stat(path: str | os.PathLike) -> tuple[int, int] | None:
