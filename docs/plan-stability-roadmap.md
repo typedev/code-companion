@@ -1,6 +1,6 @@
 # Stability & Growth Roadmap (v0.8.x → v1.0)
 
-**Status**: Phases 1 (data safety), 2 (async layer, +3.4 git env) and **7 (MCP control surface, PR #3)** done & tested. Also shipped outside this doc: the **session supervisor** (tmux; `docs/plan-session-supervisor.md`) and **flock-based locks**. Next candidates: Phase 3 (git robustness) or Phase 5 (reviewer editor).
+**Status**: Phases 1 (data safety), 2 (async layer, +3.4 git env) and **7 (MCP control surface, PR #3)** done & tested. Also shipped outside this doc: the **session supervisor** (tmux; `docs/plan-session-supervisor.md`) and **flock-based locks**. **Phase 3 Tier 1** (silent-failure cluster: 3.3 restore_file, 3.1-lite commit guards, 3.2 panel error surfacing) done & tested (`801b7d1`). Next candidates: rest of Phase 3 (3.5/3.7/3.8/3.10) or Phase 5 (reviewer editor).
 **Based on**: 4-track reliability audit + worktree architecture research (2026-07-06)
 **Code references**: valid as of commit `ef69c77` — line numbers may drift, symbol names are stable.
 
@@ -149,16 +149,19 @@ Reference implementations already in the codebase (copy these, don't invent):
 Goal: existing git operations become trustworthy; repo states become visible; errors become actionable.
 
 ### 3.1 Commit guards
+- [x] **Tier 1 done (`801b7d1`)**: `commit()` `index.read()`s first, refuses a conflicted index / in-progress merge (refused, not 2-parent-committed) / empty commit; Commit button gated on a cached `_has_staged` flag, not a widget scan. **Deferred:** building the real 2-parent merge commit (the in-app merge UI, with 3.6).
 - [ ] Defects (`src/services/git_service.py` `commit()` ~213-244): ignores `repo.index.conflicts` and repo state (`MERGE_HEAD`) → mid-merge commit silently drops the second parent or commits conflict markers; empty commits allowed (no tree-vs-HEAD check); DOM-based commit-button gating in the panel races the async refresh (`git_changes_panel.py` ~622-636); stale in-memory pygit2 index after CLI pull (no `index.read()`).
 - Fix: in `commit()` — `repo.index.read()` first; refuse if `index.conflicts`; if `repo.state()` is merge → create the commit with both parents (`HEAD` + `MERGE_HEAD`) and clear state; reject empty tree unless amend; gate the button on service state, not on scanning widget children.
 - Acceptance: mid-merge commit produces a correct 2-parent merge commit; commit with nothing staged is refused with a toast; conflicted index blocks commit with a pointing message.
 
 ### 3.2 Error surfacing policy
+- [x] **Tier 1 done (`801b7d1`)**: `unstage`/`unstage_all` propagate errors (mutate toast); the changes panel distinguishes a failed `git status` from a clean tree → error state (message + Retry) instead of a false "No changes". **Deferred:** `refresh_remote_status` fetch-staleness (PM badge) and the `git_auth.py` credential swallows (→ 3.7); `git_service.get_status()` swallow (→ 3.8 dedup).
 - [ ] Defects: `unstage`/`unstage_all` swallow `pygit2.GitError` (`git_service.py` ~165-183) — buttons appear dead; status errors render as an empty change list = false "No changes" (`git_service.py` ~100, `git_changes_panel.py` ~270); auth helpers `except Exception: pass` (`git_auth.py` ~125, 198); `refresh_remote_status` swallows fetch failures so "behind" is silently stale (`project_status_service.py` ~135).
 - Fix: propagate errors to the panel; a failed status shows an in-panel error state ("Couldn't read repository status: …" + Retry), never an empty list; failed fetch marks the badge/timestamp as stale.
 - Acceptance: chmod the repo `.git` unreadable → panel shows the error state, not "No changes".
 
 ### 3.3 `restore_file` via real checkout
+- [x] **Done (`801b7d1`)**: `restore_file` now runs `git checkout HEAD -- <path>` (via `build_git_env`) + resyncs the pygit2 index. Verified: symlink/CRLF/staged-deletion.
 - [ ] Defect (`git_service.py` ~185-211): hand-writes `blob.data` to the worktree — bypasses `.gitattributes` filters (CRLF/smudge), writes symlink targets as file contents, never clears an exec bit, ignores the index (staged deletion not undone).
 - Fix: use `repo.checkout(paths=[...], strategy=FORCE)` or `git checkout -- <path>`.
 - Acceptance: discard on a symlink restores the symlink; discard on a CRLF-attributed file preserves CRLF.
