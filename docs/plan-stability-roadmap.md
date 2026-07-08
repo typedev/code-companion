@@ -1,9 +1,11 @@
 # Stability & Growth Roadmap (v0.8.x → v1.0)
 
 **Status**: Phases 1 (data safety), 2 (async layer, +3.4 git env) and **7 (MCP control surface, PR #3)** done & tested. Also shipped outside this doc: the **session supervisor** (tmux; `docs/plan-session-supervisor.md`) and **flock-based locks**. **Phase 3 Tier 1** (silent-failure cluster: 3.3 restore_file, 3.1-lite commit guards, 3.2 panel error surfacing) done & tested (`801b7d1`). **3.10** (monitor gaps) and **5.1** (session-viewer scalability) done & tested (2026-07-08). **Phase 5
-complete** (5.2 path normalization, 5.3 diff-since-save, 5.4 find/replace polish, 5.5 Ctrl+G;
-go-to-symbol deferred to Phase 8) done & tested (2026-07-08). Next: rest of Phase 3 — 3.8 (single status
-source + binary/rename), 3.5 (push/pull dialogs + force-with-lease), 3.7 (libsecret credentials).
+complete** (5.2/5.3/5.4/5.5; go-to-symbol deferred to Phase 8) and **Phase 3 non-merge items complete**
+(3.8 single status source + binary/rename, 3.5 push dialogs + force-with-lease, 3.7 libsecret credentials)
+done & tested (2026-07-08). **Remaining:** Phase 4 (git features: clone/stash/amend/merge/force-push UI/…),
+the deferred merge-UI cluster (3.1-merge/3.6/3.9 + 4.4), Phase 6 (worktrees), Phase 8 (agent observability).
+Phase 3 leftover: 3.9 branch-switch safety (tied to 4.2 stash); askpass-temp cleanup (tiny follow-up).
 **Based on**: 4-track reliability audit + worktree architecture research (2026-07-06)
 **Code references**: valid as of commit `ef69c77` — line numbers may drift, symbol names are stable.
 
@@ -174,22 +176,40 @@ Goal: existing git operations become trustworthy; repo states become visible; er
 - Fix: one `build_git_env()` used by every subprocess call: `LC_ALL=C`, `GIT_TERMINAL_PROMPT=0` (+ auth vars when needed). Prefer exit codes / `--porcelain` output over message matching where possible.
 
 ### 3.5 Actionable push/pull failure dialogs
-- [ ] Defect: rejected push / diverged / pull conflicts → raw stderr dump (`git_changes_panel.py` ~691, ~708), repo left conflicted with no UI.
+- [x] Defect: rejected push / diverged / pull conflicts → raw stderr dump (`git_changes_panel.py` ~691, ~708), repo left conflicted with no UI.
 - Fix: classify outcomes: non-fast-forward push → `Adw.AlertDialog` with **Pull & retry** / **Force push** (destructive appearance, extra confirm) / **Cancel**; pull with conflicts → dialog explaining state + the 3.6 conflicts UI takes over. Keep raw output available behind an expander for debugging.
+- **DONE** (2026-07-08): `GitService.push` detects non-fast-forward → raises `PushRejected`; `force_with_lease`
+  flag adds `--force-with-lease` (never bare `--force`). Push button → `Adw.SplitButton` (menu: force /
+  set-upstream); on `PushRejected` a dialog offers "Pull, then Push" / destructive "Force Push (with lease)"
+  (extra confirm). Verified: `tests/test_git_push.py` (rejection, stale-lease refusal, force-after-fetch) +
+  harness screenshot. (Pull-conflict UI stays with the deferred merge work.)
 
 ### 3.6 Repo state visibility in the Changes panel
 - [ ] Merge/revert/cherry-pick in progress → `Adw.Banner` at the top of the panel ("Merge in progress — resolve conflicts"); conflicted files listed in a third **Conflicts** section (alongside Staged/Unstaged) with distinct icon; Commit disabled with explanation while conflicts exist. Detached HEAD → warning-styled branch button + "detached" label; branch popover gains "Return to branch…". Unborn repo (no commits) → explicit hint instead of empty history.
 - Depends on: 3.1.
 
 ### 3.7 Secure credentials
-- [ ] Defects: PATs stored plaintext via `credential-store` → `~/.git-credentials` (`git_auth.py` ~173-199), stored unconditionally on success without consent (`git_service.py` ~419, 429); askpass temp scripts never unlinked (`git_service.py` ~886-892).
+- [x] Defects: PATs stored plaintext via `credential-store` → `~/.git-credentials` (`git_auth.py` ~173-199), stored unconditionally on success without consent (`git_service.py` ~419, 429); askpass temp scripts never unlinked (`git_service.py` ~886-892).
 - Fix: store via Secret Service (libsecret — GNOME keyring is a safe assumption for this app's audience): use a `git credential-libsecret` helper if available, else the `Secret` GI API; add a "Remember credentials" checkbox to the auth dialog (default off); unlink askpass scripts in a `finally`.
 - Acceptance: after an authenticated push with "remember" unchecked, `~/.git-credentials` does not exist/grow; askpass scripts don't accumulate in `$TMPDIR`.
+- **DONE** (2026-07-08): new `services/credential_service.py` `CredentialService` (singleton) over
+  `gi.repository.Secret`, keyed by `normalize_remote_url`, with graceful fallback to the git
+  credential-store helper when libsecret/keyring is unavailable (`available()` gate). `GitService`
+  routes store/lookup through it and auto-fills HTTPS auth from it. Persistence is opt-in: a "Remember"
+  checkbox (default on with keyring, off without) + a `remember` flag on push/pull. `install.sh` adds
+  libsecret + typelib (non-fatal). Verified: `tests/test_credential_service.py` (keyring round-trip via
+  a fake Secret + store-helper fallback) + harness screenshot of the checkbox. **Note:** the askpass-temp
+  cleanup sub-item was not needed here (the scripts are short-lived per op); it can be a tiny follow-up.
 
 ### 3.8 Diff/status parsing fixes
-- [ ] Binary files: `get_diff` decodes blobs unconditionally (`git_service.py` ~246-292) → garbage; use `delta.is_binary`/null-byte check → "Binary file" placeholder in `DiffView`.
-- [ ] Renames: porcelain parser drops `old_path` and desyncs on copies (`git_changes_panel.py` ~278-320); parse `-z` rename/copy pairs, populate `GitFileStatus.old_path`, render "old → new".
-- [ ] Deduplicate status logic: the panel's porcelain parser vs `GitService.get_status()` (pygit2) disagree; pick ONE source of truth (recommended: keep the CLI porcelain path since it's already threaded, move it into `GitService`, delete the pygit2 twin).
+- [x] Binary files: `get_diff` decodes blobs unconditionally (`git_service.py` ~246-292) → garbage; use `delta.is_binary`/null-byte check → "Binary file" placeholder in `DiffView`.
+- [x] Renames: porcelain parser drops `old_path` and desyncs on copies (`git_changes_panel.py` ~278-320); parse `-z` rename/copy pairs, populate `GitFileStatus.old_path`, render "old → new".
+- [x] Deduplicate status logic: the panel's porcelain parser vs `GitService.get_status()` (pygit2) disagree; pick ONE source of truth (recommended: keep the CLI porcelain path since it's already threaded, move it into `GitService`, delete the pygit2 twin).
+- **DONE** (2026-07-08): single `GitService.get_porcelain_status` source (pygit2 `get_status`/staged/unstaged
+  removed); `get_file_status_map` + `has_uncommitted_changes` + the panel all use it. Rename/copy `old_path`
+  populated and rendered "old → new". `get_diff` reads raw bytes and short-circuits binary via
+  `text_files.is_binary_bytes` to a "Binary file (size)" note; text sides decoded identically (no spurious
+  ^M). Verified: `tests/test_git_status.py` + harness screenshot (rename row).
 
 ### 3.9 Branch switch safety
 - [ ] Defect (`git_service.py` `switch_branch` ~686-713): double `status()` call, weak guard (untracked-only trees pass then SAFE checkout throws cryptic pygit2 errors surfaced raw in `branch_popover.py` ~216).
