@@ -20,6 +20,14 @@ class AuthenticationRequired(Exception):
         self.remote_url = remote_url
 
 
+class PushRejected(Exception):
+    """Raised when a push is rejected as non-fast-forward (remote has new work)."""
+
+    def __init__(self, message: str, remote_url: str):
+        super().__init__(message)
+        self.remote_url = remote_url
+
+
 class FileStatus(Enum):
     """Git file status codes."""
     MODIFIED = "M"
@@ -419,13 +427,26 @@ class GitService:
         except FileNotFoundError:
             raise RuntimeError("git command not found")
 
-    def push(self, credentials: tuple[str, str] | None = None) -> str:
+    @staticmethod
+    def _is_rejected_push(error: str) -> bool:
+        """True if the push failed as a non-fast-forward rejection."""
+        markers = ("non-fast-forward", "fetch first", "! [rejected]",
+                   "Updates were rejected", "tip of your current branch is behind")
+        return any(m in error for m in markers)
+
+    def push(self, credentials: tuple[str, str] | None = None,
+             force_with_lease: bool = False) -> str:
         """Push to remote using git CLI. Returns status message.
 
-        Automatically sets upstream for new branches.
+        Automatically sets upstream for new branches. A non-fast-forward
+        rejection raises PushRejected so the UI can offer pull-then-push or a
+        force-with-lease. ``force_with_lease=True`` adds ``--force-with-lease``
+        (never a bare ``--force``), so a push only overwrites the remote tip the
+        local ref was based on.
 
         Args:
             credentials: Optional (username, password) tuple for authentication.
+            force_with_lease: Retry semantics with ``--force-with-lease``.
         """
         remote = self.get_remote()
         if not remote:
@@ -433,11 +454,14 @@ class GitService:
 
         branch_name = self.get_branch_name()
         env = self._get_auth_env(remote.url, credentials)
+        base_cmd = ["git", "push"]
+        if force_with_lease:
+            base_cmd.append("--force-with-lease")
 
         try:
             # First try normal push
             result = subprocess.run(
-                ["git", "push"],
+                base_cmd,
                 cwd=str(self.repo_path),
                 capture_output=True,
                 text=True,
@@ -451,8 +475,12 @@ class GitService:
                 # Check if it's "no upstream branch" error
                 if "has no upstream branch" in error or "no upstream branch" in error:
                     # Retry with --set-upstream
+                    upstream_cmd = ["git", "push"]
+                    if force_with_lease:
+                        upstream_cmd.append("--force-with-lease")
+                    upstream_cmd += ["--set-upstream", remote.name, branch_name]
                     result = subprocess.run(
-                        ["git", "push", "--set-upstream", remote.name, branch_name],
+                        upstream_cmd,
                         cwd=str(self.repo_path),
                         capture_output=True,
                         text=True,
@@ -467,6 +495,9 @@ class GitService:
 
                 if self._is_auth_error(error):
                     raise AuthenticationRequired(error, remote.url)
+                # A non-fast-forward rejection is recoverable — let the UI decide.
+                if self._is_rejected_push(error):
+                    raise PushRejected(error, remote.url)
                 raise RuntimeError(error or "Push failed")
 
             # Store credentials if provided and successful

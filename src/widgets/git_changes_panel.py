@@ -3,9 +3,9 @@
 import subprocess
 from pathlib import Path
 
-from gi.repository import Gtk, GLib, GObject, Adw
+from gi.repository import Gtk, GLib, GObject, Adw, Gio
 
-from ..services import GitService, GitFileStatus, FileStatus, ToastService, FileMonitorService, AuthenticationRequired, run_async
+from ..services import GitService, GitFileStatus, FileStatus, ToastService, FileMonitorService, AuthenticationRequired, PushRejected, run_async
 from ..services.icon_cache import IconCache
 from ..utils import git_auth
 from .branch_popover import BranchPopover
@@ -270,10 +270,25 @@ class GitChangesPanel(Gtk.Box):
         self.commit_btn.connect("clicked", self._on_commit_clicked)
         buttons_box.append(self.commit_btn)
 
-        self.push_btn = Gtk.Button(label="Push")
+        # Push is a split button: primary = normal push, menu = force / upstream.
+        push_menu = Gio.Menu()
+        push_menu.append("Force push (with lease)…", "gitpush.force")
+        push_menu.append("Set upstream and push", "gitpush.upstream")
+        self.push_btn = Adw.SplitButton()
+        self.push_btn.set_label("Push")
         self.push_btn.set_hexpand(True)
+        self.push_btn.set_menu_model(push_menu)
         self.push_btn.connect("clicked", self._on_push_clicked)
         buttons_box.append(self.push_btn)
+
+        push_actions = Gio.SimpleActionGroup()
+        force_action = Gio.SimpleAction.new("force", None)
+        force_action.connect("activate", lambda a, p: self._confirm_force_push())
+        push_actions.add_action(force_action)
+        upstream_action = Gio.SimpleAction.new("upstream", None)
+        upstream_action.connect("activate", lambda a, p: self._on_push_clicked(None))
+        push_actions.add_action(upstream_action)
+        self.insert_action_group("gitpush", push_actions)
 
         self.pull_btn = Gtk.Button(label="Pull")
         self.pull_btn.set_hexpand(True)
@@ -813,15 +828,16 @@ class GitChangesPanel(Gtk.Box):
         self._auth_attempts = 0
         self._do_push()
 
-    def _do_push(self, credentials: tuple[str, str] | None = None):
+    def _do_push(self, credentials: tuple[str, str] | None = None,
+                 force_with_lease: bool = False):
         """Execute push off-thread (2.2)."""
         if self._busy:
             return
         self._set_busy(True)
-        self._show_toast("Pushing…")
+        self._show_toast("Force pushing…" if force_with_lease else "Pushing…")
 
         def work():
-            return self.service.push(credentials)
+            return self.service.push(credentials, force_with_lease=force_with_lease)
 
         def done(result):
             self._auth_attempts = 0
@@ -833,11 +849,67 @@ class GitChangesPanel(Gtk.Box):
         def err(e):
             self._set_busy(False)
             if isinstance(e, AuthenticationRequired):
-                self._retry_with_auth("Push", e.remote_url, self._do_push)
+                # Preserve the force choice through the auth retry.
+                self._retry_with_auth(
+                    "Push", e.remote_url,
+                    lambda creds: self._do_push(creds, force_with_lease=force_with_lease),
+                )
+            elif isinstance(e, PushRejected):
+                self._show_push_rejected_dialog()
             else:
                 self._show_error_dialog("Push Failed", str(e))
 
         run_async(self, worker=work, on_done=done, on_error=err, key="mutate")
+
+    def _show_push_rejected_dialog(self):
+        """Offer a recovery path when the remote has diverged."""
+        dialog = Adw.AlertDialog()
+        dialog.set_heading("Push Rejected")
+        dialog.set_body(
+            "The remote has commits you don't have locally, so the push was "
+            "rejected. Pull and integrate them first, or force-push to overwrite "
+            "the remote with your branch."
+        )
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("pull", "Pull, then Push")
+        dialog.add_response("force", "Force Push (with lease)")
+        dialog.set_response_appearance("force", Adw.ResponseAppearance.DESTRUCTIVE)
+        dialog.set_default_response("pull")
+        dialog.set_close_response("cancel")
+
+        def on_response(dlg, response):
+            if response == "pull":
+                self._auth_attempts = 0
+                self._do_pull()
+            elif response == "force":
+                self._confirm_force_push()
+
+        dialog.connect("response", on_response)
+        dialog.present(self.get_root())
+
+    def _confirm_force_push(self):
+        """Confirm a --force-with-lease push (destructive)."""
+        if self._busy:
+            return
+        dialog = Adw.AlertDialog()
+        dialog.set_heading("Force Push?")
+        dialog.set_body(
+            "Force-push with lease overwrites the remote branch with your local "
+            "one. It refuses if someone else pushed since your last fetch, but it "
+            "still rewrites remote history. Continue?"
+        )
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("force", "Force Push")
+        dialog.set_response_appearance("force", Adw.ResponseAppearance.DESTRUCTIVE)
+        dialog.set_close_response("cancel")
+
+        def on_response(dlg, response):
+            if response == "force":
+                self._auth_attempts = 0
+                self._do_push(force_with_lease=True)
+
+        dialog.connect("response", on_response)
+        dialog.present(self.get_root())
 
     def _retry_with_auth(self, operation: str, remote_url: str, retry_callback):
         """Prompt for credentials and retry, capped at MAX_AUTH_ATTEMPTS (2.2)."""
