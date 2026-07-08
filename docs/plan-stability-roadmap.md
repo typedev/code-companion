@@ -1,6 +1,9 @@
 # Stability & Growth Roadmap (v0.8.x → v1.0)
 
-**Status**: Phases 1 (data safety), 2 (async layer, +3.4 git env) and **7 (MCP control surface, PR #3)** done & tested. Also shipped outside this doc: the **session supervisor** (tmux; `docs/plan-session-supervisor.md`) and **flock-based locks**. **Phase 3 Tier 1** (silent-failure cluster: 3.3 restore_file, 3.1-lite commit guards, 3.2 panel error surfacing) done & tested (`801b7d1`). **3.10** (monitor gaps: packed-refs, post-`git init` re-detect, dangling-monitor prune) and **5.1** (session-viewer scalability: off-thread parse + pagination + JSONL robustness) done & tested (2026-07-08). Next candidates: rest of Phase 3 (3.5 push/pull dialogs, 3.7 secure credentials/libsecret, 3.8 diff/status dedup) or rest of Phase 5 (5.2 path normalization, 5.3–5.5 reviewer editor).
+**Status**: Phases 1 (data safety), 2 (async layer, +3.4 git env) and **7 (MCP control surface, PR #3)** done & tested. Also shipped outside this doc: the **session supervisor** (tmux; `docs/plan-session-supervisor.md`) and **flock-based locks**. **Phase 3 Tier 1** (silent-failure cluster: 3.3 restore_file, 3.1-lite commit guards, 3.2 panel error surfacing) done & tested (`801b7d1`). **3.10** (monitor gaps) and **5.1** (session-viewer scalability) done & tested (2026-07-08). **Phase 5
+complete** (5.2 path normalization, 5.3 diff-since-save, 5.4 find/replace polish, 5.5 Ctrl+G;
+go-to-symbol deferred to Phase 8) done & tested (2026-07-08). Next: rest of Phase 3 — 3.8 (single status
+source + binary/rename), 3.5 (push/pull dialogs + force-with-lease), 3.7 (libsecret credentials).
 **Based on**: 4-track reliability audit + worktree architecture research (2026-07-06)
 **Code references**: valid as of commit `ef69c77` — line numbers may drift, symbol names are stable.
 
@@ -266,18 +269,31 @@ Goal: the editor serves a human *reviewing* AI-written code: navigation and comp
   file no longer crashes the list, pagination button decrements 300→100→gone with correct top message.
 
 ### 5.2 Tab path normalization
-- [ ] Defect: tab dedup compares raw strings (`project_window.py` ~1467, ~734) while paths arrive from tree/search/notes/git in different forms → duplicate tabs, divergent buffers, last-save-wins.
+- [x] Defect: tab dedup compares raw strings (`project_window.py` ~1467, ~734) while paths arrive from tree/search/notes/git in different forms → duplicate tabs, divergent buffers, last-save-wins.
 - Fix: normalize every path to `Path(...).resolve()` at a single chokepoint (`_open_file`) before comparison/storage.
+- **DONE** (2026-07-08): `ProjectWindow._canonical_path` (Path.resolve) applied at `_on_file_activated`
+  (single open entry, canonical path stored on the widget) and the two go-to-line scan sites. Verified:
+  symlink + `..`-relative both collapse to the same canonical path → one tab.
 
 ### 5.3 "Changed since opened" diff
-- [ ] Toolbar button on the editor: diff current buffer vs the content at open/last-save (kept snapshot), shown in the reusable diff tab. Pairs naturally with 1.1's Diff action (same code path).
+- [x] Toolbar button on the editor: diff current buffer vs the content at open/last-save (kept snapshot), shown in the reusable diff tab. Pairs naturally with 1.1's Diff action (same code path).
+- **DONE** (2026-07-08): `FileEditor._baseline_text` captured at load + each save; toolbar "Diff" button
+  (`ScriptToolbar`, enabled only when modified) → `ProjectWindow.open_text_diff(baseline, buffer)`.
 
 ### 5.4 Find/replace completion (per `docs/TODO-editor-search.md`)
-- [ ] Ctrl+H replace mode, whole-word toggle (`SearchSettings.set_at_word_boundaries`), "N of M" positional counter, invalid-regex indication (currently silent, `file_editor.py` ~376-421), replace-all wrapped in one `begin_user_action` (atomic undo).
-- [ ] Fix regex-engine mismatch: validation uses Python `re` but execution uses GtkSource/PCRE (`file_editor.py` ~436-449) — validate with the engine that executes (try the GtkSource search, catch its error) or drop pre-validation.
+- [x] Ctrl+H replace mode, whole-word toggle (`SearchSettings.set_at_word_boundaries`), "N of M" positional counter, invalid-regex indication (currently silent, `file_editor.py` ~376-421), replace-all wrapped in one `begin_user_action` (atomic undo).
+- [x] Fix regex-engine mismatch: validation uses Python `re` but execution uses GtkSource/PCRE (`file_editor.py` ~436-449) — validate with the engine that executes (try the GtkSource search, catch its error) or drop pre-validation.
+- **DONE** (2026-07-08): `[W]` whole-word toggle; "k of N" via `SearchContext.get_occurrence_position`;
+  invalid regex → "Bad regex" + tooltip via `get_regex_error`; Replace-All wrapped in
+  `begin/end_user_action`; `_on_replace` now validates via `get_occurrence_position` (drops the Python
+  `re.fullmatch` pre-check → no PCRE/`re` mismatch); Ctrl+H opens replace. Verified via harness screenshot
+  ("1 of 5" counter, `W` toggle).
 
 ### 5.5 Navigation
-- [ ] Ctrl+G go-to-line dialog (backend `go_to_line` exists); project-wide go-to-symbol as a stretch goal (reuse `python_outline.py` over all files, cached).
+- [x] Ctrl+G go-to-line dialog (backend `go_to_line` exists); project-wide go-to-symbol as a stretch goal (reuse `python_outline.py` over all files, cached).
+- **DONE** (2026-07-08): Ctrl+G → `Adw.AlertDialog` + numeric entry (prefilled current line, clamped to
+  `[1, line_count]`) → `go_to_line`. Verified via harness screenshot. **Go-to-symbol deferred** (project-wide
+  index is Phase-8 territory; the current-file outline popover already covers single-file `.py`/`.md`).
 
 ---
 
