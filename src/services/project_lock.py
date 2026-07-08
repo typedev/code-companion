@@ -1,90 +1,123 @@
-"""Service for managing project lock files."""
+"""Advisory-lock service for single-window / single-instance guarantees.
 
+Locks are backed by ``fcntl.flock`` on a file descriptor held open for the
+process lifetime. The kernel releases the lock automatically when the process
+dies — crash, ``SIGKILL``, anything — so there are no stale locks to reclaim and
+no PID-reuse misdetection (Linux-only, which the app already assumes). The PID is
+still written into the file, but only as informational metadata for the
+"already open" dialog and the SIGUSR1 activation target.
+"""
+
+import fcntl
 import hashlib
 import os
 import signal
+import time
 from pathlib import Path
 
 LOCK_DIR = Path("/tmp/code-companion-locks")
 
 
-class ManagerLock:
-    """Manages lock file for Project Manager to enable single-instance activation."""
+class _FlockLock:
+    """A single advisory lock backed by ``flock`` on ``lock_file``."""
+
+    def __init__(self, lock_file: Path):
+        self.lock_file = lock_file
+        self._pid = os.getpid()
+        self._fd: int | None = None  # held open while we own the lock
+
+    def acquire(self) -> bool:
+        """Take the lock. Returns True on success, False if another holds it."""
+        if self._fd is not None:
+            return True  # already ours
+        try:
+            LOCK_DIR.mkdir(parents=True, exist_ok=True)
+            fd = os.open(self.lock_file, os.O_RDWR | os.O_CREAT, 0o644)
+        except OSError:
+            return False
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            os.close(fd)
+            return False  # a live process holds it
+        # We own it — record our PID (informational only).
+        try:
+            os.ftruncate(fd, 0)
+            os.write(fd, str(self._pid).encode())
+        except OSError:
+            pass
+        self._fd = fd
+        return True
+
+    def release(self):
+        """Release the lock (closing the fd alone would also release it)."""
+        if self._fd is None:
+            return
+        try:
+            fcntl.flock(self._fd, fcntl.LOCK_UN)
+        except OSError:
+            pass
+        try:
+            os.close(self._fd)
+        except OSError:
+            pass
+        self._fd = None
+        # Deliberately do NOT unlink: removing a file under flock is a race
+        # footgun (another process may already hold the same path). An empty
+        # leftover file in /tmp is harmless and reused next time.
+
+    def is_locked(self) -> bool:
+        """True iff a *live* process (not us) currently holds the lock.
+
+        Stale-proof: a dead owner's lock was already freed by the kernel, so the
+        probe simply succeeds and we report unlocked.
+        """
+        if self._fd is not None:
+            return False  # we hold it; not locked "by another"
+        if not self.lock_file.exists():
+            return False
+        try:
+            fd = os.open(self.lock_file, os.O_RDWR)
+        except OSError:
+            return False
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            return False  # we could have taken it -> nobody holds it
+        except OSError:
+            return True  # held by a live process
+        finally:
+            os.close(fd)
+
+    def get_lock_pid(self) -> int | None:
+        """PID recorded by the current holder (meaningful only while locked)."""
+        try:
+            return int(self.lock_file.read_text().strip())
+        except (OSError, ValueError):
+            return None
+
+
+class ManagerLock(_FlockLock):
+    """Single-instance lock for the Project Manager window."""
 
     LOCK_FILE = LOCK_DIR / "manager.lock"
 
     def __init__(self):
-        self._pid = os.getpid()
-
-    def acquire(self) -> bool:
-        """Acquire lock for Project Manager. Returns True if successful."""
-        if self.is_locked():
-            return False
-
-        LOCK_DIR.mkdir(parents=True, exist_ok=True)
-
-        try:
-            with open(self.LOCK_FILE, "w") as f:
-                f.write(str(self._pid))
-            return True
-        except OSError:
-            return False
-
-    def release(self):
-        """Release the lock."""
-        try:
-            if self.LOCK_FILE.exists():
-                with open(self.LOCK_FILE, "r") as f:
-                    pid = int(f.read().strip())
-                if pid == self._pid:
-                    self.LOCK_FILE.unlink()
-        except (OSError, ValueError):
-            pass
-
-    def is_locked(self) -> bool:
-        """Check if Project Manager is locked by another process."""
-        if not self.LOCK_FILE.exists():
-            return False
-
-        try:
-            with open(self.LOCK_FILE, "r") as f:
-                pid = int(f.read().strip())
-
-            if pid == self._pid:
-                return False
-
-            if self._is_process_alive(pid):
-                return True
-            else:
-                self.LOCK_FILE.unlink()
-                return False
-
-        except (OSError, ValueError):
-            try:
-                self.LOCK_FILE.unlink()
-            except OSError:
-                pass
-            return False
-
-    def get_lock_pid(self) -> int | None:
-        """Get the PID holding the lock, or None if not locked."""
-        if not self.LOCK_FILE.exists():
-            return None
-        try:
-            with open(self.LOCK_FILE, "r") as f:
-                return int(f.read().strip())
-        except (OSError, ValueError):
-            return None
+        super().__init__(self.LOCK_FILE)
 
     @staticmethod
     def activate_existing() -> bool:
-        """Send SIGUSR1 to existing Project Manager to activate its window.
+        """Signal a running Project Manager to raise its window (SIGUSR1).
 
-        Returns True if signal was sent successfully.
+        Returns True if a live manager was signalled. Gating on the flock means
+        the PID we signal belongs to the live holder, so a reused PID can't be
+        hit by mistake.
         """
         lock = ManagerLock()
+        if not lock.is_locked():
+            return False
         pid = lock.get_lock_pid()
-        if pid and lock._is_process_alive(pid):
+        if pid:
             try:
                 os.kill(pid, signal.SIGUSR1)
                 return True
@@ -92,158 +125,30 @@ class ManagerLock:
                 return False
         return False
 
-    def _is_process_alive(self, pid: int) -> bool:
-        """Check if process with given PID is alive and is our app."""
-        try:
-            os.kill(pid, 0)
-            cmdline_path = Path(f"/proc/{pid}/cmdline")
-            if cmdline_path.exists():
-                cmdline = cmdline_path.read_text()
-                if "python" in cmdline and ("code-companion" in cmdline or "src.main" in cmdline):
-                    return True
-                return False
-            return True
-        except (OSError, PermissionError):
-            return False
 
-
-class ProjectLock:
-    """Manages lock file for a project to prevent duplicate opening."""
+class ProjectLock(_FlockLock):
+    """Prevents opening the same project in more than one window."""
 
     def __init__(self, project_path: str):
         self.project_path = str(Path(project_path).resolve())
-        self.lock_dir = Path("/tmp/code-companion-locks")
-        self.lock_file = self._get_lock_file_path()
-        self._pid = os.getpid()
-
-    def _get_lock_file_path(self) -> Path:
-        """Generate lock file path based on project path hash."""
         path_hash = hashlib.md5(self.project_path.encode()).hexdigest()[:16]
-        return self.lock_dir / f"{path_hash}.lock"
-
-    def acquire(self) -> bool:
-        """Acquire lock for this project. Returns True if successful."""
-        # Check if already locked by another process
-        if self.is_locked():
-            return False
-
-        # Create lock directory
-        self.lock_dir.mkdir(parents=True, exist_ok=True)
-
-        # Write lock file with our PID
-        try:
-            with open(self.lock_file, "w") as f:
-                f.write(str(self._pid))
-            return True
-        except OSError:
-            return False
-
-    def release(self):
-        """Release the lock."""
-        try:
-            if self.lock_file.exists():
-                # Only remove if we own the lock
-                with open(self.lock_file, "r") as f:
-                    pid = int(f.read().strip())
-                if pid == self._pid:
-                    self.lock_file.unlink()
-        except (OSError, ValueError):
-            pass
-
-    def is_locked(self) -> bool:
-        """Check if project is locked by another process."""
-        if not self.lock_file.exists():
-            return False
-
-        try:
-            with open(self.lock_file, "r") as f:
-                pid = int(f.read().strip())
-
-            # Check if process is still running
-            if pid == self._pid:
-                return False  # It's us
-
-            # Check if PID exists and is a python process (our app)
-            if self._is_process_alive(pid):
-                return True  # Process exists, locked
-            else:
-                # Process doesn't exist, stale lock
-                self.lock_file.unlink()
-                return False
-
-        except (OSError, ValueError):
-            # Corrupted lock file, remove it
-            try:
-                self.lock_file.unlink()
-            except OSError:
-                pass
-            return False
+        super().__init__(LOCK_DIR / f"{path_hash}.lock")
 
     def force_release(self) -> bool:
-        """Force release lock by killing the owning process."""
-        if not self.lock_file.exists():
-            return True
+        """Take over from a live owner: SIGTERM it, wait for the flock to free.
 
-        try:
-            with open(self.lock_file, "r") as f:
-                pid = int(f.read().strip())
-
-            # Don't kill ourselves
-            if pid == self._pid:
-                return True
-
-            # Try to kill the process
+        With flock there are no stale locks, so this only ever fires against a
+        genuinely running window. Killing it lets the kernel drop its lock; we
+        poll briefly so the caller's subsequent acquire succeeds.
+        """
+        pid = self.get_lock_pid()
+        if pid and pid != self._pid:
             try:
-                os.kill(pid, 15)  # SIGTERM
-            except OSError:
-                pass  # Process may already be dead
-
-            # Remove lock file
-            try:
-                self.lock_file.unlink()
+                os.kill(pid, signal.SIGTERM)
             except OSError:
                 pass
-
-            return True
-
-        except (OSError, ValueError):
-            # Remove corrupted lock
-            try:
-                self.lock_file.unlink()
-            except OSError:
-                pass
-            return True
-
-    def get_lock_pid(self) -> int | None:
-        """Get the PID holding the lock, or None if not locked."""
-        if not self.lock_file.exists():
-            return None
-        try:
-            with open(self.lock_file, "r") as f:
-                return int(f.read().strip())
-        except (OSError, ValueError):
-            return None
-
-    def _is_process_alive(self, pid: int) -> bool:
-        """Check if process with given PID is alive and is our app."""
-        try:
-            # Check if process exists
-            os.kill(pid, 0)
-
-            # Verify it's a python process (could be our app)
-            cmdline_path = Path(f"/proc/{pid}/cmdline")
-            if cmdline_path.exists():
-                cmdline = cmdline_path.read_text()
-                # Check if it's python running our app
-                if "python" in cmdline and "code-companion" in cmdline:
-                    return True
-                elif "python" in cmdline and "main.py" in cmdline:
-                    return True
-                elif "python" in cmdline and "src.main" in cmdline:
-                    return True
-                # PID exists but it's not our app - stale lock
-                return False
-            return True  # Can't read cmdline, assume alive
-
-        except (OSError, PermissionError):
-            return False
+            for _ in range(20):  # ~2s for the owner to exit and free the lock
+                if not self.is_locked():
+                    break
+                time.sleep(0.1)
+        return True
