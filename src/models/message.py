@@ -76,3 +76,15 @@ class Message:
             for block in self.content_blocks
             if block.type == ContentType.TOOL_USE
         ]
+
+
+@dataclass
+class SessionContent:
+    """Result of loading a session's full content.
+
+    Carries the parsed messages plus an ``in_progress`` flag: True when the
+    session's last non-empty JSONL line failed to parse, which means the file
+    is still being written (a live agent turn) rather than being corrupt.
+    """
+    messages: list[Message] = field(default_factory=list)
+    in_progress: bool = False

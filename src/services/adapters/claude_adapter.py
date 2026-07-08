@@ -4,7 +4,7 @@ from pathlib import Path
 
 from ..history_adapter import HistoryAdapter
 from ..history import HistoryService
-from ...models import Session, Message
+from ...models import Session, SessionContent
 
 
 class ClaudeHistoryAdapter(HistoryAdapter):
@@ -34,7 +34,7 @@ class ClaudeHistoryAdapter(HistoryAdapter):
         """Get all Claude sessions for a project path."""
         return self._service.get_sessions_for_path(project_path)
 
-    def load_session_content(self, session: Session) -> list[Message]:
+    def load_session_content(self, session: Session) -> SessionContent:
         """Load full session content."""
         return self._service.load_session_content(session)
 

@@ -3,7 +3,7 @@
 from abc import ABC, abstractmethod
 from pathlib import Path
 
-from ..models import Session, Message
+from ..models import Session, SessionContent
 
 
 class HistoryAdapter(ABC):
@@ -49,14 +49,15 @@ class HistoryAdapter(ABC):
         pass
 
     @abstractmethod
-    def load_session_content(self, session: Session) -> list[Message]:
+    def load_session_content(self, session: Session) -> SessionContent:
         """Load full session content with all messages.
 
         Args:
             session: Session object to load content for
 
         Returns:
-            List of Message objects in chronological order
+            A SessionContent with the parsed messages (chronological order) and
+            an ``in_progress`` flag when the file's tail is still being written.
         """
         pass
 

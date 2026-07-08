@@ -1,6 +1,6 @@
 from .project import Project
 from .session import Session
-from .message import Message, MessageRole, ContentBlock, ContentType
+from .message import Message, MessageRole, ContentBlock, ContentType, SessionContent
 from .tool_call import ToolCall, TOOL_ICONS, DEFAULT_TOOL_ICON
 
 __all__ = [
@@ -10,6 +10,7 @@ __all__ = [
     "MessageRole",
     "ContentBlock",
     "ContentType",
+    "SessionContent",
     "ToolCall",
     "TOOL_ICONS",
     "DEFAULT_TOOL_ICON",

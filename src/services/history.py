@@ -4,7 +4,10 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
-from ..models import Project, Session, Message, MessageRole, ContentBlock, ContentType, ToolCall
+from ..models import (
+    Project, Session, Message, MessageRole, ContentBlock, ContentType, ToolCall,
+    SessionContent,
+)
 from ..utils import encode_project_path
 
 
@@ -85,7 +88,7 @@ class HistoryService:
             first_timestamp = None
             first_user_message = ""
 
-            with open(session_file, "r", encoding="utf-8") as f:
+            with open(session_file, "r", encoding="utf-8", errors="replace") as f:
                 for line in f:
                     if not line.strip():
                         continue
@@ -135,20 +138,30 @@ class HistoryService:
         except (OSError, IOError):
             return None
 
-    def load_session_content(self, session: Session) -> list[Message]:
-        """Load full session content with all messages and tool calls."""
+    def load_session_content(self, session: Session) -> SessionContent:
+        """Load full session content with all messages and tool calls.
+
+        Opens with ``errors="replace"`` so a stray non-UTF-8 byte never crashes
+        the load. A JSON parse failure on an intermediate line is skipped, but a
+        failure on the *last* non-empty line is treated as a still-writing tail
+        (``in_progress=True``) rather than silently dropped.
+        """
         messages: list[Message] = []
         pending_tool_blocks: dict[str, ContentBlock] = {}  # tool_id -> ContentBlock
+        in_progress = False
 
         try:
-            with open(session.path, "r", encoding="utf-8") as f:
-                for line in f:
-                    if not line.strip():
-                        continue
+            with open(session.path, "r", encoding="utf-8", errors="replace") as f:
+                # Keep only non-empty lines; the final one may be a partial write.
+                lines = [line for line in f if line.strip()]
 
+                for index, line in enumerate(lines):
                     try:
                         event = json.loads(line)
                     except json.JSONDecodeError:
+                        # A broken *last* line == the session is still being written.
+                        if index == len(lines) - 1:
+                            in_progress = True
                         continue
 
                     event_type = event.get("type", "")
@@ -172,7 +185,7 @@ class HistoryService:
         except (OSError, IOError):
             pass
 
-        return messages
+        return SessionContent(messages=messages, in_progress=in_progress)
 
     def _parse_timestamp(self, ts_str: str | None) -> datetime | None:
         """Parse ISO timestamp string."""
