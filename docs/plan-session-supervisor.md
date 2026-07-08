@@ -1,10 +1,13 @@
 # Session Supervisor — Decoupling Claude Sessions from IDE Windows
 
-**Status**: **Tier 1 increment 1 — DONE & verified 2026-07-08** (uncommitted). Session now
+**Status**: **Tier 1 increment 1 — DONE & verified 2026-07-08** (committed). Session now
 survives window restart: `claude` runs under a per-project tmux session, the reopened
 window re-attaches and re-binds the same MCP endpoint. Multiplexer = **tmux**; source of
-truth = the tmux session env. Lifecycle obvyazka (PM dashboard, notification hook, reaping)
-remains **increments 2–3**. Design discussion captured 2026-07-07.
+truth = the tmux session env. **Increment 2 started**: the PM now shows a per-project
+**live-session dot** (polls `tmux list-sessions` every 4s; shared naming util
+`utils/claude_session.py` so PM and window can't drift) — part of the "PM as dashboard"
+piece. Notification hook → `/refresh` and idle reaping still remain. Design discussion
+captured 2026-07-07.
 Legitimacy of the tmux approach is **verified** (see below); MCP Part A/B + session
 summaries have since shipped to `main`, so the `/refresh` + notification infra this plan
 reuses now exists.

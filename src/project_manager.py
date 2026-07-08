@@ -21,6 +21,7 @@ from .services.sync_service import SyncService
 from .services import session_summary_service
 from .services.icon_cache import IconCache
 from .models.sync import ProjectSyncStatus, SyncState
+from .utils import claude_session
 from .utils.relative_time import humanize_relative, humanize_relative_iso
 from .utils.markdown_markup import markdown_to_pango
 from .widgets.github_auth import show_github_credentials_dialog
@@ -59,6 +60,7 @@ _BADGE_CSS = b"""
 .cc-badge-synced   { background: alpha(#33d17a, 0.18); color: #26a269; }
 .cc-badge-conflict { background: alpha(#e01b24, 0.22); color: #c01c28; }
 .cc-badge-syncoff  { background: alpha(@theme_fg_color, 0.10); color: alpha(@theme_fg_color, 0.55); }
+.cc-live-dot { color: #2ec27e; -gtk-icon-size: 12px; }
 """
 
 
@@ -208,15 +210,8 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
         click_gesture.connect("released", self._on_list_double_click)
         self.project_list.add_controller(click_gesture)
 
-        # Buttons row
+        # Buttons row (Remove now lives in each card's ⋮ menu).
         buttons_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
-
-        # Remove project button
-        self.remove_button = Gtk.Button(label="Remove")
-        self.remove_button.add_css_class("destructive-action")
-        self.remove_button.set_sensitive(False)
-        self.remove_button.connect("clicked", self._on_remove_project_clicked)
-        buttons_box.append(self.remove_button)
 
         # New project button (creates a git repo in a chosen folder)
         new_button = Gtk.Button(label="New Project...")
@@ -235,8 +230,8 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
         main_box.append(content_box)
         self.set_content(main_box)
 
-        # Track selection for remove button
-        self.project_list.connect("row-selected", self._on_selection_changed)
+        # Keep the live-session dots fresh while the manager is open.
+        GLib.timeout_add_seconds(4, self._refresh_live_indicators)
 
     def _load_projects(self):
         """Load projects from registry and kick off a background status scan."""
@@ -263,6 +258,21 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
 
         self._update_latest_refresh_label()
         self._start_local_scan(existing)
+        self._refresh_live_indicators()
+
+    def _refresh_live_indicators(self):
+        """Toggle each card's live-session dot from the running tmux sessions.
+
+        Also used as a recurring GLib timeout, so it always returns True.
+        """
+        live = claude_session.live_session_names()
+        for row in getattr(self, "_rows_by_path", {}).values():
+            indicator = getattr(row, "live_indicator", None)
+            if indicator is not None:
+                indicator.set_visible(
+                    claude_session.session_name(row.project_path) in live
+                )
+        return True
 
     def _show_empty_state(self):
         """Show empty state message."""
@@ -278,17 +288,20 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
         row.add_css_class("project-card")
         row.project_path = str(path)
 
-        hbox = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=14)
-        hbox.set_margin_top(10)
-        hbox.set_margin_bottom(10)
-        hbox.set_margin_start(14)
-        hbox.set_margin_end(10)
+        # Card is two rows: a header (identity + actions) over a git-status row.
+        outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        outer.set_margin_top(10)
+        outer.set_margin_bottom(10)
+        outer.set_margin_start(14)
+        outer.set_margin_end(10)
+
+        header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=14)
 
         # Folder icon (larger)
         icon = Gtk.Image.new_from_icon_name("folder-symbolic")
         icon.set_pixel_size(32)
         icon.set_valign(Gtk.Align.CENTER)
-        hbox.append(icon)
+        header.append(icon)
 
         # Name + path
         text_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
@@ -309,16 +322,17 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
         path_label.set_ellipsize(3)
         text_box.append(path_label)
 
-        hbox.append(text_box)
+        header.append(text_box)
 
-        # Badge container (status markers)
-        badges = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
-        badges.set_valign(Gtk.Align.CENTER)
-        row.badges_box = badges
-        row.local_badges = None
-        row.remote_badges = None
-        row.sync_badges = None
-        hbox.append(badges)
+        # Live-session indicator — a green dot shown when a tmux Claude session
+        # is running for this project (toggled by _refresh_live_indicators).
+        live_indicator = Gtk.Image.new_from_icon_name("media-record-symbolic")
+        live_indicator.add_css_class("cc-live-dot")
+        live_indicator.set_valign(Gtk.Align.CENTER)
+        live_indicator.set_tooltip_text("Claude session running")
+        live_indicator.set_visible(False)
+        header.append(live_indicator)
+        row.live_indicator = live_indicator
 
         # Session summary button — shown only when a summary exists for this project.
         summary_button = Gtk.Button(icon_name="cc-file-symbolic")
@@ -326,22 +340,82 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
         summary_button.set_valign(Gtk.Align.CENTER)
         summary_button.set_tooltip_text("Last session summary")
         summary_button.connect("clicked", self._on_summary_clicked, str(path))
-        hbox.append(summary_button)
+        header.append(summary_button)
         row.summary_button = summary_button
         pid = self._cached_project_id(str(path))
         summary_button.set_visible(
             session_summary_service.load(str(path), project_id=pid) is not None
         )
 
-        rename_button = Gtk.Button(icon_name="document-edit-symbolic")
-        rename_button.add_css_class("flat")
-        rename_button.set_valign(Gtk.Align.CENTER)
-        rename_button.set_tooltip_text("Rename project label")
-        rename_button.connect("clicked", self._on_rename_clicked, row)
-        hbox.append(rename_button)
+        # Overflow menu (⋮): rename / remove and future per-project actions.
+        menu_button = Gtk.MenuButton(icon_name="view-more-symbolic")
+        menu_button.add_css_class("flat")
+        menu_button.set_valign(Gtk.Align.CENTER)
+        menu_button.set_tooltip_text("More actions")
+        menu_button.set_popover(self._build_card_menu(row))
+        header.append(menu_button)
 
-        row.set_child(hbox)
+        outer.append(header)
+
+        # Badge container (git status markers), one row below, aligned under the
+        # text (past the 32px icon + 14px spacing).
+        badges = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+        badges.set_margin_start(46)
+        row.badges_box = badges
+        row.local_badges = None
+        row.remote_badges = None
+        row.sync_badges = None
+        outer.append(badges)
+
+        row.set_child(outer)
         return row
+
+    def _build_card_menu(self, row: Gtk.ListBoxRow) -> Gtk.Popover:
+        """Build the ⋮ overflow popover for a project card (rename / remove)."""
+        popover = Gtk.Popover()
+        popover.set_position(Gtk.PositionType.BOTTOM)
+
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        box.set_margin_top(4)
+        box.set_margin_bottom(4)
+        box.set_margin_start(4)
+        box.set_margin_end(4)
+
+        rename_btn = Gtk.Button()
+        rename_btn.add_css_class("flat")
+        rename_btn.set_child(self._menu_row("document-edit-symbolic", "Rename…"))
+        # The custom child clears the button's accessible name; restore it so
+        # screen readers (and the GUI test harness) can identify the action.
+        rename_btn.update_property([Gtk.AccessibleProperty.LABEL], ["Rename project"])
+        rename_btn.connect(
+            "clicked",
+            lambda _b: (popover.popdown(), self._on_rename_clicked(_b, row)),
+        )
+        box.append(rename_btn)
+
+        remove_btn = Gtk.Button()
+        remove_btn.add_css_class("flat")
+        remove_btn.set_child(self._menu_row("user-trash-symbolic", "Remove…"))
+        remove_btn.update_property([Gtk.AccessibleProperty.LABEL], ["Remove project"])
+        remove_btn.connect(
+            "clicked",
+            lambda _b: (popover.popdown(), self._on_remove_card(row)),
+        )
+        box.append(remove_btn)
+
+        popover.set_child(box)
+        return popover
+
+    @staticmethod
+    def _menu_row(icon_name: str, label: str) -> Gtk.Box:
+        """A left-aligned icon+label pair for a flat menu button."""
+        box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        box.append(Gtk.Image.new_from_icon_name(icon_name))
+        lbl = Gtk.Label(label=label)
+        lbl.set_xalign(0)
+        lbl.set_hexpand(True)
+        box.append(lbl)
+        return box
 
     def _cached_project_id(self, resolved_or_path: str) -> str | None:
         """The project_id from the sync status cache, if any (no git call)."""
@@ -929,10 +1003,6 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
         name = row.name_label.get_text() if hasattr(row, "name_label") else ""
         return self._query in name.lower() or self._query in path.lower()
 
-    def _on_selection_changed(self, _listbox, row):
-        """Handle selection change - enable/disable remove button."""
-        self.remove_button.set_sensitive(row is not None and hasattr(row, "project_path"))
-
     def _on_list_double_click(self, _gesture, n_press, _x, _y):
         """Handle double-click on project list."""
         if n_press == 2:  # Double-click
@@ -967,13 +1037,27 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
             # User cancelled
             pass
 
-    def _on_remove_project_clicked(self, _button):
-        """Handle remove project button click."""
-        row = self.project_list.get_selected_row()
-        if row and hasattr(row, "project_path"):
-            self.registry.unregister_project(row.project_path)
+    def _on_remove_card(self, row: Gtk.ListBoxRow):
+        """Remove a project from the list (folder untouched), with confirmation."""
+        path = row.project_path
+        name = row.name_label.get_text() if hasattr(row, "name_label") else path
+
+        dialog = Adw.AlertDialog(
+            heading="Remove Project",
+            body=f"Remove “{name}” from the list?\n\n{path}\n\nThe folder on disk is not touched.",
+        )
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("remove", "Remove")
+        dialog.set_response_appearance("remove", Adw.ResponseAppearance.DESTRUCTIVE)
+        dialog.set_default_response("cancel")
+        dialog.set_close_response("cancel")
+        dialog.connect("response", self._on_remove_card_response, path)
+        dialog.present(self)
+
+    def _on_remove_card_response(self, _dialog, response: str, path: str):
+        if response == "remove":
+            self.registry.unregister_project(path)
             self._load_projects()
-            self.remove_button.set_sensitive(False)
 
     # ------------------------------------------------------------------
     # New project (pick folder -> name -> git init -> register + open)
