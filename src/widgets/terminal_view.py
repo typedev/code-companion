@@ -50,6 +50,7 @@ class TerminalView(Gtk.Box):
         working_directory: str | None = None,
         run_command: str | None = None,
         env: dict[str, str] | None = None,
+        argv: list[str] | None = None,
     ):
         super().__init__(orientation=Gtk.Orientation.VERTICAL)
 
@@ -60,14 +61,20 @@ class TerminalView(Gtk.Box):
         # respawns keep them. VTE's envv *replaces* the environment, so we must
         # pass the full merged list, not just these.
         self._extra_env = env or {}
-        self._respawn_on_exit = True
+        # When set, spawn this argv directly as the PTY child instead of an
+        # interactive shell (used to run a multiplexer client, e.g.
+        # ``tmux attach``). A direct child owns the PTY, so its exit maps to the
+        # session ending/detaching: we don't feed commands, don't source .venv,
+        # and don't auto-respawn — the exit propagates via ``child-exited``.
+        self._argv = argv
+        self._respawn_on_exit = argv is None
 
         self._build_ui()
         self._apply_terminal_settings()
         self._spawn_shell(working_directory)
 
-        # Run initial command after shell starts
-        if run_command:
+        # Run initial command after shell starts (shell mode only).
+        if run_command and argv is None:
             GLib.timeout_add(500, lambda: self.run_command(run_command) or False)
 
     def _build_ui(self):
@@ -285,9 +292,10 @@ class TerminalView(Gtk.Box):
             ToastService.show_error(f"Clipboard paste error: {e}")
 
     def _spawn_shell(self, working_directory: str | None = None):
-        """Spawn a shell in the terminal."""
-        # Get user's default shell
-        shell = os.environ.get("SHELL", "/bin/bash")
+        """Spawn the PTY child: a direct ``argv`` if given, else a login shell."""
+        # A direct argv (e.g. `tmux attach`) owns the PTY; otherwise fall back to
+        # the user's default shell.
+        argv = self._argv or [os.environ.get("SHELL", "/bin/bash")]
 
         # Use provided directory or home
         cwd = working_directory or os.path.expanduser("~")
@@ -302,11 +310,11 @@ class TerminalView(Gtk.Box):
             merged.update(self._extra_env)
             envv = [f"{k}={v}" for k, v in merged.items()]
 
-        # Spawn the shell
+        # Spawn the child
         self.terminal.spawn_async(
             Vte.PtyFlags.DEFAULT,
             cwd,
-            [shell],
+            argv,
             envv,  # None = inherit; list = replace (already merged with os.environ)
             GLib.SpawnFlags.DEFAULT,
             None,  # Child setup callback
@@ -322,8 +330,10 @@ class TerminalView(Gtk.Box):
             ToastService.show_error(f"Terminal spawn error: {error}")
         else:
             self.child_pid = pid
-            # Auto-activate .venv if exists
-            self._activate_venv_if_exists()
+            # Auto-activate .venv if exists (shell mode only — a direct argv
+            # child, e.g. a tmux client, isn't a shell reading stdin).
+            if self._argv is None:
+                self._activate_venv_if_exists()
 
     def _activate_venv_if_exists(self):
         """Activate .venv if it exists in the working directory."""

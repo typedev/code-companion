@@ -1,8 +1,10 @@
 """Project workspace window."""
 
+import hashlib
 import json
 import os
 import secrets
+import shutil
 import socket
 import subprocess
 import tempfile
@@ -15,6 +17,10 @@ from .services import get_adapter, ProjectLock, ProjectRegistry, GitService, Ico
 from .utils import git_auth
 from .widgets import SessionView, TerminalView, FileTree, FileEditor, TasksPanel, GitChangesPanel, GitHistoryPanel, DiffView, CommitDetailView, ClaudeHistoryPanel, FileSearchDialog, UnifiedSearch, NotesPanel, PreferencesDialog, SnippetsBar, QueryEditor, ProblemsPanel, ProblemsDetailView, IssuesPanel, IssueDetailView, ImageViewer, SvgEditor, BinaryFileView
 from .utils.text_files import is_binary
+
+# Managed tmux config for the persistent Claude pane (see the session supervisor
+# plan). Loaded via `tmux -f`, so the user's own ~/.tmux.conf is never touched.
+_TMUX_CONF = Path(__file__).resolve().parent / "resources" / "tmux" / "tmux-managed.conf"
 
 
 def escape_markup(text: str) -> str:
@@ -924,96 +930,229 @@ class ProjectWindow(Adw.ApplicationWindow):
         placeholder.set_halign(Gtk.Align.CENTER)
         placeholder.set_vexpand(True)
 
-        start_btn = Gtk.Button(label=f"Start {self.adapter.name}")
+        # A live tmux session means we'll re-attach rather than launch fresh —
+        # reflect that in the button so the user knows the session survived.
+        live = shutil.which("tmux") and self._tmux_has_session(
+            self._claude_session_name()
+        )
+        label = f"Reconnect to {self.adapter.name}" if live else f"Start {self.adapter.name}"
+
+        start_btn = Gtk.Button(label=label)
         start_btn.add_css_class("pill")
         start_btn.add_css_class("suggested-action")
         start_btn.connect("clicked", lambda _b: self._start_claude_session())
         placeholder.append(start_btn)
 
+        if live:
+            hint = Gtk.Label(label="A previous session is still running")
+            hint.add_css_class("dim-label")
+            hint.add_css_class("caption")
+            hint.set_margin_top(8)
+            placeholder.append(hint)
+
         self.claude_container.append(placeholder)
 
+    def _claude_session_name(self) -> str:
+        """Deterministic, machine-local tmux session name for this project.
+
+        Path-keyed (not ``resolve_project_identity``, which is None for non-git
+        repos) — aligns with the one-window-per-project-path lock.
+        """
+        key = os.path.realpath(str(self.project_path))
+        return "cc-" + hashlib.sha1(key.encode()).hexdigest()[:12]
+
+    @staticmethod
+    def _tmux(*args: str, timeout: float = 5) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            ["tmux", *args], capture_output=True, text=True, timeout=timeout
+        )
+
+    def _tmux_has_session(self, name: str) -> bool:
+        try:
+            return self._tmux("has-session", "-t", f"={name}").returncode == 0
+        except (OSError, subprocess.SubprocessError):
+            return False
+
+    def _tmux_show_env(self, name: str, var: str) -> str | None:
+        """Read one var from the tmux session environment, or None."""
+        try:
+            result = self._tmux("show-environment", "-t", f"={name}", var)
+        except (OSError, subprocess.SubprocessError):
+            return None
+        line = result.stdout.strip()
+        # Format is "VAR=value"; a leading "-VAR" means the var is unset.
+        if result.returncode != 0 or "=" not in line or line.startswith("-"):
+            return None
+        return line.split("=", 1)[1]
+
     def _start_claude_session(self):
-        """Start the AI CLI in the persistent Claude pane (or focus it if running)."""
+        """Start the AI CLI in the persistent Claude pane (or focus it if running).
+
+        With tmux available the CLI runs inside a per-project tmux session that
+        survives window restarts: a fresh window creates the session, a reopened
+        window re-attaches. Without tmux we fall back to a plain, non-persistent
+        session (the pre-supervisor behavior).
+        """
         if self.claude_terminal is not None:
             self.claude_terminal.terminal.grab_focus()
             return
 
-        # Start the per-window MCP control surface (Part A). On success it returns
-        # env vars to inject into the CLI's shell and we append the --mcp-config
-        # flags; when disabled or on failure we launch the CLI bare. Server
-        # lifecycle == session lifecycle.
-        mcp_env = self._start_mcp_server()
+        if shutil.which("tmux") is None:
+            self._start_claude_plain()
+            return
+
+        name = self._claude_session_name()
+        if self._tmux_has_session(name):
+            self._start_claude_attached(name)
+        else:
+            self._start_claude_fresh(name)
+
+    def _mount_claude_pane(self, terminal: TerminalView):
+        """Mount a Claude terminal + query editor + snippets bar in the pane."""
+        self._clear_claude_container()
+
+        terminal.set_vexpand(True)
+        self.claude_container.append(terminal)
+
+        query_editor = QueryEditor()
+        query_editor.connect("send-requested", self._on_query_send)
+        query_editor.connect("make-issue-requested", self._on_query_make_issue)
+        self.claude_container.append(query_editor)
+
+        snippets_bar = SnippetsBar()
+        snippets_bar.connect("snippet-clicked", self._on_snippet_clicked)
+        self.claude_container.append(snippets_bar)
+
+        terminal.connect("child-exited", self._on_claude_exited)
+
+        self.claude_terminal = terminal
+        terminal.terminal.grab_focus()
+
+    def _claude_cli_command(self, mcp_env: dict | None) -> str:
+        """The CLI launch string, with --mcp-config flags when MCP is enabled."""
         cli_command = self.adapter.cli_command
         if mcp_env is not None:
             cli_command = (
                 f"{cli_command} --strict-mcp-config "
                 f"--mcp-config {GLib.shell_quote(self._mcp_config_path)}"
             )
+        return cli_command
 
-        self._clear_claude_container()
-
-        # AI CLI terminal in project directory
+    def _start_claude_plain(self):
+        """Fallback when tmux is unavailable: a plain, non-persistent session."""
+        mcp_env = self._start_mcp_server()
         terminal = TerminalView(
             working_directory=str(self.project_path),
-            run_command=cli_command,
+            run_command=self._claude_cli_command(mcp_env),
             env=mcp_env,
         )
-        terminal.set_vexpand(True)
-        self.claude_container.append(terminal)
+        self._mount_claude_pane(terminal)
 
-        # Query editor below terminal
-        query_editor = QueryEditor()
-        query_editor.connect("send-requested", self._on_query_send)
-        query_editor.connect("make-issue-requested", self._on_query_make_issue)
-        self.claude_container.append(query_editor)
+    def _start_claude_fresh(self, name: str):
+        """Start the CLI in a new tmux session (survives window restart).
 
-        # Snippets bar below query editor
-        snippets_bar = SnippetsBar()
-        snippets_bar.connect("snippet-clicked", self._on_snippet_clicked)
-        self.claude_container.append(snippets_bar)
+        The stable (port, token) is injected into the tmux session environment
+        via ``-e`` so a reopened window can recover it with ``show-environment``.
+        """
+        mcp_env = self._start_mcp_server()
+        cli_command = self._claude_cli_command(mcp_env)
 
-        # Know when the CLI exits
-        terminal.connect("child-exited", self._on_claude_exited)
+        tmux_argv = ["tmux", "-f", str(_TMUX_CONF), "new-session", "-s", name]
+        if mcp_env is not None:
+            tmux_argv += [
+                "-e", f"CC_MCP_PORT={mcp_env['CC_MCP_PORT']}",
+                "-e", f"CC_MCP_TOKEN={mcp_env['CC_MCP_TOKEN']}",
+            ]
+        tmux_argv.append(cli_command)  # session command, run by tmux via `sh -c`
 
-        self.claude_terminal = terminal
-        terminal.terminal.grab_focus()
+        terminal = TerminalView(
+            working_directory=str(self.project_path),
+            argv=tmux_argv,
+        )
+        self._mount_claude_pane(terminal)
 
-    def _start_mcp_server(self) -> dict | None:
+    def _start_claude_attached(self, name: str):
+        """Re-attach to a running tmux session; re-bind the same MCP endpoint.
+
+        The CLI already read its --mcp-config once at launch, so we only need to
+        re-bind the MCP server to the (port, token) recovered from the session
+        env — no new config file is written.
+        """
+        port = self._tmux_show_env(name, "CC_MCP_PORT")
+        token = self._tmux_show_env(name, "CC_MCP_TOKEN")
+        if port and token and port.isdigit():
+            self._start_mcp_server(port=int(port), token=token)
+
+        tmux_argv = ["tmux", "-f", str(_TMUX_CONF), "attach", "-t", f"={name}"]
+        terminal = TerminalView(
+            working_directory=str(self.project_path),
+            argv=tmux_argv,
+        )
+        self._mount_claude_pane(terminal)
+
+    def _start_mcp_server(
+        self, port: int | None = None, token: str | None = None
+    ) -> dict | None:
         """Start the per-window MCP server; return env vars for the CLI, or None.
 
-        Returns a ``{CC_MCP_PORT, CC_MCP_TOKEN}`` dict to inject into the terminal,
-        or None when MCP is disabled or startup failed (caller then launches the CLI
-        bare). On success sets ``self.mcp_server`` and ``self._mcp_config_path``.
+        Fresh session (no args): allocate a free port + new token and write the
+        temp ``--strict-mcp-config``. Re-attach (``port`` + ``token`` given):
+        re-bind the *same* stable endpoint an existing tmux session already
+        points at — no config is written, since the running CLI already read it.
+
+        Returns a ``{CC_MCP_PORT, CC_MCP_TOKEN}`` dict, or None when MCP is
+        disabled or startup failed (caller then launches/attaches bare). On
+        success sets ``self.mcp_server`` (and ``self._mcp_config_path`` when fresh).
         """
         if not self.settings.get("mcp.enabled", True):
             return None
+        rebind = port is not None and token is not None
         try:
-            # Pick a free loopback port (bind to 0, read it back, release).
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-                sock.bind(("127.0.0.1", 0))
-                port = sock.getsockname()[1]
-            token = secrets.token_urlsafe(32)
+            if rebind:
+                # Confirm the stable port is still free before re-binding; else
+                # uvicorn's bind would fail silently on its own thread. Degraded
+                # (tool errors, not a hang) until the session is restarted.
+                # SO_REUSEADDR mirrors how uvicorn binds (it sets the same flag),
+                # so a just-freed port lingering in TIME_WAIT after the previous
+                # window closed passes the probe instead of a false "busy".
+                try:
+                    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+                        probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                        probe.bind(("127.0.0.1", port))
+                except OSError:
+                    ToastService.show_error(
+                        f"MCP port {port} is busy; Claude tools are disabled for "
+                        "this session until it is restarted"
+                    )
+                    return None
+            else:
+                # Pick a free loopback port (bind to 0, read it back, release).
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+                    sock.bind(("127.0.0.1", 0))
+                    port = sock.getsockname()[1]
+                token = secrets.token_urlsafe(32)
 
             server = McpServer(self)
             server.start(port, token)
+            self.mcp_server = server
 
-            # Temp --strict-mcp-config referencing the secret by env var, so the
-            # plaintext token never lands on disk.
-            config = {
-                "mcpServers": {
-                    "code-companion": {
-                        "type": "http",
-                        "url": "http://127.0.0.1:${CC_MCP_PORT}/mcp",
-                        "headers": {"Authorization": "Bearer ${CC_MCP_TOKEN}"},
+            if not rebind:
+                # Temp --strict-mcp-config referencing the secret by env var, so
+                # the plaintext token never lands on disk.
+                config = {
+                    "mcpServers": {
+                        "code-companion": {
+                            "type": "http",
+                            "url": "http://127.0.0.1:${CC_MCP_PORT}/mcp",
+                            "headers": {"Authorization": "Bearer ${CC_MCP_TOKEN}"},
+                        }
                     }
                 }
-            }
-            fd, config_path = tempfile.mkstemp(prefix="cc_mcp_", suffix=".json")
-            os.write(fd, json.dumps(config).encode())
-            os.close(fd)
+                fd, config_path = tempfile.mkstemp(prefix="cc_mcp_", suffix=".json")
+                os.write(fd, json.dumps(config).encode())
+                os.close(fd)
+                self._mcp_config_path = config_path
 
-            self.mcp_server = server
-            self._mcp_config_path = config_path
             return {"CC_MCP_PORT": str(port), "CC_MCP_TOKEN": token}
         except Exception as exc:  # noqa: BLE001 - MCP is optional; fall back to bare CLI
             ToastService.show_error(f"MCP server failed to start: {exc}")
@@ -1188,9 +1327,20 @@ class ProjectWindow(Adw.ApplicationWindow):
         return False  # Don't repeat
 
     def _on_claude_exited(self, terminal, status):
-        """AI CLI exited - tear down the terminal and restore the Start placeholder."""
-        # Server lifecycle == session lifecycle: stop it, free the port, delete
-        # the temp --strict-mcp-config.
+        """The Claude pane's PTY child exited.
+
+        Under tmux this fires both when the CLI truly exits (session gone) and
+        when we merely detach — window closing or the tmux client dying — while
+        the session keeps running. Only tear down on a real exit; a live session
+        must survive so a reopened window can re-attach.
+        """
+        if shutil.which("tmux") and self._tmux_has_session(self._claude_session_name()):
+            # Detached, session still alive: drop the widget, keep MCP + session.
+            self.claude_terminal = None
+            return
+
+        # Real exit — server lifecycle == session lifecycle: stop it, free the
+        # port, delete the temp --strict-mcp-config, restore the Start placeholder.
         self._stop_mcp_server()
         self.claude_terminal = None
         self._show_claude_placeholder()
