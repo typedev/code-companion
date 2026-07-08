@@ -57,6 +57,7 @@ class GitChangesPanel(Gtk.Box):
         # In-flight guard: serializes mutating git ops (2.2/2.3) so a double-click
         # can't produce two commits and slow network ops don't stack.
         self._busy = False
+        self._has_staged = False  # cached from the last refresh; gates the Commit button
         self._auth_attempts = 0
 
         # Check if git repo
@@ -288,15 +289,15 @@ class GitChangesPanel(Gtk.Box):
         def _fetch():
             branch, ahead, behind = "?", 0, 0
             staged, unstaged = [], []
+            error = None
+            # Branch + ahead/behind are best-effort (defaults are fine on failure).
             try:
-                # Get branch name
                 r = subprocess.run(
                     ["git", "branch", "--show-current"],
                     capture_output=True, text=True, cwd=project_dir, timeout=10, env=env,
                 )
                 branch = r.stdout.strip() or "HEAD"
 
-                # Get ahead/behind
                 r = subprocess.run(
                     ["git", "rev-list", "--left-right", "--count", "@{upstream}...HEAD"],
                     capture_output=True, text=True, cwd=project_dir, timeout=10, env=env,
@@ -305,16 +306,22 @@ class GitChangesPanel(Gtk.Box):
                     parts = r.stdout.strip().split()
                     if len(parts) == 2:
                         behind, ahead = int(parts[0]), int(parts[1])
-
-                # Get status
+            except Exception:
+                pass
+            # Status is the change list — a failure here must surface, not read
+            # as "No changes".
+            try:
                 r = subprocess.run(
                     ["git", "status", "--porcelain", "-z"],
                     capture_output=True, cwd=project_dir, timeout=30, env=env,
                 )
-                staged, unstaged = self._parse_porcelain_to_file_status(r.stdout)
-            except Exception:
-                pass
-            return (branch, ahead, behind, staged, unstaged)
+                if r.returncode != 0:
+                    error = r.stderr.decode("utf-8", errors="replace").strip() or "git status failed"
+                else:
+                    staged, unstaged = self._parse_porcelain_to_file_status(r.stdout)
+            except Exception as e:
+                error = str(e)
+            return (branch, ahead, behind, staged, unstaged, error)
 
         # run_async gives a generation token (only the newest refresh renders) and a
         # liveness guard for free (roadmap 2.4).
@@ -364,7 +371,7 @@ class GitChangesPanel(Gtk.Box):
         unstaged.sort(key=lambda x: x.path)
         return staged, unstaged
 
-    def _apply_refresh(self, branch, ahead, behind, staged, unstaged):
+    def _apply_refresh(self, branch, ahead, behind, staged, unstaged, error=None):
         """Apply fetched git data to the UI (runs on main thread)."""
         if not hasattr(self, "branch_label"):
             return False
@@ -396,6 +403,34 @@ class GitChangesPanel(Gtk.Box):
         for child in children:
             self.content_box.remove(child)
 
+        # A failed status read must not masquerade as a clean tree.
+        if error is not None:
+            self._has_staged = False
+            self._update_commit_button()
+            box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+            box.set_valign(Gtk.Align.CENTER)
+            box.set_margin_top(36)
+            icon = Gtk.Image.new_from_icon_name("dialog-error-symbolic")
+            icon.set_pixel_size(48)
+            box.append(icon)
+            title = Gtk.Label(label="Couldn't read repository status")
+            title.add_css_class("dim-label")
+            box.append(title)
+            detail = Gtk.Label(label=error)
+            detail.add_css_class("dim-label")
+            detail.add_css_class("caption")
+            detail.set_wrap(True)
+            detail.set_justify(Gtk.Justification.CENTER)
+            box.append(detail)
+            retry = Gtk.Button(label="Retry")
+            retry.set_halign(Gtk.Align.CENTER)
+            retry.set_margin_top(4)
+            retry.connect("clicked", lambda _b: self.refresh())
+            box.append(retry)
+            self.content_box.append(box)
+            self._last_status_hash = None
+            return False
+
         if not staged and not unstaged:
             label = Gtk.Label(label="No changes")
             label.add_css_class("dim-label")
@@ -421,10 +456,9 @@ class GitChangesPanel(Gtk.Box):
         return False
 
     def _update_commit_button_with(self, staged_files):
-        """Update commit button sensitivity with pre-fetched staged files."""
-        has_staged = bool(staged_files)
-        has_message = bool(self.commit_entry.get_text().strip())
-        self.commit_btn.set_sensitive(has_staged and has_message)
+        """Cache staged-presence from a fresh refresh, then update the button."""
+        self._has_staged = bool(staged_files)
+        self._update_commit_button()
 
     def _group_files_by_directory(self, files: list[GitFileStatus]) -> dict[str, list[GitFileStatus]]:
         """Group files by their parent directory.
@@ -449,7 +483,7 @@ class GitChangesPanel(Gtk.Box):
         # Section header
         header_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
         header_box.set_margin_top(6)
-        header_box._section_name = title  # Tag for _update_commit_button lookup
+        header_box._section_name = title  # section tag (Staged/Changes)
 
         label = Gtk.Label(label=f"{title} ({len(files)})")
         label.set_xalign(0)
@@ -693,20 +727,13 @@ class GitChangesPanel(Gtk.Box):
         self._update_commit_button()
 
     def _update_commit_button(self):
-        """Update commit button sensitivity (uses cached staged status)."""
-        # Check if staged section exists in content_box (avoids pygit2 call)
-        has_staged = self._last_status_hash != "" and self._last_status_hash is not None
-        # More precise: check if any staged files were in last refresh
-        child = self.content_box.get_first_child()
-        while child:
-            if hasattr(child, "_section_name") and child._section_name == "Staged":
-                has_staged = True
-                break
-            child = child.get_next_sibling()
-        else:
-            has_staged = False
+        """Enable Commit only with staged changes + a message, and not mid-op.
+
+        Reads the cached ``_has_staged`` (set on each refresh) instead of
+        scanning the content widgets, which raced the async refresh.
+        """
         has_message = bool(self.commit_entry.get_text().strip())
-        self.commit_btn.set_sensitive(has_staged and has_message)
+        self.commit_btn.set_sensitive(self._has_staged and has_message and not self._busy)
 
     def _on_commit_clicked(self, *args):
         """Handle commit button click (off-thread; the busy guard blocks double-commits)."""

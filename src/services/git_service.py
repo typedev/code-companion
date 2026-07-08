@@ -150,25 +150,21 @@ class GitService:
         self.repo.index.write()
 
     def unstage(self, path: str) -> None:
-        """Unstage a file (reset to HEAD)."""
+        """Unstage a file (reset the index entry to HEAD)."""
         try:
-            # Get the HEAD commit
             head = self.repo.head.peel(pygit2.Commit)
-            # Reset index entry to HEAD
-            if path in head.tree:
+        except pygit2.GitError:
+            head = None  # no HEAD yet (initial commit)
+        try:
+            if head is not None and path in head.tree:
                 entry = head.tree[path]
                 self.repo.index.add(pygit2.IndexEntry(path, entry.id, entry.filemode))
             else:
-                # File is new, remove from index
+                # New file (or no HEAD): drop it from the index.
                 self.repo.index.remove(path)
             self.repo.index.write()
-        except (pygit2.GitError, KeyError):
-            # If HEAD doesn't exist (initial commit) or other error
-            try:
-                self.repo.index.remove(path)
-                self.repo.index.write()
-            except pygit2.GitError:
-                pass
+        except (pygit2.GitError, KeyError) as e:
+            raise RuntimeError(f"Cannot unstage '{path}': {e}")
 
     def stage_all(self) -> None:
         """Stage all changes."""
@@ -176,44 +172,55 @@ class GitService:
         self.repo.index.write()
 
     def unstage_all(self) -> None:
-        """Unstage all staged changes."""
+        """Unstage all staged changes (reset the index to HEAD)."""
         try:
             self.repo.reset(self.repo.head.target, pygit2.GIT_RESET_MIXED)
+        except pygit2.GitError as e:
+            raise RuntimeError(f"Cannot unstage all: {e}")
+
+    def restore_file(self, path: str) -> None:
+        """Discard a file's changes by restoring it from HEAD (index + worktree).
+
+        Uses ``git checkout`` rather than a raw blob write so ``.gitattributes``
+        filters (CRLF/smudge) are applied, symlinks are recreated as symlinks
+        (not their target text), the exec bit is set correctly, and a staged
+        change to the path is reverted too.
+        """
+        result = subprocess.run(
+            ["git", "checkout", "HEAD", "--", path],
+            cwd=str(self.repo_path),
+            capture_output=True,
+            text=True,
+            timeout=30,
+            env=git_auth.build_git_env(),
+        )
+        if result.returncode != 0:
+            detail = result.stderr.strip() or "git checkout failed"
+            raise RuntimeError(f"Cannot restore '{path}': {detail}")
+        # The CLI updated the on-disk index; resync pygit2's in-memory copy.
+        try:
+            self.repo.index.read()
         except pygit2.GitError:
             pass
 
-    def restore_file(self, path: str) -> None:
-        """Restore a file from HEAD (discard working tree changes).
-
-        This is equivalent to 'git restore <path>' or 'git checkout -- <path>'.
-        For deleted files, this recreates them from HEAD.
-        For modified files, this discards local changes.
-        """
-        try:
-            head = self.repo.head.peel(pygit2.Commit)
-            if path in head.tree:
-                # Get blob from HEAD
-                entry = head.tree[path]
-                blob = self.repo.get(entry.id)
-
-                # Write file to working tree
-                full_path = self.repo_path / path
-                full_path.parent.mkdir(parents=True, exist_ok=True)
-                full_path.write_bytes(blob.data)
-
-                # Restore file mode
-                import stat
-                if entry.filemode == pygit2.GIT_FILEMODE_BLOB_EXECUTABLE:
-                    full_path.chmod(full_path.stat().st_mode | stat.S_IXUSR)
-            else:
-                raise pygit2.GitError(f"File '{path}' not found in HEAD")
-        except pygit2.GitError as e:
-            raise RuntimeError(f"Cannot restore '{path}': {e}")
-
     def commit(self, message: str) -> str:
-        """Create a commit. Returns commit hash."""
-        # Build the tree from index
-        tree_id = self.repo.index.write_tree()
+        """Create a commit. Returns the short hash.
+
+        Guards against silent corruption: resync the index (it may be stale
+        after a CLI pull/checkout), refuse a conflicted index, refuse while a
+        merge/revert/cherry-pick is in progress (the 2-parent merge commit is
+        handled in the terminal for now), and refuse an empty commit.
+        """
+        # The on-disk index may have moved under us (CLI pull/checkout, etc.).
+        try:
+            self.repo.index.read()
+        except pygit2.GitError:
+            pass
+
+        if self.repo.index.conflicts is not None:
+            raise RuntimeError("Resolve conflicts before committing.")
+        if self.repo.state() != pygit2.GIT_REPOSITORY_STATE_NONE:
+            raise RuntimeError("A merge is in progress — finish it in the terminal.")
 
         # Get signature from git config
         try:
@@ -224,21 +231,28 @@ class GitService:
         except KeyError:
             raise RuntimeError("Git user.name and user.email must be configured")
 
-        # Get parent commits
-        try:
-            parents = [self.repo.head.target]
-        except pygit2.GitError:
-            # Initial commit
-            parents = []
+        # Build the tree from the index.
+        tree_id = self.repo.index.write_tree()
 
-        # Create commit
+        # Parents + empty-commit guard.
+        try:
+            head_commit = self.repo.head.peel(pygit2.Commit)
+            parents = [head_commit.id]
+            if tree_id == head_commit.tree_id:
+                raise RuntimeError("Nothing staged to commit.")
+        except pygit2.GitError:
+            # Initial commit (no HEAD): refuse an empty tree.
+            parents = []
+            if len(self.repo.index) == 0:
+                raise RuntimeError("Nothing staged to commit.")
+
         commit_id = self.repo.create_commit(
             "HEAD",
             signature,  # author
             signature,  # committer
             message,
             tree_id,
-            parents
+            parents,
         )
 
         return str(commit_id)[:7]
