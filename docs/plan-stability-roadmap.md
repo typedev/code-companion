@@ -1,6 +1,6 @@
 # Stability & Growth Roadmap (v0.8.x → v1.0)
 
-**Status**: Phases 1 (data safety) & 2 (async layer, +3.4 git env) code-complete & tested; Phase 7 (MCP) next
+**Status**: Phases 1 (data safety), 2 (async layer, +3.4 git env) and **7 (MCP control surface, PR #3)** done & tested. Also shipped outside this doc: the **session supervisor** (tmux; `docs/plan-session-supervisor.md`) and **flock-based locks**. Next candidates: Phase 3 (git robustness) or Phase 5 (reviewer editor).
 **Based on**: 4-track reliability audit + worktree architecture research (2026-07-06)
 **Code references**: valid as of commit `ef69c77` — line numbers may drift, symbol names are stable.
 
@@ -291,7 +291,11 @@ Goal: worktree = a task. Create with a branch + provisioned environment; see eve
 
 ---
 
-## Phase 7 — MCP Control Surface (v1.0, parallel to Phase 6)
+## Phase 7 — MCP Control Surface (v1.0, parallel to Phase 6) — ✅ DONE
+
+**Status: shipped 2026-07 (PR #3 + follow-ups; GitHub issue #2 closed).** Tracked in detail in
+`docs/plan-mcp-integration.md` (A1–A5 all done) — this section duplicated it and is kept for
+the roadmap record. All 7.1–7.5 below are implemented (7.6 worktree tools still pending Phase 6).
 
 Goal: make the app↔Claude link bidirectional (GitHub issue #2): the app hosts a local MCP server so Claude Code can drive the live UI. Depends on **Phase 2** (thread-marshaling discipline); the worktree tools additionally depend on Phase 6.
 
@@ -303,11 +307,11 @@ Goal: make the app↔Claude link bidirectional (GitHub issue #2): the app hosts 
 - **Scope principle**: only tools that act on the *running app* (UI, panels, app-owned state). No generic file-read/search/git tools — Claude already has those natively; duplicating them adds confusion and attack surface.
 
 ### 7.1 Server infrastructure
-- [ ] `src/services/mcp_server.py`: Python MCP SDK (FastMCP), streamable HTTP, thread + asyncio loop, lifecycle bound to the `ProjectWindow` (started on window init if enabled, stopped on destroy). Marshaling helper `call_on_main(fn, timeout=5)` used by every tool. Token check middleware.
+- [x] `src/services/mcp_server.py`: Python MCP SDK (FastMCP), streamable HTTP, thread + asyncio loop, lifecycle bound to the `ProjectWindow` (started on window init if enabled, stopped on destroy). Marshaling helper `call_on_main(fn, timeout=5)` used by every tool. Token check middleware.
 - Acceptance: a tool call from the embedded Claude session round-trips; closing the window frees the port; a tool that raises returns an MCP error, not a hang.
 
 ### 7.2 Registration & settings
-- [ ] Generate the MCP config at Claude-terminal launch; pass `--mcp-config`. Setting `mcp.enabled` (default true) with a Preferences toggle; when off, launch `claude` bare.
+- [x] Generate the MCP config at Claude-terminal launch; pass `--mcp-config`. Setting `mcp.enabled` (default true) with a Preferences toggle; when off, launch `claude` bare.
 - Acceptance: toggling the setting and restarting the Claude tab adds/removes the tools (`/mcp` in Claude shows the server).
 
 ### 7.3 Tools v1 — read & present (issue #2 first cut, extended)
@@ -324,13 +328,13 @@ Goal: make the app↔Claude link bidirectional (GitHub issue #2): the app hosts 
 | `notify(message)` | Toast + desktop notification if unfocused | Long agent run finished → user's attention; the smallest highest-value tool |
 
 ### 7.4 Tools v1 — mutating (explicit, few)
-- [ ] `create_issue(title, body)` + `refresh_issues()` (from issue #2, via `IssuesService`).
-- [ ] `run_task(name)` — run a tasks.json task in the app's terminal.
-- [ ] `add_note(name, content)` — write/append `notes/<name>.md` (Notes panel is app-owned state: lets the agent persist design decisions where the user keeps theirs).
+- [x] `create_issue(title, body)` + `refresh_issues()` (from issue #2, via `IssuesService`).
+- [x] `run_task(name)` — run a tasks.json task in the app's terminal.
+- [x] `add_note(name, content)` — write/append `notes/<name>.md` (Notes panel is app-owned state: lets the agent persist design decisions where the user keeps theirs).
 - Acceptance: each mutating tool triggers the relevant panel refresh through existing signals, not bespoke plumbing.
 
 ### 7.5 Hook hybrid (automation without the model)
-- [ ] Document (in README or docs/) a `PostToolUse` hook snippet that POSTs to the server's `/refresh` endpoint after `gh issue create` / `git commit`, so panels auto-refresh even when the model doesn't call a tool. The server exposes that one plain-HTTP endpoint alongside MCP.
+- [x] Document (in README or docs/) a `PostToolUse` hook snippet that POSTs to the server's `/refresh` endpoint after `gh issue create` / `git commit`, so panels auto-refresh even when the model doesn't call a tool. The server exposes that one plain-HTTP endpoint alongside MCP.
 
 ### 7.6 Worktree orchestration tools (after Phase 6)
 - [ ] `list_worktrees()` — worktrees with branch/dirty/ahead-behind/last-session-activity (same data as 6.3 badges).
