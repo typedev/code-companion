@@ -1,6 +1,6 @@
 # Stability & Growth Roadmap (v0.8.x → v1.0)
 
-**Status**: Phases 1 (data safety), 2 (async layer, +3.4 git env) and **7 (MCP control surface, PR #3)** done & tested. Also shipped outside this doc: the **session supervisor** (tmux; `docs/plan-session-supervisor.md`) and **flock-based locks**. **Phase 3 Tier 1** (silent-failure cluster: 3.3 restore_file, 3.1-lite commit guards, 3.2 panel error surfacing) done & tested (`801b7d1`). Next candidates: rest of Phase 3 (3.5/3.7/3.8/3.10) or Phase 5 (reviewer editor).
+**Status**: Phases 1 (data safety), 2 (async layer, +3.4 git env) and **7 (MCP control surface, PR #3)** done & tested. Also shipped outside this doc: the **session supervisor** (tmux; `docs/plan-session-supervisor.md`) and **flock-based locks**. **Phase 3 Tier 1** (silent-failure cluster: 3.3 restore_file, 3.1-lite commit guards, 3.2 panel error surfacing) done & tested (`801b7d1`). **3.10** (monitor gaps: packed-refs, post-`git init` re-detect, dangling-monitor prune) and **5.1** (session-viewer scalability: off-thread parse + pagination + JSONL robustness) done & tested (2026-07-08). Next candidates: rest of Phase 3 (3.5 push/pull dialogs, 3.7 secure credentials/libsecret, 3.8 diff/status dedup) or rest of Phase 5 (5.2 path normalization, 5.3–5.5 reviewer editor).
 **Based on**: 4-track reliability audit + worktree architecture research (2026-07-06)
 **Code references**: valid as of commit `ef69c77` — line numbers may drift, symbol names are stable.
 
@@ -193,8 +193,19 @@ Goal: existing git operations become trustworthy; repo states become visible; er
 - Fix: single status check; on dirty tree → dialog **Stash & switch** (once 4.2 lands; before that: "Commit or discard first" message); catch checkout conflicts and translate to a readable message.
 
 ### 3.10 Monitor gaps
-- [ ] `.git/packed-refs` not watched; repos initialized after window open never get git monitors; dangling monitors for externally-deleted expanded dirs are never pruned (`src/services/file_monitor_service.py` ~77-124, ~220-228; `file_tree.py` ~786-805).
+- [x] `.git/packed-refs` not watched; repos initialized after window open never get git monitors; dangling monitors for externally-deleted expanded dirs are never pruned (`src/services/file_monitor_service.py` ~77-124, ~220-228; `file_tree.py` ~786-805).
 - Fix: watch `packed-refs`; re-evaluate `_is_git_repo` on demand; prune `_expanded_paths` entries whose paths vanished.
+- **DONE** (2026-07-08): (a) `packed-refs` file monitor added in `_setup_git_monitors`. (b) shared
+  `_ensure_root_monitor()` arms a project-root watcher when not-yet-a-repo; `_on_project_root_changed`
+  now dispatches `.git` creation → `_maybe_attach_git_monitors()` (flips `_is_git_repo`, runs
+  `_setup_git_monitors` once, emits git-status/history); `file_tree._on_git_status_changed` re-checks
+  `git_service.is_git_repo()` and flips its own flag; `git_changes_panel` keeps a temporary
+  `git-status-changed` subscription in the no-repo state and self-activates via `_activate_repo()`
+  when a repo appears. (c) `file_tree._update_monitors` prunes `_expanded_paths` of vanished dirs so
+  their monitors are dropped. Verified: logic tests (packed-refs registered iff present; `.git`-created
+  re-detect + idempotency; real `_update_monitors` prune). NOTE: live `Gio.FileMonitor` event delivery
+  couldn't be exercised in the uv shell (bundled glib 2.88 has no file-monitor backend) — same
+  `_add_monitor`/root-watcher path as the existing `.vscode` watcher.
 
 ---
 
@@ -238,10 +249,21 @@ Deferred beyond v0.9 (record only): hunk-level staging, tags UI, remotes managem
 Goal: the editor serves a human *reviewing* AI-written code: navigation and comprehension over typing features.
 
 ### 5.1 Session viewer scalability
-- [ ] Defect: `load_session_content` (`src/services/history.py` ~138) materializes the whole JSONL; `session_view.py` (~56-79) builds one widget per message in a `Gtk.Box`, synchronously on the UI thread → multi-MB agent sessions freeze the app.
+- [x] Defect: `load_session_content` (`src/services/history.py` ~138) materializes the whole JSONL; `session_view.py` (~56-79) builds one widget per message in a `Gtk.Box`, synchronously on the UI thread → multi-MB agent sessions freeze the app.
 - Fix: parse off-thread (Phase 2 helper); render via `Gtk.ListView` + `Gio.ListStore` (virtualized) or paginate (load last N, "Load earlier" button). Cap giant tool-result payloads with an expander.
-- [ ] JSONL robustness: catch `UnicodeDecodeError` (currently uncaught — it is not an `OSError`; `history.py` ~135/172), open with `errors="replace"`; tolerate a partial trailing line and show a "session in progress" indicator instead of silently dropping it.
+- [x] JSONL robustness: catch `UnicodeDecodeError` (currently uncaught — it is not an `OSError`; `history.py` ~135/172), open with `errors="replace"`; tolerate a partial trailing line and show a "session in progress" indicator instead of silently dropping it.
 - Acceptance: a 50 MB session opens without freezing; a truncated last line doesn't crash or vanish silently.
+- **DONE** (2026-07-08): **pagination** chosen over `ListView` (widget recycling conflicts with per-row
+  `ToolCallCard` expand state; reuses `MessageRow`/`ToolCallCard` unchanged). Loader now returns
+  `SessionContent(messages, in_progress)` (new `models/message.py` dataclass; adapter interface +
+  claude adapter updated), opens with `errors="replace"`, and flags a broken *last* line as
+  `in_progress`. `_parse_session_metadata` got the same `errors="replace"` fix — one corrupt file no
+  longer crashes the whole sessions list (observed live in the harness). `SessionView.load_session`
+  parses via `run_async(key="session")` (off-thread, generation-token newest-wins), renders only the
+  last `PAGE_SIZE=200` messages with a top **"Load earlier messages (N remaining)"** button
+  (scroll-anchored prepend), an in-progress footer, and autoscroll-to-bottom. Verified: unit tests
+  (`tests/test_history_robustness.py`) + GUI harness — 18k-msg/2.4 MB session opens instantly, bad-bytes
+  file no longer crashes the list, pagination button decrements 300→100→gone with correct top message.
 
 ### 5.2 Tab path normalization
 - [ ] Defect: tab dedup compares raw strings (`project_window.py` ~1467, ~734) while paths arrive from tree/search/notes/git in different forms → duplicate tabs, divergent buffers, last-save-wins.
