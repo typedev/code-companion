@@ -3,11 +3,14 @@
 **Status**: **Tier 1 increment 1 — DONE & verified 2026-07-08** (committed). Session now
 survives window restart: `claude` runs under a per-project tmux session, the reopened
 window re-attaches and re-binds the same MCP endpoint. Multiplexer = **tmux**; source of
-truth = the tmux session env. **Increment 2 started**: the PM now shows a per-project
-**live-session dot** (polls `tmux list-sessions` every 4s; shared naming util
-`utils/claude_session.py` so PM and window can't drift) — part of the "PM as dashboard"
-piece. Notification hook → `/refresh` and idle reaping still remain. Design discussion
-captured 2026-07-07.
+truth = the tmux session env. **Increment 2 largely done**: the PM shows a per-project **live-session dot** (green),
+per-card **Kill session** + **orphan reconcile** (⚠ N background), and a **Notification
+channel** — the supervisor injects a Claude Code Notification hook per-session via
+`--settings`; the hook writes a marker (`<config>/notify/<session>.json`) that the PM poll
+turns into an amber "needs attention" dot + a desktop notification (no live endpoint needed
+for detached sessions). Shared naming/kill/cwd in `utils/claude_session.py`; marker logic in
+`services/session_notify.py`. Commits `bbf4fb5` (management) and `b8cadbd` (notifications).
+**Still remaining:** idle reaping (auto-stop sessions idle > N h). Design captured 2026-07-07.
 Legitimacy of the tmux approach is **verified** (see below); MCP Part A/B + session
 summaries have since shipped to `main`, so the `/refresh` + notification infra this plan
 reuses now exists.
