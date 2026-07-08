@@ -338,6 +338,30 @@ class McpServer:
             return self._do_get_session_summary()
 
         @mcp.tool()
+        def list_projects() -> dict:
+            """List all projects registered in Code Companion on this machine.
+
+            Read-only catalog for cross-project work. Each entry has its name, local path,
+            and canonical git remote identity (``remote_url`` = ``host/owner/repo``, null
+            for local-only or non-git projects; ``project_id`` = the stable sync id). Use
+            resolve_project to turn a name/hint into a concrete path, then study that
+            project with your normal Read/Grep/git tools.
+            """
+            return self._do_list_projects()
+
+        @mcp.tool()
+        def resolve_project(hint: str) -> dict:
+            """Resolve a project name or hint to its local path and remote identity.
+
+            ``hint`` is matched against each project's name, folder, or git owner/repo.
+            Returns ``{"match", "candidates", "ambiguous"}``: a single winner sets
+            ``match`` (an entry like list_projects returns) with an empty ``candidates``;
+            an ambiguous hint sets ``ambiguous`` true, leaves ``match`` null, and lists the
+            tied entries in ``candidates``; no match leaves both empty/null.
+            """
+            return self._do_resolve_project(hint)
+
+        @mcp.tool()
         def gui_launch(cmd: str, width: int = 1280, height: int = 800) -> dict:
             """Launch a GUI app in an isolated headless compositor for inspection.
 
@@ -663,6 +687,28 @@ class McpServer:
         if summary is None:
             return {"ok": True, "exists": False}
         return {"ok": True, "exists": True, **summary}
+
+    # -- cross-project catalog (read-only) ---------------------------------- #
+    def _do_list_projects(self) -> dict:
+        from . import project_catalog
+
+        try:
+            current = str(Path(self.window.project_path).resolve())
+        except OSError:
+            current = str(self.window.project_path)
+
+        projects = []
+        for entry in project_catalog.list_catalog():
+            item = entry.as_dict()
+            # Catalog paths are already canonicalized the same way -> equality holds.
+            item["is_current"] = entry.local_path == current
+            projects.append(item)
+        return {"projects": projects, "count": len(projects)}
+
+    def _do_resolve_project(self, hint: str) -> dict:
+        from . import project_catalog
+
+        return project_catalog.resolve(hint)
 
     # -- /refresh endpoint -------------------------------------------------- #
     def _do_refresh(self, target: str) -> list[str]:

@@ -930,6 +930,49 @@ def test_get_session_summary_missing(tmp_path, monkeypatch):
 
 
 # --------------------------------------------------------------------------- #
+# cross-project catalog (deep logic lives in test_project_catalog.py; these just
+# check the MCP wiring: is_current flagging and hint passthrough)
+# --------------------------------------------------------------------------- #
+def test_list_projects_flags_current(monkeypatch):
+    from src.services import project_catalog
+    from src.services.project_catalog import CatalogEntry
+
+    entries = [
+        CatalogEntry("cur", "/proj/cur", "id-cur", None, None, exists=True),
+        CatalogEntry("other", "/proj/other", "id-other", None, None, exists=True),
+    ]
+    monkeypatch.setattr(project_catalog, "list_catalog", lambda: entries)
+    win = _FakeWindow()
+    win.project_path = "/proj/cur"
+    srv = McpServer(win)
+
+    result = srv._do_list_projects()
+    assert result["count"] == 2
+    by_path = {p["local_path"]: p for p in result["projects"]}
+    assert by_path["/proj/cur"]["is_current"] is True
+    assert by_path["/proj/other"]["is_current"] is False
+
+
+def test_resolve_project_passthrough(monkeypatch):
+    from src.services import project_catalog
+
+    sentinel = {"match": {"local_path": "/proj/x"}, "candidates": [], "ambiguous": False}
+    captured = {}
+
+    def _fake_resolve(hint):
+        captured["hint"] = hint
+        return sentinel
+
+    monkeypatch.setattr(project_catalog, "resolve", _fake_resolve)
+    win = _FakeWindow()
+    win.project_path = "/proj/cur"
+    srv = McpServer(win)
+
+    assert srv._do_resolve_project("font-rover") is sentinel
+    assert captured["hint"] == "font-rover"
+
+
+# --------------------------------------------------------------------------- #
 # /refresh endpoint
 # --------------------------------------------------------------------------- #
 class _RefreshPanel:
