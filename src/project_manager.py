@@ -21,6 +21,7 @@ from .services.sync_service import SyncService
 from .services import session_summary_service
 from .services.icon_cache import IconCache
 from .models.sync import ProjectSyncStatus, SyncState
+from .services import session_notify
 from .utils import claude_session
 from .utils.relative_time import humanize_relative, humanize_relative_iso
 from .utils.markdown_markup import markdown_to_pango
@@ -277,6 +278,7 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
         Also used as a recurring GLib timeout, so it always returns True.
         """
         live = claude_session.live_session_names()
+        markers = session_notify.read_markers()
         known = set()
         for row in getattr(self, "_rows_by_path", {}).values():
             name = claude_session.session_name(row.project_path)
@@ -285,13 +287,53 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
             indicator = getattr(row, "live_indicator", None)
             if indicator is not None:
                 indicator.set_visible(is_live)
+                self._apply_indicator_state(indicator, is_live, markers.get(name))
             kill_btn = getattr(row, "kill_session_btn", None)
             if kill_btn is not None:
                 kill_btn.set_sensitive(is_live)
+        # Desktop-notify once per fresh marker on a live session (incl. orphans).
+        self._process_notifications(markers, live)
+        # Drop stale markers whose session is no longer running.
+        for name in markers:
+            if name not in live:
+                session_notify.clear_marker(name)
         # Orphans: live cc-* sessions with no registered project.
         self._orphan_sessions = sorted(live - known)
         self._update_orphan_affordance()
         return True
+
+    @staticmethod
+    def _apply_indicator_state(indicator, is_live: bool, marker: dict | None):
+        """Green = live, amber = live + needs attention (has a marker)."""
+        indicator.remove_css_class("cc-live-dot")
+        indicator.remove_css_class("cc-live-dot-attention")
+        if is_live and marker:
+            indicator.add_css_class("cc-live-dot-attention")
+            indicator.set_tooltip_text(marker.get("message") or "Claude needs your attention")
+        else:
+            indicator.add_css_class("cc-live-dot")
+            indicator.set_tooltip_text("Claude session running")
+
+    def _process_notifications(self, markers: dict, live: set):
+        """Raise a desktop notification once per newly-seen marker (live only)."""
+        seen = getattr(self, "_notified", None)
+        if seen is None:
+            seen = self._notified = set()
+        for name, marker in markers.items():
+            if name not in live:
+                continue
+            key = (name, marker.get("_mtime"))
+            if key in seen:
+                continue
+            seen.add(key)
+            app = self.get_application()
+            if app is None:
+                continue
+            cwd = marker.get("cwd") or ""
+            label = Path(cwd).name if cwd else "Claude"
+            notification = Gio.Notification.new(f"Claude · {label}")
+            notification.set_body(marker.get("message") or "Claude needs your attention")
+            app.send_notification(None, notification)
 
     def _update_orphan_affordance(self):
         """Show/hide the header 'N background session(s)' button.

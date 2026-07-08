@@ -13,6 +13,7 @@ from gi.repository import Adw, Gtk, GLib, Gdk, Gio
 
 from .models import Session
 from .services import get_adapter, ProjectLock, ProjectRegistry, GitService, IconCache, ToastService, SettingsService, FileMonitorService, IssuesService, McpServer, run_async
+from .services import session_notify
 from .utils import git_auth, claude_session
 from .widgets import SessionView, TerminalView, FileTree, FileEditor, TasksPanel, GitChangesPanel, GitHistoryPanel, DiffView, CommitDetailView, ClaudeHistoryPanel, FileSearchDialog, UnifiedSearch, NotesPanel, PreferencesDialog, SnippetsBar, QueryEditor, ProblemsPanel, ProblemsDetailView, IssuesPanel, IssueDetailView, ImageViewer, SvgEditor, BinaryFileView
 from .utils.text_files import is_binary
@@ -45,6 +46,7 @@ class ProjectWindow(Adw.ApplicationWindow):
         # Per-window MCP control surface (started with the Claude session).
         self.mcp_server: McpServer | None = None
         self._mcp_config_path: str | None = None
+        self._notify_settings_path: str | None = None
         self._workspace_collapsed = False
         self._workspace_split_position = 260
         self.commit_detail_page: Adw.TabPage | None = None
@@ -991,6 +993,10 @@ class ProjectWindow(Adw.ApplicationWindow):
             self.claude_terminal.terminal.grab_focus()
             return
 
+        # Opening the pane = the user is attending this session; clear any
+        # pending "needs attention" marker so the PM dot drops back to green.
+        session_notify.clear_marker(self._claude_session_name())
+
         if shutil.which("tmux") is None:
             self._start_claude_plain()
             return
@@ -1023,14 +1029,32 @@ class ProjectWindow(Adw.ApplicationWindow):
         terminal.terminal.grab_focus()
 
     def _claude_cli_command(self, mcp_env: dict | None) -> str:
-        """The CLI launch string, with --mcp-config flags when MCP is enabled."""
+        """The CLI launch string, with --mcp-config and --settings flags."""
         cli_command = self.adapter.cli_command
         if mcp_env is not None:
             cli_command = (
                 f"{cli_command} --strict-mcp-config "
                 f"--mcp-config {GLib.shell_quote(self._mcp_config_path)}"
             )
+        settings_path = self._write_notify_settings()
+        if settings_path:
+            cli_command = f"{cli_command} --settings {GLib.shell_quote(settings_path)}"
         return cli_command
+
+    def _write_notify_settings(self) -> str | None:
+        """Write a temp --settings file with a Notification hook that marks this
+        session as needing attention. Returns the path, or None when disabled."""
+        if not self.settings.get("sessions.notifications", True):
+            return None
+        try:
+            payload = session_notify.hook_settings(self._claude_session_name())
+            fd, path = tempfile.mkstemp(prefix="cc_notify_", suffix=".json")
+            os.write(fd, json.dumps(payload).encode())
+            os.close(fd)
+            self._notify_settings_path = path
+            return path
+        except OSError:
+            return None
 
     def _start_claude_plain(self):
         """Fallback when tmux is unavailable: a plain, non-persistent session."""
@@ -1164,6 +1188,12 @@ class ProjectWindow(Adw.ApplicationWindow):
             except OSError:
                 pass
             self._mcp_config_path = None
+        if getattr(self, "_notify_settings_path", None):
+            try:
+                os.unlink(self._notify_settings_path)
+            except OSError:
+                pass
+            self._notify_settings_path = None
 
     # --- Workspace collapse/expand (also the future MCP tool surface) ---
 
