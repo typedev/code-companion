@@ -412,7 +412,7 @@ class McpServer:
                 file_path = getattr(child, "file_path", None)
                 entry = {"title": page.get_title(), "path": file_path}
                 if hasattr(child, "is_modified"):
-                    entry["dirty"] = bool(child.is_modified())
+                    entry["dirty"] = bool(child.is_modified)
                 tabs.append(entry)
 
                 if page is selected:
