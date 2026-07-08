@@ -666,18 +666,14 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
 
         badge = None
         state = status.state
-        if state == SyncState.SYNCED:
-            badge = self._make_badge(
-                "cc-badge-synced", "In sync", icon_name="emblem-ok-symbolic"
-            )
-        elif state == SyncState.AHEAD:
-            badge = self._make_badge(
-                "cc-badge-ahead", status.detail or "Pushed to sync", text="⇧ sync"
-            )
-        elif state == SyncState.BEHIND:
-            badge = self._make_badge(
-                "cc-badge-behind", status.detail or "Updated from sync", text="⇩ sync"
-            )
+        if state in (SyncState.SYNCED, SyncState.AHEAD, SyncState.BEHIND):
+            # A push/pull during a successful bidirectional sync already
+            # reconciled the project, so it is now in sync — show one calm badge
+            # rather than a divergence-looking arrow. What actually changed this
+            # run is reported in the sync summary. Text (not a themed icon) so it
+            # renders regardless of the active icon theme.
+            tip = status.detail or "In sync"
+            badge = self._make_badge("cc-badge-synced", tip, text="✓ in sync")
         elif state == SyncState.CONFLICT:
             tip = "Sync conflict"
             if status.conflict_files:
@@ -750,13 +746,20 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
         elif result.error:
             self.updated_label.set_text("Sync failed")
         else:
-            n = len(result.per_project)
-            conflicts = sum(
-                1 for s in result.per_project.values() if s.state == SyncState.CONFLICT
-            )
-            msg = f"Synced {n} project(s)"
+            states = [s.state for s in result.per_project.values()]
+            pushed = sum(1 for st in states if st == SyncState.AHEAD)
+            pulled = sum(1 for st in states if st == SyncState.BEHIND)
+            conflicts = sum(1 for st in states if st == SyncState.CONFLICT)
+            msg = f"Synced {len(states)} project(s)"
+            parts = []
+            if pushed:
+                parts.append(f"↑{pushed} pushed")
+            if pulled:
+                parts.append(f"↓{pulled} pulled")
             if conflicts:
-                msg += f" · {conflicts} conflict(s)"
+                parts.append(f"{conflicts} conflict(s)")
+            if parts:
+                msg += " · " + " · ".join(parts)
             self.updated_label.set_text(msg)
         return False
 
