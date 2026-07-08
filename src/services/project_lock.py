@@ -18,8 +18,11 @@ from pathlib import Path
 LOCK_DIR = Path("/tmp/code-companion-locks")
 
 
-class _FlockLock:
-    """A single advisory lock backed by ``flock`` on ``lock_file``."""
+class FlockLock:
+    """A single advisory lock backed by ``flock`` on ``lock_file``.
+
+    Reusable base for the concrete locks below (and ``SyncLock``).
+    """
 
     def __init__(self, lock_file: Path):
         self.lock_file = lock_file
@@ -97,7 +100,7 @@ class _FlockLock:
             return None
 
 
-class ManagerLock(_FlockLock):
+class ManagerLock(FlockLock):
     """Single-instance lock for the Project Manager window."""
 
     LOCK_FILE = LOCK_DIR / "manager.lock"
@@ -126,7 +129,7 @@ class ManagerLock(_FlockLock):
         return False
 
 
-class ProjectLock(_FlockLock):
+class ProjectLock(FlockLock):
     """Prevents opening the same project in more than one window."""
 
     def __init__(self, project_path: str):
