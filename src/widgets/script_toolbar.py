@@ -44,6 +44,7 @@ class ScriptToolbar(Gtk.Box):
         "toggle-preview": (GObject.SignalFlags.RUN_FIRST, None, (bool,)),  # is_preview_active
         "refresh-requested": (GObject.SignalFlags.RUN_FIRST, None, ()),  # reload file
         "save-requested": (GObject.SignalFlags.RUN_FIRST, None, ()),  # save file
+        "diff-requested": (GObject.SignalFlags.RUN_FIRST, None, ()),  # diff vs last save
     }
 
     def __init__(self, file_path: str):
@@ -147,6 +148,15 @@ class ScriptToolbar(Gtk.Box):
             self.insert_action_group("toolbar", action_group)
 
             self.append(self.run_button)
+
+        # Diff button - show unsaved changes vs the last-saved content
+        self.diff_btn = Gtk.Button()
+        self.diff_btn.set_icon_name("view-dual-symbolic")
+        self.diff_btn.add_css_class("flat")
+        self.diff_btn.set_tooltip_text("Show unsaved changes (diff vs last save)")
+        self.diff_btn.set_sensitive(False)  # Disabled until modified
+        self.diff_btn.connect("clicked", lambda b: self.emit("diff-requested"))
+        self.append(self.diff_btn)
 
         # Save button
         self.save_btn = Gtk.Button()
@@ -396,3 +406,4 @@ class ScriptToolbar(Gtk.Box):
             self.filename_label.set_text(filename)
             self.filename_label.add_css_class("dim-label")
         self.save_btn.set_sensitive(is_modified)
+        self.diff_btn.set_sensitive(is_modified)

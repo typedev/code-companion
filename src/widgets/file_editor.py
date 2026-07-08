@@ -35,6 +35,7 @@ class FileEditor(Gtk.Box):
 
         self.file_path = file_path
         self._modified = False
+        self._baseline_text = ""  # content at open / last save, for "diff since save"
         self._is_markdown = Path(file_path).suffix.lower() == ".md"
         self._preview_active = False
 
@@ -67,6 +68,7 @@ class FileEditor(Gtk.Box):
         self.script_toolbar = ScriptToolbar(self.file_path)
         self.script_toolbar.connect("refresh-requested", self._on_refresh_requested)
         self.script_toolbar.connect("save-requested", self._on_save_requested)
+        self.script_toolbar.connect("diff-requested", self._on_diff_requested)
         if ext in (".py", ".sh"):
             self.script_toolbar.connect("run-script", self._on_run_script)
         if ext in (".py", ".md"):
@@ -174,7 +176,7 @@ class FileEditor(Gtk.Box):
         # Match count label
         self.match_label = Gtk.Label(label="")
         self.match_label.add_css_class("dim-label")
-        self.match_label.set_width_chars(8)
+        self.match_label.set_width_chars(10)
         search_row.append(self.match_label)
 
         # Navigation buttons
@@ -199,6 +201,13 @@ class FileEditor(Gtk.Box):
         self.case_btn.add_css_class("flat")
         self.case_btn.connect("toggled", self._on_search_options_changed)
         search_row.append(self.case_btn)
+
+        self.word_btn = Gtk.ToggleButton()
+        self.word_btn.set_label("W")
+        self.word_btn.set_tooltip_text("Match whole word")
+        self.word_btn.add_css_class("flat")
+        self.word_btn.connect("toggled", self._on_search_options_changed)
+        search_row.append(self.word_btn)
 
         self.regex_btn = Gtk.ToggleButton()
         self.regex_btn.set_label(".*")
@@ -265,6 +274,12 @@ class FileEditor(Gtk.Box):
 
         if ctrl and keyval == Gdk.KEY_f:
             self.show_search()
+            return True
+        elif ctrl and keyval == Gdk.KEY_h:
+            self.show_search(replace=True)
+            return True
+        elif ctrl and keyval == Gdk.KEY_g:
+            self._show_go_to_line_dialog()
             return True
         elif ctrl and keyval == Gdk.KEY_s:
             self.request_save()
@@ -399,6 +414,11 @@ class FileEditor(Gtk.Box):
         """Handle search option toggle."""
         self._search_settings.set_case_sensitive(self.case_btn.get_active())
         self._search_settings.set_regex_enabled(self.regex_btn.get_active())
+        # Whole-word is meaningless with a regex; let regex win.
+        self._search_settings.set_at_word_boundaries(
+            self.word_btn.get_active() and not self.regex_btn.get_active()
+        )
+        self.word_btn.set_sensitive(not self.regex_btn.get_active())
         self._update_match_count()
 
     def _on_search_next(self, *args):
@@ -430,50 +450,63 @@ class FileEditor(Gtk.Box):
         self._update_match_count()
 
     def _update_match_count(self):
-        """Update the match count label."""
+        """Update the match count label ("k of N"), flagging an invalid regex."""
+        # An invalid regex must say so, not read as a silent "No results".
+        if self.regex_btn.get_active():
+            err = self._search_context.get_regex_error()
+            if err is not None:
+                self.match_label.set_text("Bad regex")
+                self.match_label.set_tooltip_text(err.message)
+                self.search_entry.add_css_class("error")
+                return
+        self.match_label.set_tooltip_text("")
+
         count = self._search_context.get_occurrences_count()
         if count == -1:
-            # Still counting
-            self.match_label.set_text("...")
-        elif count == 0:
-            self.match_label.set_text("No results")
-            self.search_entry.add_css_class("error")
-        else:
-            self.match_label.set_text(f"{count} found")
-            self.search_entry.remove_css_class("error")
+            # Still counting.
+            self.match_label.set_text("…")
+            return
+        if count == 0:
+            if self.search_entry.get_text():
+                self.match_label.set_text("No results")
+                self.search_entry.add_css_class("error")
+            else:
+                self.match_label.set_text("")
+                self.search_entry.remove_css_class("error")
+            return
+
+        self.search_entry.remove_css_class("error")
+        # Position of the current selection among occurrences (0 if the
+        # selection isn't itself a match, e.g. right after opening the bar).
+        pos = 0
+        if self.buffer.get_has_selection():
+            sel_start, sel_end = self.buffer.get_selection_bounds()
+            pos = self._search_context.get_occurrence_position(sel_start, sel_end)
+        self.match_label.set_text(f"{pos} of {count}" if pos > 0 else f"{count} found")
 
     def _on_replace(self):
-        """Replace current match."""
+        """Replace the current match, then advance to the next."""
         if not self.buffer.get_has_selection():
             self._on_search_next()
             return
 
-        replace_text = self.replace_entry.get_text()
         start, end = self.buffer.get_selection_bounds()
-
-        # Verify selection matches search
-        selected = self.buffer.get_text(start, end, False)
-        search_text = self.search_entry.get_text()
-
-        if self.regex_btn.get_active():
-            import re
-            flags = 0 if self.case_btn.get_active() else re.IGNORECASE
-            if re.fullmatch(search_text, selected, flags):
-                self._search_context.replace(start, end, replace_text, len(replace_text))
-                self._on_search_next()
-        else:
-            if self.case_btn.get_active():
-                matches = selected == search_text
-            else:
-                matches = selected.lower() == search_text.lower()
-            if matches:
-                self._search_context.replace(start, end, replace_text, len(replace_text))
-                self._on_search_next()
+        # Validate the selection with the SAME engine that runs the search
+        # (get_occurrence_position), instead of re-checking with Python `re`,
+        # which mismatches GtkSource's PCRE for regex patterns.
+        if self._search_context.get_occurrence_position(start, end) > 0:
+            replace_text = self.replace_entry.get_text()
+            self._search_context.replace(start, end, replace_text, -1)
+        self._on_search_next()
 
     def _on_replace_all(self):
-        """Replace all matches."""
+        """Replace all matches as a single undoable action."""
         replace_text = self.replace_entry.get_text()
-        count = self._search_context.replace_all(replace_text, len(replace_text))
+        self.buffer.begin_user_action()
+        try:
+            count = self._search_context.replace_all(replace_text, -1)
+        finally:
+            self.buffer.end_user_action()
         if count > 0:
             ToastService.show(f"Replaced {count} occurrences")
         self._update_match_count()
@@ -553,6 +586,7 @@ class FileEditor(Gtk.Box):
         self._load_failed = False
         self._line_ending = result.line_ending
         self._set_buffer_text(result.text)
+        self._baseline_text = result.text  # baseline for "diff since save"
         self.buffer.set_modified(False)
         self._modified = False
         # A successful load always restores editability (a prior failed load
@@ -587,6 +621,24 @@ class FileEditor(Gtk.Box):
         """Handle save request from toolbar."""
         self.request_save()
 
+    def _on_diff_requested(self, toolbar):
+        """Show a diff of the unsaved buffer against the last-saved content."""
+        root = self.get_root()
+        if root is None or not hasattr(root, "open_text_diff"):
+            return
+        start = self.buffer.get_start_iter()
+        end = self.buffer.get_end_iter()
+        current = self.buffer.get_text(start, end, True)
+        if current == self._baseline_text:
+            ToastService.show("No unsaved changes")
+            return
+        root.open_text_diff(
+            self.file_path,
+            self._baseline_text,
+            current,
+            f"Changes: {Path(self.file_path).name}",
+        )
+
     def _write_now(self) -> bool:
         """Atomically write the buffer to disk (no conflict check). Returns success."""
         if self._load_failed:
@@ -599,6 +651,7 @@ class FileEditor(Gtk.Box):
 
             atomic_write_text(self.file_path, content, newline=self._line_ending)
 
+            self._baseline_text = content  # new baseline for "diff since save"
             self.buffer.set_modified(False)
             self._modified = False
             self.script_toolbar.set_modified(False)
@@ -707,6 +760,43 @@ class FileEditor(Gtk.Box):
     def grab_focus(self):
         """Focus the editor."""
         self.source_view.grab_focus()
+
+    def _show_go_to_line_dialog(self):
+        """Ctrl+G: prompt for a line number and jump to it."""
+        line_count = self.buffer.get_line_count()
+
+        dialog = Adw.AlertDialog()
+        dialog.set_heading("Go to Line")
+        dialog.set_body(f"Enter a line number (1–{line_count})")
+
+        entry = Gtk.Entry()
+        entry.set_input_purpose(Gtk.InputPurpose.DIGITS)
+        entry.set_activates_default(True)
+        # Prefill with the current line for quick nudging.
+        cursor = self.buffer.get_iter_at_mark(self.buffer.get_insert())
+        entry.set_text(str(cursor.get_line() + 1))
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        box.append(entry)
+        dialog.set_extra_child(box)
+
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("go", "Go")
+        dialog.set_default_response("go")
+        dialog.set_close_response("cancel")
+
+        def on_response(dlg, response):
+            if response != "go":
+                return
+            try:
+                line = int(entry.get_text().strip())
+            except ValueError:
+                return
+            line = max(1, min(line, line_count))
+            self.go_to_line(line)
+            self.grab_focus()
+
+        dialog.connect("response", on_response)
+        dialog.present(self.get_root())
 
     def go_to_line(self, line_number: int, search_term: str = None):
         """Go to specific line number and optionally highlight search term."""
