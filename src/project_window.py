@@ -1110,6 +1110,22 @@ class ProjectWindow(Adw.ApplicationWindow):
         )
         self._mount_claude_pane(terminal)
 
+    @staticmethod
+    def _port_is_free(port: int) -> bool:
+        """True if ``port`` can be bound on loopback right now.
+
+        SO_REUSEADDR mirrors how uvicorn binds (it sets the same flag), so a
+        just-freed port lingering in TIME_WAIT after the previous window closed
+        reads as free instead of a false "busy".
+        """
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+                probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                probe.bind(("127.0.0.1", port))
+            return True
+        except OSError:
+            return False
+
     def _start_mcp_server(
         self, port: int | None = None, token: str | None = None
     ) -> dict | None:
@@ -1132,24 +1148,25 @@ class ProjectWindow(Adw.ApplicationWindow):
                 # Confirm the stable port is still free before re-binding; else
                 # uvicorn's bind would fail silently on its own thread. Degraded
                 # (tool errors, not a hang) until the session is restarted.
-                # SO_REUSEADDR mirrors how uvicorn binds (it sets the same flag),
-                # so a just-freed port lingering in TIME_WAIT after the previous
-                # window closed passes the probe instead of a false "busy".
-                try:
-                    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
-                        probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-                        probe.bind(("127.0.0.1", port))
-                except OSError:
+                if not self._port_is_free(port):
                     ToastService.show_error(
-                        f"MCP port {port} is busy; Claude tools are disabled for "
-                        "this session until it is restarted"
+                        f"MCP port {port} is busy; Claude tools are disabled for this "
+                        "session — restart it (exit Claude, then Start) to restore them"
                     )
                     return None
             else:
-                # Pick a free loopback port (bind to 0, read it back, release).
-                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-                    sock.bind(("127.0.0.1", 0))
-                    port = sock.getsockname()[1]
+                # Deterministic, reservation-aware port in a non-ephemeral range,
+                # so a normal window restart re-binds the same port (roadmap 3.10+
+                # supervisor port-reservation). Avoid ports owned by other live
+                # cc- sessions (detached ones still hold theirs).
+                name = self._claude_session_name()
+                reserved = claude_session.reserved_ports(exclude=name)
+                port = claude_session.pick_stable_port(name, reserved, self._port_is_free)
+                if port is None:
+                    ToastService.show_error(
+                        "No free MCP port available; Claude tools disabled this session"
+                    )
+                    return None
                 token = secrets.token_urlsafe(32)
 
             server = McpServer(self)

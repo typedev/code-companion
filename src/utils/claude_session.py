@@ -9,8 +9,16 @@ logic lives here in one place.
 import hashlib
 import os
 import subprocess
+from typing import Callable
 
 _PREFIX = "cc-"
+
+# MCP endpoint port range for managed sessions. Chosen below both the Linux
+# (32768–60999) and macOS (49152–65535) default ephemeral ranges, so the OS
+# never auto-assigns one of our ports to an unrelated socket — the port stays
+# reservable across a window-restart gap. Inside IANA user/registered space.
+PORT_MIN = 20000
+PORT_MAX = 29999
 
 
 def session_name(path: str) -> str:
@@ -61,6 +69,70 @@ def session_cwd(name: str) -> str | None:
         return None
     path = result.stdout.strip()
     return path if result.returncode == 0 and path else None
+
+
+def session_env(name: str, var: str) -> str | None:
+    """Read one environment variable from a tmux session, or None if unset.
+
+    ``tmux show-environment -t <name> <var>`` prints ``VAR=value`` when set,
+    or ``-VAR`` when explicitly unset; anything else (missing session, error)
+    yields None.
+    """
+    try:
+        result = subprocess.run(
+            ["tmux", "show-environment", "-t", name, var],
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    line = result.stdout.strip()
+    prefix = f"{var}="
+    if line.startswith(prefix):
+        return line[len(prefix):]
+    return None
+
+
+def reserved_ports(exclude: str | None = None) -> set[int]:
+    """MCP ports already claimed by other live ``cc-*`` sessions.
+
+    A detached session (its window closed) is still live in tmux and still owns
+    its port, so a fresh session must avoid it even though nothing is listening
+    on that port right now.
+    """
+    ports: set[int] = set()
+    for name in live_session_names():
+        if name == exclude:
+            continue
+        value = session_env(name, "CC_MCP_PORT")
+        if value and value.isdigit():
+            ports.add(int(value))
+    return ports
+
+
+def pick_stable_port(
+    name: str, reserved: set[int], is_free: Callable[[int], bool]
+) -> int | None:
+    """Pick a deterministic, reservation-aware MCP port for session ``name``.
+
+    Starts at a hash-derived offset in [PORT_MIN, PORT_MAX] (so the same project
+    tends to reuse the same port across restarts) and probes forward with
+    wraparound, skipping ports in ``reserved`` or where ``is_free`` is False.
+    Returns None if the whole range is exhausted. I/O is injected via ``is_free``
+    so the logic is pure and testable.
+    """
+    span = PORT_MAX - PORT_MIN + 1
+    base = int(hashlib.sha1(name.encode()).hexdigest(), 16) % span
+    for i in range(span):
+        port = PORT_MIN + (base + i) % span
+        if port in reserved:
+            continue
+        if is_free(port):
+            return port
+    return None
 
 
 def kill_session(name: str) -> bool:

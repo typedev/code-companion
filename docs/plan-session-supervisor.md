@@ -10,7 +10,9 @@ channel** — the supervisor injects a Claude Code Notification hook per-session
 turns into an amber "needs attention" dot + a desktop notification (no live endpoint needed
 for detached sessions). Shared naming/kill/cwd in `utils/claude_session.py`; marker logic in
 `services/session_notify.py`. Commits `bbf4fb5` (management) and `b8cadbd` (notifications).
-**Still remaining:** idle reaping (auto-stop sessions idle > N h). Design captured 2026-07-07.
+**Port reservation done 2026-07-08** (deterministic non-ephemeral port + live-session
+reservation; see "Known edge" below). **Still remaining:** idle reaping (auto-stop sessions
+idle > N h) — deprioritized by the user (not running many agents yet). Design captured 2026-07-07.
 Legitimacy of the tmux approach is **verified** (see below); MCP Part A/B + session
 summaries have since shipped to `main`, so the `/refresh` + notification infra this plan
 reuses now exists.
@@ -180,12 +182,19 @@ git repo — an isolated second instance, never touching the live session.
   **Verified:** external `kill-session` → window returns to a clean "Start" placeholder;
   Start again → a *fresh* session (new port + new pid). No leftovers after teardown.
 
-### Known edge (accept for Tier 1)
+### Known edge (hardened 2026-07-08 — port reservation)
 
-If the stable port is grabbed by another process during the restart gap, re-bind fails and
-that session's MCP is degraded (connection-refused → **tool error, not hang**) until the
-session is restarted. Acceptable under Tier 1's stated tolerance; a port-reservation scheme
-is an increment-2+ refinement.
+Formerly the fresh port came from `bind(0)` (an OS **ephemeral** port, 32768–60999 on Linux),
+so it could be recycled during the restart gap. Now the fresh port is chosen
+**deterministically in a non-ephemeral range (20000–29999)** and skips ports already held by
+other live `cc-` sessions (`claude_session.pick_stable_port` / `reserved_ports` /
+`session_env`; the socket probe is the shared `ProjectWindow._port_is_free`). Being below both
+OSes' ephemeral floors, the OS won't auto-assign our port to anything else, so a normal window
+restart re-binds the same port. If a foreign process still squats the exact port (now rare),
+re-bind fails → MCP degraded with an **actionable** message ("restart the session"). Verified:
+`tests/test_claude_session.py` (pure picker: determinism, reserved/busy skip, exhaustion) +
+real-tmux integration (env read + reservation across two live sessions). Full Tier-2 (zero-gap,
+PM-hosted endpoint) remains the only way to eliminate the gap entirely and stays deferred.
 
 ## Shared blockers (both tiers)
 
