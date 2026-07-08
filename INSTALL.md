@@ -30,6 +30,23 @@ sudo apt install libgtk-4-dev libadwaita-1-dev libgtksourceview-5-dev \
 > Snaps — Snap confinement can block access to `/dev/uinput` and Wayland sockets
 > the harness needs.
 
+### Optional: persistent Claude session
+
+`tmux` (≥ 3.2) keeps the embedded Claude session alive across window restarts — the
+session runs inside a tmux session, so closing/reopening the project window re-attaches
+instead of killing `claude`. Without it the app still works; the session simply ends when
+the window closes.
+
+```bash
+# Package name is identical across distros
+sudo dnf install tmux      # Fedora
+sudo apt install tmux      # Ubuntu/Debian
+sudo pacman -S tmux        # Arch
+```
+
+`install.sh` installs it automatically (non-fatally). No user `~/.tmux.conf` is needed —
+the app ships its own managed config and runs tmux invisibly.
+
 ### Optional: native GUI test harness
 
 These let the assistant launch, drive and screenshot **another project's** GTK/Qt

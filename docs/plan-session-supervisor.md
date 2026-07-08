@@ -1,7 +1,10 @@
 # Session Supervisor — Decoupling Claude Sessions from IDE Windows
 
-**Status**: Design discussion captured 2026-07-07. **Deferred** — parked to continue
-MCP Part A / A3 first. Revisit when window-restart-loses-session friction justifies it.
+**Status**: **Tier 1 increment 1 — DONE & verified 2026-07-08** (uncommitted). Session now
+survives window restart: `claude` runs under a per-project tmux session, the reopened
+window re-attaches and re-binds the same MCP endpoint. Multiplexer = **tmux**; source of
+truth = the tmux session env. Lifecycle obvyazka (PM dashboard, notification hook, reaping)
+remains **increments 2–3**. Design discussion captured 2026-07-07.
 Legitimacy of the tmux approach is **verified** (see below); MCP Part A/B + session
 summaries have since shipped to `main`, so the `/refresh` + notification infra this plan
 reuses now exists.
@@ -98,6 +101,85 @@ the pain, and keeps the door to Tier 2 open — the Tier 1 → Tier 2 move is **
 (add IPC forwarding on top of an already-stable endpoint), not a rewrite. The key
 differentiator to decide before Tier 2 is whether the brief **restart gap** is
 acceptable.
+
+## Implementation Plan — Tier 1, increment 1 (session survives restart)
+
+**Goal:** closing/restarting a `ProjectWindow` no longer kills the live `claude`
+session; the reopened window re-attaches to the running session and its MCP tools resume
+working. Scope is **core only** — S1 (stable endpoint) + S2 (tmux wrapping). No PM
+dashboard, no notification hook, no reaping (those are increments 2–3).
+
+### Design decisions locked
+
+- **Multiplexer: tmux.** Anthropic-documented (RGB/extended-keys/passthrough), and its
+  `list-sessions` / `show-environment` primitives are what increments 2–3 build on.
+- **Source of truth for `(port, token)` = the tmux session's own environment**, not a
+  disk file. On create we inject `CC_MCP_PORT`/`CC_MCP_TOKEN` into the session env
+  (`tmux new-session -e …`); on re-attach we read them back
+  (`tmux show-environment -t <name> CC_MCP_PORT`) and re-bind the MCP server to the exact
+  same endpoint. Benefits: no token on disk, lifetime tied precisely to the session, no
+  separate registry needed for the core. (This resolves open Q4 for increment 1: **no
+  always-on PM, no disk registry** — tmux is the registry.)
+- **Session name = machine-local, path-keyed.** `cc-<short-hash-of-abs-project-path>`.
+  We do *not* use `resolve_project_identity()` here: it returns `None` for non-git/empty
+  repos, and tmux sessions are machine-local so cross-machine identity is irrelevant. The
+  path hash aligns with `project_lock.py`'s existing one-window-per-project-path invariant.
+- **claude is the session's root process.** `tmux new-session -s <name> -e … '<cli+flags>'`
+  runs claude directly; when claude exits, the session ends (session lifecycle == claude
+  lifecycle, same contract as today). The temp `--strict-mcp-config` still references
+  `${CC_MCP_PORT}/${CC_MCP_TOKEN}`, now resolved from the session env.
+
+### Flow (revised `_start_claude_session`)
+
+1. `name = cc-<hash(abs_path)>`.
+2. `tmux has-session -t name`?
+   - **Yes (re-attach):** `show-environment` → recover `port,token` →
+     `McpServer.start(port, token)` (re-bind same endpoint; no temp config, claude already
+     read it) → VTE child = `tmux -f <conf> attach -t name`.
+   - **No (fresh):** allocate free port + new token (as today) → `McpServer.start(...)` →
+     write temp mcp-config → VTE child =
+     `tmux -f <conf> new-session -s name -e CC_MCP_PORT=… -e CC_MCP_TOKEN=… '<cli+flags>'`.
+3. `child-exited` on the VTE = the attach client detached / session ended. Distinguish
+   "session still alive (we just detached)" from "claude exited (session gone)" via
+   `has-session`, and show the right placeholder (Re-attach vs Start).
+
+### Checkpoints — all done + verified end-to-end 2026-07-08
+
+Verified by driving the *real* app under the GUI harness (headless cage) on a throwaway
+git repo — an isolated second instance, never touching the live session.
+
+- [x] **C1 — tmux config + dependency.** Shipped `src/resources/tmux/tmux-managed.conf`
+  (`terminal-features 'xterm*:RGB'`, `extended-keys on` + `'xterm*:extkeys'`,
+  `allow-passthrough on`, `status off`, `mouse on`, `unbind C-b`). `tmux` added to
+  `install.sh` (`install_gui_test_deps`, non-fatal), INSTALL.md, README. Loads clean;
+  `tmux 3.6b` (≥ 3.2). `new-session -e` → `show-environment` round-trip confirmed.
+- [x] **C2 — TerminalView arbitrary-argv PTY child.** Added `argv=` param
+  (`terminal_view.py`): spawns the argv directly, skips `.venv` sourcing + `run_command`
+  feed, sets `_respawn_on_exit = False` so exit propagates via `child-exited`.
+- [x] **C3 — Fresh-start under tmux.** `_claude_session_name` (sha1 of realpath),
+  `_tmux_has_session` / `_tmux_show_env`, `_start_mcp_server` split allocate-vs-rebind,
+  fresh path `new-session -e … 'claude …'`, plus a plain fallback when tmux is absent.
+  **Verified:** click "Start" → tmux session `cc-<hash>` created, env carries the
+  endpoint, session's process *is* `claude`, MCP server listening + bearer auth (400 with
+  token / 401 without). Look/colors/truecolor preserved.
+- [x] **C4 — Re-attach (the money test).** **Verified:** started a session, closed the
+  window (`gui_stop` → `cleanup()` SIGHUP), the **tmux session survived** with the **same
+  `claude` pid** (context intact); reopened + Start → re-attached to the same session,
+  MCP **re-bound to the same port**, scrollback intact on screen. The tmux server
+  daemonizes into its own session, so SIGHUP to the client pgroup never reaches it — the
+  detach-on-teardown fallback was **not** needed.
+- [x] **C5 — Teardown & edges.** `_on_claude_exited` gates on `has-session` (detach keeps
+  the session; real exit tears down). Port-taken-on-rebind → probe → toast + degraded (no
+  hang). Temp mcp-config written only on fresh, cleaned only on real stop.
+  **Verified:** external `kill-session` → window returns to a clean "Start" placeholder;
+  Start again → a *fresh* session (new port + new pid). No leftovers after teardown.
+
+### Known edge (accept for Tier 1)
+
+If the stable port is grabbed by another process during the restart gap, re-bind fails and
+that session's MCP is degraded (connection-refused → **tool error, not hang**) until the
+session is restarted. Acceptable under Tier 1's stated tolerance; a port-reservation scheme
+is an increment-2+ refinement.
 
 ## Shared blockers (both tiers)
 

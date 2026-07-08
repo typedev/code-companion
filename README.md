@@ -135,6 +135,7 @@ These are not required to launch the app, but improve specific features. The
 | `ripgrep` (`rg`) | Unified search (content) | Falls back to `grep` — slower, less `.gitignore`-aware |
 | `fd` / `fd-find` | Unified search (file names) | Falls back to `find` — slower |
 | `hunspell-<lang>` dictionaries | Spell check in Query Editor | Language missing from the picker (no crash) |
+| `tmux` (≥ 3.2) | Keeps the Claude session alive across window restarts | Session ends when the project window closes |
 | `uv` | App launch (`bin/code-companion` runs `uv run` on every start) | App won't start |
 
 > On Debian/Ubuntu the `fd` binary is installed as **`fdfind`** — the app

@@ -105,16 +105,18 @@ install_system_deps() {
     fi
 }
 
-# Optional dependencies for the native GUI test harness: a headless Wayland
-# compositor (cage) to run a project's GUI in isolation, a screenshot tool
-# (grim) so the assistant can visually inspect it, output sizing (wlr-randr),
-# and input injection (ydotool) as a coordinate-level fallback. Not required to
-# run Code Companion itself — failure here is non-fatal and never aborts install.
+# Optional runtime dependencies that enhance the app but are not required to run
+# it — failure here is non-fatal and never aborts install:
+#   - tmux: keeps the Claude session alive across window restarts (session
+#     supervisor); without it the session simply ends when the window closes.
+#   - native GUI test harness: a headless Wayland compositor (cage) to run a
+#     project's GUI in isolation, a screenshot tool (grim) for visual inspection,
+#     output sizing (wlr-randr), and input injection (ydotool) as a fallback.
 install_gui_test_deps() {
-    info "Checking optional GUI test harness dependencies (cage, grim, wlr-randr, ydotool)..."
+    info "Checking optional runtime dependencies (tmux, cage, grim, wlr-randr, ydotool)..."
 
     # Package names are identical across Fedora, Debian/Ubuntu and Arch.
-    local PACKAGES="cage grim wlr-randr ydotool"
+    local PACKAGES="tmux cage grim wlr-randr ydotool"
     local MISSING="" installer=""
 
     if command -v dnf &> /dev/null; then
