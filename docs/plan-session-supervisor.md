@@ -2,6 +2,9 @@
 
 **Status**: Design discussion captured 2026-07-07. **Deferred** — parked to continue
 MCP Part A / A3 first. Revisit when window-restart-loses-session friction justifies it.
+Legitimacy of the tmux approach is **verified** (see below); MCP Part A/B + session
+summaries have since shipped to `main`, so the `/refresh` + notification infra this plan
+reuses now exists.
 **Related**: `docs/plan-mcp-integration.md` (this revises decision D1), the persistent
 Claude pane (commit `b37fab6`), the MCP control surface (commit `1f6d78b`).
 
@@ -106,9 +109,86 @@ acceptable.
 - **Revises `plan-mcp-integration.md` D1**: per-window token → per-**session** stable
   token (Tier 1), or PM-hosted endpoint (Tier 2).
 
+## Legitimacy (verified 2026-07-07)
+
+Running `claude` under a terminal multiplexer is **explicitly supported and documented**,
+not a grey area:
+- Anthropic's [Usage Policy](https://www.anthropic.com/legal/aup) has no clause against a
+  single user keeping a persistent/tmux session alive. Its automation restrictions target
+  malicious multi-account coordination, spam, and intentional guardrail circumvention —
+  none of which this is.
+- Claude Code's own docs have a dedicated
+  [Configure tmux](https://code.claude.com/docs/en/terminal-config#configure-tmux) section
+  (`set -g allow-passthrough on`, `set -s extended-keys on`) and state it "works in any
+  terminal", with first-class support for IDE-embedded terminals.
+
+We do not modify Claude Code, intercept its API traffic, share accounts, or circumvent
+limits — it's the same binary in a terminal that survives a window restart.
+
+## Session lifecycle: indicator, notifications, reaping
+
+Detaching a session must not mean *forgetting* it. Three pieces, all reusing existing
+infrastructure:
+
+### Live-session indicator (PM as dashboard)
+The supervisor owns the tmux/dtach sessions, so it can enumerate them
+(`tmux list-sessions`) and mark which projects have a live session — a "● live" badge on
+the project card (same badge pattern already in `project_manager.py`). On PM startup,
+**reconcile** running sessions against known projects and surface orphans (a live session
+whose project isn't in the registry, or vice-versa).
+
+### Notification hook (reuse A5)
+Claude Code fires a **Notification** event when it finishes a task or waits for a
+permission prompt, exposed via the `Notification` hook and `preferredNotifChannel`; under
+tmux, `allow-passthrough on` lets it reach the outer terminal. Wire a `Notification` hook
+that POSTs to the app's existing **`/refresh` endpoint (A5)** — the app raises a toast /
+desktop notification and highlights the waiting session's card. Net effect: "session X
+needs you / finished" is surfaced in the hub, so a detached session can't silently stall.
+
+### Reaping forgotten sessions
+What actually happens to a forgotten session is benign: an **idle** session is a paused
+CLI waiting for input — ~zero CPU/RAM and **no API/token spend** until the next turn (an
+in-flight autonomous task finishes its current turn then waits, unless it's an explicit
+loop). The real costs of forgetting are (a) it holds the project **lock**
+(`project_lock.py`) so the project can't be reopened, and (b) orphaned sessions accumulate.
+Mitigations the supervisor owns:
+- PM lists **all** live sessions with attach / kill actions (nothing is invisible).
+- Optional **idle reaping**: offer to stop sessions idle > N hours (with confirmation);
+  releasing the lock on reap.
+- On session end / reap, run the existing teardown (free port, unlink temp MCP config).
+
+These fold into Tier 1: the PM-owned session registry gains a "sessions" view, and the
+`/refresh` hook path (already built) carries the notifications.
+
+## Terminal fidelity (managed tmux config)
+
+The current look must survive the move to tmux. Key fact: **tmux runs inside our VTE
+widget**, so VTE still does the rendering. Split by layer:
+
+- **Preserved automatically (VTE-level, tmux untouched):** custom font family/size, line
+  height, the 24px left padding, the Dracula palette, overall window look. tmux does not
+  touch glyph rendering.
+- **Preserved via a shipped tmux config (Anthropic-documented):** Claude's truecolor
+  highlighting (needs `set -as terminal-features 'xterm*:RGB'` so colors aren't clamped to
+  256), Shift+Enter and extended keys (`set -s extended-keys on` +
+  `'xterm*:extkeys'`), desktop notifications + progress bar (`set -g allow-passthrough on`
+  — the same line the notification hook needs).
+- **Make tmux invisible:** `set -g status off` (no status bar), remap/neutralize the tmux
+  prefix so it can't eat app/Claude hotkeys, `set -g mouse on` for natural wheel scrolling.
+
+Launch managed sessions with our own config: `tmux -f <app>/tmux-managed.conf …`, so the
+user never sees tmux and the terminal looks/behaves identical. App-level hotkeys (terminal
+search, etc.) are handled at GTK/VTE **before** tmux, so they're unaffected.
+
+**One real behavioral change:** scrollback moves from VTE to tmux's copy-mode. With
+`mouse on` the wheel still scrolls naturally, but the buffer is tmux's, not VTE's — worth
+a note; otherwise imperceptible.
+
 ## Open questions to resolve on revisit
 
 1. Tier 1 as target with a Tier 2 seam, or go straight to Tier 2?
 2. Is the restart-gap acceptable (decides Tier 1 vs Tier 2)?
 3. tmux vs dtach vs abduco (feature vs footprint).
 4. Does PM need to be always-on, or is an on-disk session registry enough for Tier 1?
+5. Live-session source of truth: query `tmux list-sessions` on demand vs a PM-owned
+   registry updated on launch/attach/reap — and the idle-reaping default (N hours? opt-in?).
