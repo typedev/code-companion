@@ -711,6 +711,7 @@ class ProjectWindow(Adw.ApplicationWindow):
 
     def _go_to_line_in_editor(self, file_path: str, line_number: int, search_term: str = None):
         """Go to specific line in already-open editor."""
+        file_path = self._canonical_path(file_path)
         for i in range(self.tab_view.get_n_pages()):
             page = self.tab_view.get_nth_page(i)
             child = page.get_child()
@@ -722,6 +723,7 @@ class ProjectWindow(Adw.ApplicationWindow):
 
     def _select_lines_in_editor(self, file_path: str, start_line: int, end_line: int):
         """Select a line range in an already-open editor (mirrors _go_to_line_in_editor)."""
+        file_path = self._canonical_path(file_path)
         for i in range(self.tab_view.get_n_pages()):
             page = self.tab_view.get_nth_page(i)
             child = page.get_child()
@@ -1806,8 +1808,23 @@ class ProjectWindow(Adw.ApplicationWindow):
 
         self.tab_view.set_selected_page(page)
 
+    def _canonical_path(self, file_path: str) -> str:
+        """Canonical form used for tab dedup.
+
+        Paths reach us from the tree, search, notes and (future) the MCP
+        open_file tool in different forms — symlinked, relative, with ``..``
+        segments. Resolving them means one underlying file maps to exactly one
+        tab, so we never open a duplicate tab with a divergent buffer (which
+        would clobber on save).
+        """
+        try:
+            return str(Path(file_path).resolve())
+        except OSError:
+            return str(file_path)
+
     def _on_file_activated(self, file_tree, file_path: str):
         """Handle file activation from tree - open in tab."""
+        file_path = self._canonical_path(file_path)
         # Check if file is already open
         for i in range(self.tab_view.get_n_pages()):
             page = self.tab_view.get_nth_page(i)
