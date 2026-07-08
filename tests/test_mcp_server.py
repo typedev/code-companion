@@ -222,6 +222,7 @@ class _FakeEditor:
         self._modified = modified
         self._line = line
 
+    @property
     def is_modified(self):
         return self._modified
 

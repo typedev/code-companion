@@ -146,27 +146,39 @@ def test_sync_lock_context_manager(tmp_path):
     lock = SyncLock(tmp_path / "clone")
     with lock:
         assert lock.lock_file.exists()
-    assert not lock.lock_file.exists()
+        assert lock._fd is not None  # we hold the flock
+    # flock is released on exit (fd closed). The lock file is intentionally NOT
+    # unlinked (removing it under flock is a race footgun); it is simply free.
+    assert lock._fd is None
+    assert lock.is_locked() is False
 
 
-def test_sync_lock_stale_pid_cleared(tmp_path):
+def test_sync_lock_stale_holder_is_free(tmp_path):
+    # A leftover lock file whose owner has died is not "locked": the kernel
+    # already freed the flock, so a fresh probe succeeds. No PID heuristic.
     lock = SyncLock(tmp_path / "clone")
     lock.lock_file.parent.mkdir(parents=True, exist_ok=True)
-    lock.lock_file.write_text("999999", encoding="utf-8")  # not alive
+    lock.lock_file.write_text("999999", encoding="utf-8")  # dead pid, no flock
     assert lock.is_locked() is False
-    assert not lock.lock_file.exists()
+    # It is acquirable despite the leftover file.
+    assert lock.acquire() is True
+    lock.release()
 
 
 def test_sync_lock_busy_raises(tmp_path):
-    lock = SyncLock(tmp_path / "clone")
-    lock.lock_file.parent.mkdir(parents=True, exist_ok=True)
-    # Simulate a live holder: our own alive pid but pretend it is "other" by
-    # writing a pid that is alive and matches the app check is hard; instead
-    # assert the context manager releases cleanly on nested reuse.
-    with lock:
-        # Same-process re-entry is permitted by design (PID match), so acquire
-        # returns True; just verify no crash and file present.
-        assert lock.lock_file.exists()
-    assert not lock.lock_file.exists()
-    # SyncBusy is raised only for a live *other* process holder.
-    assert SyncBusy  # symbol exists for callers
+    # A second holder (separate open fd, as another process would have) is
+    # denied while the first holds the flock. flock treats distinct fds to the
+    # same file independently, so this exercises the real busy path in-process.
+    held = SyncLock(tmp_path / "clone")
+    assert held.acquire() is True
+    try:
+        other = SyncLock(tmp_path / "clone")
+        assert other.is_locked() is True
+        with pytest.raises(SyncBusy):
+            with other:
+                pass
+    finally:
+        held.release()
+    # Once released, the lock is takeable again.
+    with SyncLock(tmp_path / "clone"):
+        pass
