@@ -1,6 +1,5 @@
 """Project workspace window."""
 
-import hashlib
 import json
 import os
 import secrets
@@ -14,7 +13,7 @@ from gi.repository import Adw, Gtk, GLib, Gdk, Gio
 
 from .models import Session
 from .services import get_adapter, ProjectLock, ProjectRegistry, GitService, IconCache, ToastService, SettingsService, FileMonitorService, IssuesService, McpServer, run_async
-from .utils import git_auth
+from .utils import git_auth, claude_session
 from .widgets import SessionView, TerminalView, FileTree, FileEditor, TasksPanel, GitChangesPanel, GitHistoryPanel, DiffView, CommitDetailView, ClaudeHistoryPanel, FileSearchDialog, UnifiedSearch, NotesPanel, PreferencesDialog, SnippetsBar, QueryEditor, ProblemsPanel, ProblemsDetailView, IssuesPanel, IssueDetailView, ImageViewer, SvgEditor, BinaryFileView
 from .utils.text_files import is_binary
 
@@ -953,13 +952,8 @@ class ProjectWindow(Adw.ApplicationWindow):
         self.claude_container.append(placeholder)
 
     def _claude_session_name(self) -> str:
-        """Deterministic, machine-local tmux session name for this project.
-
-        Path-keyed (not ``resolve_project_identity``, which is None for non-git
-        repos) — aligns with the one-window-per-project-path lock.
-        """
-        key = os.path.realpath(str(self.project_path))
-        return "cc-" + hashlib.sha1(key.encode()).hexdigest()[:12]
+        """Deterministic, machine-local tmux session name for this project."""
+        return claude_session.session_name(str(self.project_path))
 
     @staticmethod
     def _tmux(*args: str, timeout: float = 5) -> subprocess.CompletedProcess:
