@@ -63,8 +63,17 @@ class GitChangesPanel(Gtk.Box):
         # Check if git repo
         if not self.service.is_git_repo():
             self._build_no_repo_ui()
+            # Watch for an in-app `git init`/clone so the panel can activate
+            # later without the window being reopened (roadmap 3.10).
+            self._no_repo_handler_id = self._file_monitor_service.connect(
+                "git-status-changed", self._on_repo_maybe_created
+            )
             return
 
+        self._activate_repo()
+
+    def _activate_repo(self):
+        """Build the live changes UI and start monitoring/polling."""
         self.service.open()
         self._build_ui()
         self._setup_css()
@@ -74,6 +83,19 @@ class GitChangesPanel(Gtk.Box):
 
         # Stop polling on destroy
         self.connect("destroy", self._on_destroy)
+
+    def _on_repo_maybe_created(self, service):
+        """Activate the panel once a repo appears under a previously non-git dir."""
+        if hasattr(self, "branch_label"):
+            return  # already activated
+        if not self.service.is_git_repo():
+            return
+        # Drop the temporary watcher and the placeholder, then become live.
+        self._file_monitor_service.disconnect(self._no_repo_handler_id)
+        if getattr(self, "_no_repo_box", None) is not None:
+            self.remove(self._no_repo_box)
+            self._no_repo_box = None
+        self._activate_repo()
 
     def _connect_monitor_signals(self):
         """Connect to FileMonitorService signals."""
@@ -161,6 +183,7 @@ class GitChangesPanel(Gtk.Box):
         box.append(label)
 
         self.append(box)
+        self._no_repo_box = box
 
     def _build_ui(self):
         """Build the panel UI."""

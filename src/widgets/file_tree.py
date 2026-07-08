@@ -1,5 +1,6 @@
 """File tree widget for browsing project files."""
 
+import os
 import subprocess
 from pathlib import Path
 
@@ -787,6 +788,12 @@ class FileTree(Gtk.Box):
 
     def _update_monitors(self):
         """Update monitors to match currently expanded directories."""
+        # Prune expanded paths that vanished externally, so their monitors are
+        # dropped below instead of dangling forever.
+        self._expanded_paths = {
+            p for p in self._expanded_paths if os.path.isdir(p)
+        }
+
         # Directories that should be monitored
         should_monitor = {str(self.root_path)}
         for path_str in self._expanded_paths:
@@ -808,6 +815,10 @@ class FileTree(Gtk.Box):
 
     def _on_git_status_changed(self, service):
         """Handle git status changes from monitor service."""
+        # A repo may have been created after the tree opened (in-app `git init`);
+        # re-evaluate so git status/icons start loading without a reopen.
+        if not self._is_git_repo and self._git_service.is_git_repo():
+            self._is_git_repo = True
         self._schedule_refresh()
 
     def _on_working_tree_changed(self, service, path: str):

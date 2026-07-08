@@ -74,6 +74,11 @@ class FileMonitorService(GObject.Object):
         self._setup_notes_monitors()
         self._setup_tasks_monitor()
 
+        # Not a repo yet: watch the project root so an in-app `git init`
+        # (or clone) attaches git monitors without reopening the window.
+        if not self._is_git_repo:
+            self._ensure_root_monitor()
+
     def _setup_git_monitors(self):
         """Set up monitors for git internal files."""
         # .git/index - stage/unstage operations
@@ -123,6 +128,15 @@ class FileMonitorService(GObject.Object):
                 callback=self._on_git_refs_changed
             )
 
+        # .git/packed-refs - refs packed by gc/clone (loose refs may not exist)
+        packed_refs = self._git_dir / "packed-refs"
+        if packed_refs.exists():
+            self._add_monitor(
+                packed_refs,
+                is_file=True,
+                callback=self._on_git_refs_changed
+            )
+
     def _setup_notes_monitors(self):
         """Set up monitors for notes and docs directories."""
         for dir_name in ("notes", "docs"):
@@ -150,11 +164,22 @@ class FileMonitorService(GObject.Object):
             self._add_vscode_monitor(vscode_dir)
         else:
             # Monitor project root for .vscode creation
-            self._add_monitor(
-                self.project_path,
-                is_file=False,
-                callback=self._on_project_root_changed
-            )
+            self._ensure_root_monitor()
+
+    def _ensure_root_monitor(self):
+        """Monitor the project root directory exactly once.
+
+        Shared by the tasks watcher (.vscode creation) and the git watcher
+        (.git creation), so both concerns can reuse a single root monitor.
+        """
+        if getattr(self, "_root_monitored", False):
+            return
+        self._add_monitor(
+            self.project_path,
+            is_file=False,
+            callback=self._on_project_root_changed
+        )
+        self._root_monitored = True
 
     def _add_vscode_monitor(self, vscode_dir: Path):
         """Add monitor for .vscode directory."""
@@ -166,16 +191,35 @@ class FileMonitorService(GObject.Object):
         self._vscode_monitored = True
 
     def _on_project_root_changed(self, monitor, file, other_file, event_type):
-        """Handle project root changes - watch for .vscode creation."""
+        """Handle project root changes - watch for .vscode / .git creation."""
         if event_type != Gio.FileMonitorEvent.CREATED:
             return
+        if not file:
+            return
 
-        if file and file.get_basename() == ".vscode":
+        name = file.get_basename()
+
+        if name == ".vscode":
             vscode_dir = self.project_path / ".vscode"
             if vscode_dir.is_dir() and not getattr(self, '_vscode_monitored', False):
                 self._add_vscode_monitor(vscode_dir)
                 # Emit tasks-changed so panel refreshes
                 self._schedule_signal("tasks-changed", self.DEBOUNCE_TASKS)
+
+        elif name == ".git":
+            self._maybe_attach_git_monitors()
+
+    def _maybe_attach_git_monitors(self):
+        """Attach git monitors once, after an in-app `git init` creates .git."""
+        if self._is_git_repo:
+            return
+        if not self._git_dir.is_dir():
+            return
+        self._is_git_repo = True
+        self._setup_git_monitors()
+        # Flip any repo-unaware panels to live git state.
+        self._schedule_signal("git-status-changed", self.DEBOUNCE_GIT)
+        self._schedule_signal("git-history-changed", self.DEBOUNCE_GIT)
 
     def _add_monitor(self, path: Path, is_file: bool, callback):
         """Add a file or directory monitor."""
