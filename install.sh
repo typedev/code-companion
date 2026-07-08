@@ -112,24 +112,30 @@ install_system_deps() {
 #   - native GUI test harness: a headless Wayland compositor (cage) to run a
 #     project's GUI in isolation, a screenshot tool (grim) for visual inspection,
 #     output sizing (wlr-randr), and input injection (ydotool) as a fallback.
+#   - libsecret + its GI typelib: secure git-credential storage in the desktop
+#     keyring; without it credentials fall back to git's plaintext store helper.
 install_gui_test_deps() {
-    info "Checking optional runtime dependencies (tmux, cage, grim, wlr-randr, ydotool)..."
+    info "Checking optional runtime dependencies (tmux, cage, grim, wlr-randr, ydotool, libsecret)..."
 
-    # Package names are identical across Fedora, Debian/Ubuntu and Arch.
+    # cage/grim/wlr-randr/ydotool/tmux share package names across distros;
+    # libsecret's GI typelib package differs, so it is appended per-manager.
     local PACKAGES="tmux cage grim wlr-randr ydotool"
     local MISSING="" installer=""
 
     if command -v dnf &> /dev/null; then
         installer="sudo dnf install -y"
+        PACKAGES="$PACKAGES libsecret"
         for pkg in $PACKAGES; do rpm -q "$pkg" &> /dev/null || MISSING="$MISSING $pkg"; done
     elif command -v apt-get &> /dev/null; then
         installer="sudo apt-get install -y"
+        PACKAGES="$PACKAGES gir1.2-secret-1 libsecret-1-0"
         for pkg in $PACKAGES; do dpkg -s "$pkg" &> /dev/null 2>&1 || MISSING="$MISSING $pkg"; done
     elif command -v pacman &> /dev/null; then
         installer="sudo pacman -S --noconfirm"
+        PACKAGES="$PACKAGES libsecret"
         for pkg in $PACKAGES; do pacman -Q "$pkg" &> /dev/null 2>&1 || MISSING="$MISSING $pkg"; done
     else
-        warn "Unknown package manager; skipping optional GUI test deps ($PACKAGES)."
+        warn "Unknown package manager; skipping optional deps ($PACKAGES)."
         return 0
     fi
 

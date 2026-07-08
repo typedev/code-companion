@@ -59,6 +59,7 @@ class GitChangesPanel(Gtk.Box):
         self._busy = False
         self._has_staged = False  # cached from the last refresh; gates the Commit button
         self._auth_attempts = 0
+        self._remember_creds = False  # opt-in credential persistence (roadmap 3.7)
 
         # Check if git repo
         if not self.service.is_git_repo():
@@ -803,7 +804,7 @@ class GitChangesPanel(Gtk.Box):
         self._show_toast("Pulling…")
 
         def work():
-            return self.service.pull(credentials)
+            return self.service.pull(credentials, remember=self._remember_creds)
 
         def done(result):
             self._auth_attempts = 0
@@ -837,7 +838,8 @@ class GitChangesPanel(Gtk.Box):
         self._show_toast("Force pushing…" if force_with_lease else "Pushing…")
 
         def work():
-            return self.service.push(credentials, force_with_lease=force_with_lease)
+            return self.service.push(credentials, force_with_lease=force_with_lease,
+                                     remember=self._remember_creds)
 
         def done(result):
             self._auth_attempts = 0
@@ -966,6 +968,16 @@ class GitChangesPanel(Gtk.Box):
         hint.set_xalign(0)
         box.append(hint)
 
+        # Opt-in persistence (roadmap 3.7). Default on where a keyring exists;
+        # otherwise it would fall back to the plaintext store, so default off.
+        from ..services.credential_service import CredentialService
+        keyring = CredentialService.get_instance().available()
+        remember_check = Gtk.CheckButton(
+            label="Remember in keyring" if keyring else "Remember (plaintext — no keyring found)"
+        )
+        remember_check.set_active(keyring)
+        box.append(remember_check)
+
         dialog.set_extra_child(box)
 
         dialog.add_response("cancel", "Cancel")
@@ -979,6 +991,7 @@ class GitChangesPanel(Gtk.Box):
                 username = username_entry.get_text().strip()
                 password = password_entry.get_text()
                 if username and password:
+                    self._remember_creds = remember_check.get_active()
                     retry_callback((username, password))
                 else:
                     self._show_error("Username and password are required")

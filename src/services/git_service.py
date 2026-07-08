@@ -387,11 +387,13 @@ class GitService:
             return False
         return bool(staged or unstaged)
 
-    def pull(self, credentials: tuple[str, str] | None = None) -> str:
+    def pull(self, credentials: tuple[str, str] | None = None,
+             remember: bool = True) -> str:
         """Pull from remote using git CLI. Returns status message.
 
         Args:
             credentials: Optional (username, password) tuple for authentication.
+            remember: Persist ``credentials`` on success (opt-in from the UI).
         """
         remote = self.get_remote()
         if not remote:
@@ -413,8 +415,8 @@ class GitService:
                     raise AuthenticationRequired(error, remote.url)
                 raise RuntimeError(error or "Pull failed")
 
-            # Store credentials if provided and successful
-            if credentials:
+            # Store credentials only if the user opted in (roadmap 3.7).
+            if credentials and remember:
                 self._store_credentials(remote.url, credentials)
 
             output = result.stdout.strip()
@@ -435,7 +437,7 @@ class GitService:
         return any(m in error for m in markers)
 
     def push(self, credentials: tuple[str, str] | None = None,
-             force_with_lease: bool = False) -> str:
+             force_with_lease: bool = False, remember: bool = True) -> str:
         """Push to remote using git CLI. Returns status message.
 
         Automatically sets upstream for new branches. A non-fast-forward
@@ -488,7 +490,7 @@ class GitService:
                         env=env,
                     )
                     if result.returncode == 0:
-                        if credentials:
+                        if credentials and remember:
                             self._store_credentials(remote.url, credentials)
                         return f"Push successful (upstream set to {remote.name}/{branch_name})"
                     error = result.stderr.strip() or result.stdout.strip()
@@ -500,8 +502,8 @@ class GitService:
                     raise PushRejected(error, remote.url)
                 raise RuntimeError(error or "Push failed")
 
-            # Store credentials if provided and successful
-            if credentials:
+            # Store credentials only if the user opted in (roadmap 3.7).
+            if credentials and remember:
                 self._store_credentials(remote.url, credentials)
 
             return "Push successful"
@@ -959,11 +961,16 @@ class GitService:
         return git_auth.is_auth_error(error)
 
     def _get_stored_credentials(self, remote_url: str) -> tuple[str, str] | None:
-        """Try to get stored credentials from git credential helper."""
-        return git_auth.get_stored_credentials(remote_url, self.repo_path)
+        """Try to get stored credentials (keyring, then git credential helper)."""
+        from .credential_service import CredentialService
+        return CredentialService.get_instance().lookup(remote_url, self.repo_path)
 
     def _get_auth_env(self, remote_url: str, credentials: tuple[str, str] | None) -> dict:
         """Get environment dict with GIT_ASKPASS for credentials."""
+        # Auto-fill from the keyring (then the store helper) for HTTPS remotes,
+        # so a saved credential is used without re-prompting.
+        if not credentials and remote_url.lower().startswith(("http://", "https://")):
+            credentials = self._get_stored_credentials(remote_url)
         env, askpass_path = git_auth.build_auth_env(remote_url, credentials, self.repo_path)
         if askpass_path:
             # Store path for cleanup (preserves prior behaviour).
@@ -971,5 +978,7 @@ class GitService:
         return env
 
     def _store_credentials(self, remote_url: str, credentials: tuple[str, str]):
-        """Store credentials using git credential helper."""
-        git_auth.store_credentials(remote_url, credentials, self.repo_path)
+        """Store credentials (keyring if available, else git credential helper)."""
+        from .credential_service import CredentialService
+        username, password = credentials
+        CredentialService.get_instance().store(remote_url, username, password, self.repo_path)

@@ -13,6 +13,7 @@ from .icon_cache import IconCache
 from .toast_service import ToastService
 from .async_runner import run_async, bump_generation
 from .settings_service import SettingsService
+from .credential_service import CredentialService
 from .snippets_service import SnippetsService
 from .rules_service import RulesService
 from .file_monitor_service import FileMonitorService
@@ -44,6 +45,7 @@ __all__ = [
     "GitCommit",
     "AuthenticationRequired",
     "PushRejected",
+    "CredentialService",
     "IssuesService",
     "Issue",
     "IssueComment",
