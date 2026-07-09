@@ -3,7 +3,17 @@
 import pytest
 
 from src.services.git_service import GitService
+from src.utils import git_auth
 from tests.helpers import git, init_repo, make_bare
+
+
+def test_is_ssh_remote():
+    assert git_auth.is_ssh_remote("git@github.com:typedev/x.git") is True
+    assert git_auth.is_ssh_remote("ssh://git@host/path.git") is True
+    assert git_auth.is_ssh_remote("https://github.com/typedev/x.git") is False
+    assert git_auth.is_ssh_remote("http://host/x") is False
+    assert git_auth.is_ssh_remote("/local/path/repo") is False
+    assert git_auth.is_ssh_remote("file:///srv/repo.git") is False
 
 
 def _repo(tmp_path, name="r", remote=None):

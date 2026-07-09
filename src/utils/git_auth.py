@@ -45,6 +45,33 @@ def _is_http_remote(url: str) -> bool:
     return url.strip().lower().startswith(("http://", "https://"))
 
 
+def is_ssh_remote(url: str) -> bool:
+    """True if the remote uses SSH (``ssh://…`` or scp-form ``git@host:path``)."""
+    u = url.strip().lower()
+    if u.startswith("ssh://"):
+        return True
+    # scp-like: user@host:path — no scheme, an '@' and a ':' before any '/'.
+    if "://" not in u and "@" in u and ":" in u:
+        return True
+    return False
+
+
+def ssh_agent_has_keys() -> bool:
+    """False only when an ssh-agent is running with zero identities loaded.
+
+    ``ssh-add -l``: exit 0 = has keys, 1 = agent up but no identities, 2 = no agent.
+    Returns True for everything except exit 1 (and when ssh-add is missing), so a user
+    who relies on on-disk keys / ssh config without an agent is never falsely warned.
+    """
+    try:
+        result = subprocess.run(
+            ["ssh-add", "-l"], capture_output=True, text=True, timeout=5,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return True  # unknown — don't block
+    return result.returncode != 1
+
+
 def normalize_remote_url(url: str) -> str:
     """Canonicalize a git remote URL to a stable ``host/owner/repo`` identity.
 

@@ -877,11 +877,38 @@ class GitChangesPanel(Gtk.Box):
 
         run_async(self, worker=work, on_done=done, on_error=err, key="mutate")
 
+    def _ssh_precheck(self, op):
+        """Run ``op`` (a push/pull entry point), warning first if the remote is SSH but
+        the ssh-agent has no identities — the common cause of a failed SSH auth, where
+        the username/password dialog would be useless. The user can still proceed.
+        """
+        remote = self.service.get_remote()
+        url = remote.url if remote else ""
+        if url and git_auth.is_ssh_remote(url) and not git_auth.ssh_agent_has_keys():
+            dialog = Adw.AlertDialog()
+            dialog.set_heading("No SSH key loaded")
+            dialog.set_body(
+                "This repository uses an SSH remote, but your ssh-agent has no "
+                "identities loaded. Run `ssh-add` to add your key, or continue and it "
+                "may fail to authenticate."
+            )
+            dialog.add_response("cancel", "Cancel")
+            dialog.add_response("continue", "Try anyway")
+            dialog.set_response_appearance("continue", Adw.ResponseAppearance.SUGGESTED)
+            dialog.set_close_response("cancel")
+            dialog.connect("response", lambda _d, r: op() if r == "continue" else None)
+            dialog.present(self.get_root())
+        else:
+            op()
+
     def _on_pull_clicked(self, button):
-        """Handle pull button click (uncommitted-changes check runs off-thread)."""
+        """Handle pull button click (SSH pre-check, then off-thread dirty check)."""
         if self._busy:
             return
         self._auth_attempts = 0
+        self._ssh_precheck(self._start_pull)
+
+    def _start_pull(self):
         self._set_busy(True)
 
         def work():
@@ -948,11 +975,11 @@ class GitChangesPanel(Gtk.Box):
         run_async(self, worker=work, on_done=done, on_error=err, key="mutate")
 
     def _on_push_clicked(self, button):
-        """Handle push button click."""
+        """Handle push button click (SSH pre-check, then push)."""
         if self._busy:
             return
         self._auth_attempts = 0
-        self._do_push()
+        self._ssh_precheck(self._do_push)
 
     def _do_push(self, credentials: tuple[str, str] | None = None,
                  force_with_lease: bool = False):
