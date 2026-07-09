@@ -1,8 +1,8 @@
 # Phase 8 — Agent Observability
 
-**Status**: Milestone A = **8.1 + 8.2 shipped** (270 tests green). 8.4 (PM resume hint) was
-built then dropped — it duplicated the existing last-session-summary. Milestone B
-(8.3/8.5/8.6) deferred to a next round.
+**Status**: **Phase 8 complete** — 8.1, 8.2, 8.3, 8.5, 8.6 shipped (283 tests green). 8.4 (PM
+resume hint) was built then dropped (duplicated the last-session-summary). Only loose end:
+open-at-exact-session preselect (deferred — see end).
 
 **Notes from implementation**:
 - Token `usage` in the JSONL is **repeated on every content-block line of one assistant
@@ -96,7 +96,19 @@ The 8.1 insight index still powers 8.2; only the PM card hint (label, background
 - PM-card badge from the plan (the roadmap's optional second half) **intentionally skipped** —
   it duplicates the lean-card guidance that killed 8.4 (see feedback note in the roadmap memory).
 
-### Still deferred
-- **8.5** Cross-project prompt search: new PM search surface reusing the rg engine in
-  `unified_search._search_content` over `claude_paths.projects_root()` (`-g "*.jsonl"
-  '"type":"user"'`); results grouped project→session, open at session.
+### 8.5 — Cross-project prompt search — DONE
+- [x] `src/services/prompt_search.py` — `search_prompts(query)` over
+      `claude_paths.projects_root()` via ripgrep (grep fallback). Confirms matches against
+      the parsed *user* text and filters harness-injected events (`isMeta` /
+      `isCompactSummary` / `isVisibleInTranscriptOnly` flags + injected-tag prefixes like
+      `<task-notification>`); real project path taken from the event's `cwd`.
+      `tests/test_prompt_search.py`. Cut a live "worktree" query from 26 → 4 clean hits.
+- [x] `src/widgets/prompt_search_window.py` — a standalone search window (debounced,
+      off-thread), results grouped by project; activating a result opens that project.
+      Launched from a search button in the Project Manager header.
+
+## Phase 8 status: DONE
+Shipped 8.1, 8.2, 8.3, 8.5, 8.6. Dropped 8.4 (duplicated last-session-summary). The only
+remaining loose end is opening a result at the **exact session** (both 8.5 and the old 8.4
+open the project, not a preselected session) — needs a `--session` arg through `main.py` →
+`ProjectWindow`; deferred as a small separate task if wanted.

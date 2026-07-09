@@ -35,6 +35,7 @@ from .utils import claude_session
 from .utils.relative_time import humanize_relative, humanize_relative_iso
 from .utils.markdown_markup import markdown_to_pango
 from .widgets.github_auth import show_github_credentials_dialog
+from .widgets.prompt_search_window import PromptSearchWindow
 from .version import __version__, get_version_info
 
 
@@ -158,6 +159,12 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
         about_button.set_tooltip_text("About")
         about_button.connect("clicked", self._on_about_clicked)
         header.pack_end(about_button)
+
+        # Cross-project prompt search (8.5) — search your prompts across all projects.
+        prompt_search_button = Gtk.Button(icon_name="system-search-symbolic")
+        prompt_search_button.set_tooltip_text("Search your prompts across all projects")
+        prompt_search_button.connect("clicked", self._on_prompt_search_clicked)
+        header.pack_end(prompt_search_button)
 
         # Refresh button (git status: behind / PR / issue counts) — git icon.
         self.refresh_button = self._icon_button(
@@ -1839,6 +1846,11 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
         box.append(title)
         box.append(subtitle)
         return box
+
+    def _on_prompt_search_clicked(self, _button):
+        """Open the cross-project prompt search window (8.5)."""
+        window = PromptSearchWindow(self, on_open=self._open_project)
+        window.present()
 
     def _on_about_clicked(self, _button):
         """Show about dialog."""
