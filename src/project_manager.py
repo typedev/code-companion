@@ -21,6 +21,7 @@ from .services.issues_service import GitHubError
 from .services.sync_service import SyncService
 from .services import session_summary_service
 from .services import message_store
+from .services.toast_service import ToastService
 from .services.config_path import get_config_dir
 from .services.icon_cache import IconCache
 from .utils.atomic_write import atomic_write_text
@@ -1372,27 +1373,47 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
         entry = Gtk.Entry()
         entry.set_text(Path(path).name)
         entry.set_activates_default(True)
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
         box.append(entry)
+
+        # Warn if the target folder already has content (git init is still safe).
+        try:
+            non_empty = any(c.name != ".git" for c in Path(path).iterdir())
+        except OSError:
+            non_empty = False
+        if non_empty:
+            note = Gtk.Label(label="This folder is not empty — its files will be left as-is.")
+            note.add_css_class("dim-label")
+            note.add_css_class("caption")
+            note.set_xalign(0)
+            note.set_wrap(True)
+            box.append(note)
+
+        initial_check = Gtk.CheckButton(label="Create an initial (empty) commit")
+        initial_check.set_active(not non_empty)  # unborn repo is awkward; default on when empty
+        box.append(initial_check)
         name_dialog.set_extra_child(box)
 
         name_dialog.add_response("cancel", "Cancel")
         name_dialog.add_response("create", "Create")
         name_dialog.set_response_appearance("create", Adw.ResponseAppearance.SUGGESTED)
         name_dialog.set_default_response("create")
-        name_dialog.connect("response", self._on_new_project_response, path, entry)
+        name_dialog.connect("response", self._on_new_project_response, path, entry, initial_check)
         name_dialog.present(self)
 
-    def _on_new_project_response(self, _dialog, response, path, entry):
+    def _on_new_project_response(self, _dialog, response, path, entry, initial_check):
         if response != "create":
             return
         name = entry.get_text().strip()
+        make_initial = initial_check.get_active()
+        default_branch = self.sync_service.settings.get("git.default_branch", "main") or "main"
 
         def worker():
             error = None
+            warning = None
             try:
                 result = subprocess.run(
-                    ["git", "init"],
+                    ["git", "init", "-b", default_branch],
                     cwd=path,
                     capture_output=True,
                     text=True,
@@ -1400,13 +1421,25 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
                 )
                 if result.returncode != 0:
                     error = result.stderr.strip() or "git init failed"
+                elif make_initial:
+                    commit = subprocess.run(
+                        ["git", "commit", "--allow-empty", "-m", "Initial commit"],
+                        cwd=path,
+                        capture_output=True,
+                        text=True,
+                        timeout=15,
+                    )
+                    if commit.returncode != 0:
+                        # Repo is created; only the optional first commit failed
+                        # (usually a missing user.name/email) — surface as a warning.
+                        warning = commit.stderr.strip() or "could not create the initial commit"
             except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as exc:
                 error = str(exc)
-            GLib.idle_add(self._on_new_project_created, path, name, error)
+            GLib.idle_add(self._on_new_project_created, path, name, error, warning)
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def _on_new_project_created(self, path, name, error):
+    def _on_new_project_created(self, path, name, error, warning=None):
         """Main-thread callback after `git init` completes."""
         if error:
             err = Adw.AlertDialog()
@@ -1415,6 +1448,9 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
             err.add_response("ok", "OK")
             err.present(self)
             return False
+
+        if warning:
+            ToastService.show(f"Project created; initial commit skipped: {warning}")
 
         self.registry.register_project(path, name)
         self._load_projects()

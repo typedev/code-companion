@@ -53,6 +53,10 @@ DEFAULT_SETTINGS = {
         # read workspace state, notify). When off, the CLI launches bare.
         "enabled": True,
     },
+    "git": {
+        # Default branch name for `git init` on New Project (git init -b <name>).
+        "default_branch": "main",
+    },
 }
 
 
