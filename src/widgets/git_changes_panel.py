@@ -338,6 +338,15 @@ class GitChangesPanel(Gtk.Box):
         self.pull_btn.connect("clicked", self._on_pull_clicked)
         buttons_box.append(self.pull_btn)
 
+        # Upstream visibility: shown when the current branch has no upstream, so a
+        # silent (0,0) ahead/behind no longer reads as "in sync".
+        self._upstream_label = Gtk.Label(label="⤴ not published")
+        self._upstream_label.add_css_class("dim-label")
+        self._upstream_label.add_css_class("caption")
+        self._upstream_label.set_xalign(0)
+        self._upstream_label.set_visible(False)
+        actions_box.append(self._upstream_label)
+
         actions_box.append(buttons_box)
         self.append(actions_box)
 
@@ -395,13 +404,15 @@ class GitChangesPanel(Gtk.Box):
                 staged, unstaged = self.service.get_porcelain_status(env=env)
             except Exception as e:
                 error = str(e)
-            return (branch, ahead, behind, staged, unstaged, error)
+            has_upstream = self.service.has_upstream()
+            return (branch, ahead, behind, staged, unstaged, error, has_upstream)
 
         # run_async gives a generation token (only the newest refresh renders) and a
         # liveness guard for free (roadmap 2.4).
         run_async(self, worker=_fetch, on_done=lambda data: self._apply_refresh(*data), key="refresh")
 
-    def _apply_refresh(self, branch, ahead, behind, staged, unstaged, error=None):
+    def _apply_refresh(self, branch, ahead, behind, staged, unstaged, error=None,
+                       has_upstream=True):
         """Apply fetched git data to the UI (runs on main thread)."""
         if not hasattr(self, "branch_label"):
             return False
@@ -409,13 +420,21 @@ class GitChangesPanel(Gtk.Box):
         # Update branch name
         self.branch_label.set_label(branch)
 
-        # Update Push/Pull buttons
-        if ahead > 0:
-            self.push_btn.set_label(f"Push ({ahead})")
+        # Update Push/Pull buttons. No upstream -> "Publish" (a normal push auto-sets
+        # upstream) + a visible "not published" hint; otherwise the usual Push (N).
+        self._upstream_label.set_visible(not has_upstream)
+        if not has_upstream:
+            self.push_btn.set_label("Publish")
             self.push_btn.add_css_class("suggested-action")
+            self.push_btn.set_tooltip_text("This branch has no upstream — publish it")
         else:
-            self.push_btn.set_label("Push")
-            self.push_btn.remove_css_class("suggested-action")
+            self.push_btn.set_tooltip_text("")
+            if ahead > 0:
+                self.push_btn.set_label(f"Push ({ahead})")
+                self.push_btn.add_css_class("suggested-action")
+            else:
+                self.push_btn.set_label("Push")
+                self.push_btn.remove_css_class("suggested-action")
 
         if behind > 0:
             self.pull_btn.set_label(f"Pull ({behind})")
