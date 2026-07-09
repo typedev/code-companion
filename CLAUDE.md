@@ -82,7 +82,8 @@ src/
 │   ├── project_registry.py  # Registered projects storage (v2 {path,name})
 │   ├── project_lock.py  # FlockLock base + Project/Manager locks (single-instance)
 │   ├── project_status_service.py  # PM card status (dirty/ahead/behind/PR/issue) + cache
-│   ├── git_service.py   # Git ops: porcelain status + git-CLI push/pull with auth
+│   ├── git_service.py   # Git ops via git CLI (build_git_env): status/commit/branch/
+│   │                    #   push/pull/amend/stash/clone; pygit2 only for diff/stage now
 │   ├── credential_service.py  # Git creds in the libsecret keyring (opt-in; plaintext fallback)
 │   ├── issues_service.py  # GitHub Issues via REST (urllib), PAT from the keyring
 │   ├── tasks_service.py # VSCode tasks.json parser
@@ -285,6 +286,9 @@ Session files are JSONL with event types: `user`, `assistant`, `tool_use`, `tool
   `resolve_message` MCP tools); design in `memory/project_coordination_hub.md`
 - [~] Stability roadmap: 6-phase hardening (async layer, git status unification, file-monitor gaps,
   session-viewer freeze fix, keyring, port reservation) — mostly done; `docs/plan-stability-roadmap.md`
+- [x] Phase 4 git features (all except the deferred merge/conflict UI 4.4): commit/branch migrated to
+  the git CLI (closes 3.1/3.9); amend + multiline commit; publish/upstream visibility; remote-branch
+  checkout; New-Project polish (default branch + initial commit); SSH-key awareness; stash; clone-from-URL
 - [ ] v0.9: Packaging (Flatpak, .desktop file)
 - [ ] v1.0: Multi-agent orchestration with Git worktrees
 

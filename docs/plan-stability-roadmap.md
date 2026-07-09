@@ -3,11 +3,14 @@
 **Status**: Phases 1 (data safety), 2 (async layer, +3.4 git env) and **7 (MCP control surface, PR #3)** done & tested. Also shipped outside this doc: the **session supervisor** (tmux; `docs/plan-session-supervisor.md`) and **flock-based locks**. **Phase 3 Tier 1** (silent-failure cluster: 3.3 restore_file, 3.1-lite commit guards, 3.2 panel error surfacing) done & tested (`801b7d1`). **3.10** (monitor gaps) and **5.1** (session-viewer scalability) done & tested (2026-07-08). **Phase 5
 complete** (5.2/5.3/5.4/5.5; go-to-symbol deferred to Phase 8) and **Phase 3 non-merge items complete**
 (3.8 single status source + binary/rename, 3.5 push dialogs + force-with-lease, 3.7 libsecret credentials)
-done & tested (2026-07-08). **Remaining:** Phase 4 (git features: clone/stash/amend/merge/force-push UI/…),
-the deferred merge-UI cluster (3.1-merge/3.6/3.9 + 4.4), Phase 6 (worktrees), Phase 8 (agent observability).
-Phase 3 leftover: 3.9 branch-switch safety (tied to 4.2 stash). (Coordination hub — cross-project
-catalog + synced inter-project messages, `memory/project_coordination_hub.md` — also shipped since.)
-askpass-temp cleanup done (`git_service._cleanup_askpass`, 2026-07-08).
+done & tested (2026-07-08). **Phase 4 done except 4.4** (2026-07-08): commit/branch migrated off
+pygit2 to the git CLI (4.0, closing **3.1** commit-guards/stale-index and **3.9** switch-branch
+safety), amend + multiline commit (4.3), publish/upstream visibility (4.5), remote-branch checkout
+(4.8), New-Project polish (4.6), SSH awareness (4.7), stash (4.2), clone-from-URL (4.1). **Remaining:**
+the deferred merge-UI cluster (3.1-merge/3.6 + 4.4 conflicts view), Phase 6 (worktrees), Phase 8 (agent
+observability). (Coordination hub — cross-project catalog + synced inter-project messages,
+`memory/project_coordination_hub.md` — also shipped since.) askpass-temp cleanup done
+(`git_service._cleanup_askpass`, 2026-07-08).
 **Based on**: 4-track reliability audit + worktree architecture research (2026-07-06)
 **Code references**: valid as of commit `ef69c77` — line numbers may drift, symbol names are stable.
 
@@ -157,7 +160,7 @@ Goal: existing git operations become trustworthy; repo states become visible; er
 
 ### 3.1 Commit guards
 - [x] **Tier 1 done (`801b7d1`)**: `commit()` `index.read()`s first, refuses a conflicted index / in-progress merge (refused, not 2-parent-committed) / empty commit; Commit button gated on a cached `_has_staged` flag, not a widget scan. **Deferred:** building the real 2-parent merge commit (the in-app merge UI, with 3.6).
-- [ ] Defects (`src/services/git_service.py` `commit()` ~213-244): ignores `repo.index.conflicts` and repo state (`MERGE_HEAD`) → mid-merge commit silently drops the second parent or commits conflict markers; empty commits allowed (no tree-vs-HEAD check); DOM-based commit-button gating in the panel races the async refresh (`git_changes_panel.py` ~622-636); stale in-memory pygit2 index after CLI pull (no `index.read()`).
+- [x] **Done via the 4.0 CLI migration (2026-07-08):** `commit()` is now `git commit` — git records both merge parents, refuses conflicts/empty natively, and there is no in-memory pygit2 index to go stale. (Panel commit-button gating was also reworked in 4.3.)
 - Fix: in `commit()` — `repo.index.read()` first; refuse if `index.conflicts`; if `repo.state()` is merge → create the commit with both parents (`HEAD` + `MERGE_HEAD`) and clear state; reject empty tree unless amend; gate the button on service state, not on scanning widget children.
 - Acceptance: mid-merge commit produces a correct 2-parent merge commit; commit with nothing staged is refused with a toast; conflicted index blocks commit with a pointing message.
 
@@ -214,7 +217,7 @@ Goal: existing git operations become trustworthy; repo states become visible; er
   ^M). Verified: `tests/test_git_status.py` + harness screenshot (rename row).
 
 ### 3.9 Branch switch safety
-- [ ] Defect (`git_service.py` `switch_branch` ~686-713): double `status()` call, weak guard (untracked-only trees pass then SAFE checkout throws cryptic pygit2 errors surfaced raw in `branch_popover.py` ~216).
+- [x] **Done via the 4.0 CLI migration (2026-07-08):** `switch_branch()` is now `git switch` — git's own safety check replaces the hand-rolled `repo.status()` guard, and its clear stderr replaces the raw pygit2 errors.
 - Fix: single status check; on dirty tree → dialog **Stash & switch** (once 4.2 lands; before that: "Commit or discard first" message); catch checkout conflicts and translate to a readable message.
 
 ### 3.10 Monitor gaps
@@ -239,31 +242,31 @@ Goal: existing git operations become trustworthy; repo states become visible; er
 Goal: close the everyday-workflow gaps. Every feature reuses Phase 2 async + Phase 3 error surfacing. UI homes are fixed here so the implementing agent doesn't invent new surfaces.
 
 ### 4.1 Clone from URL (Project Manager)
-- [ ] "Clone" button next to "New Project". Dialog (`Adw.AlertDialog` + `set_extra_child` per CLAUDE.md gotchas): URL entry + destination folder picker + optional name. On confirm: the project card appears immediately in the list with a "Cloning…" spinner state; `git clone --progress` runs in a worker parsing progress; success → registered + openable; failure → card shows error state with Retry/Remove. Reuse the 3.7 auth flow for private remotes.
+- [x] "Clone" button next to "New Project". Dialog (`Adw.AlertDialog` + `set_extra_child` per CLAUDE.md gotchas): URL entry + destination folder picker + optional name. On confirm: the project card appears immediately in the list with a "Cloning…" spinner state; `git clone --progress` runs in a worker parsing progress; success → registered + openable; failure → card shows error state with Retry/Remove. Reuse the 3.7 auth flow for private remotes.
 - Acceptance: clone a private HTTPS repo end-to-end without the UI freezing; a bad URL shows the error on the card.
 
 ### 4.2 Stash
-- [ ] Stash icon-button in the Changes panel header with a popover (pattern: `branch_popover.py`): list stashes (message + relative time), actions Stash (with optional message, include-untracked toggle), Pop, Drop (confirm). Wire into 3.9's dirty-switch dialog ("Stash & switch").
+- [x] Stash icon-button in the Changes panel header with a popover (pattern: `branch_popover.py`): list stashes (message + relative time), actions Stash (with optional message, include-untracked toggle), Pop, Drop (confirm). Wire into 3.9's dirty-switch dialog ("Stash & switch").
 - Backend: pygit2 `repo.stash*` or CLI — pick one, follow 3.8's single-source decision.
 
 ### 4.3 Commit UX: amend + multiline message
-- [ ] Replace the message `Gtk.Entry` (`git_changes_panel.py` ~190) with a 2-3-line auto-growing `Gtk.TextView` (Ctrl+Enter = commit). Replace the Commit button with `Adw.SplitButton` (pattern already used in `script_toolbar.py`): primary = Commit, menu = "Amend last commit" (pre-fills last message, confirm dialog if HEAD is pushed — check ahead count).
+- [x] Replace the message `Gtk.Entry` (`git_changes_panel.py` ~190) with a 2-3-line auto-growing `Gtk.TextView` (Ctrl+Enter = commit). Replace the Commit button with `Adw.SplitButton` (pattern already used in `script_toolbar.py`): primary = Commit, menu = "Amend last commit" (pre-fills last message, confirm dialog if HEAD is pushed — check ahead count).
 
 ### 4.4 Merge + conflict resolution view
 - [ ] Branch popover: per-branch secondary action "Merge into current". Conflicts → the state banner from 3.6 plus a reusable main-area **Conflicts** tab (pattern: `commit_detail_view.py` — list left, detail right): conflicted file list; per-file view with conflict hunks and **Ours / Theirs / Open in editor** actions per hunk; "Mark resolved" stages the file; when the Conflicts section is empty, the banner offers "Complete merge" (→ 3.1's merge-parent commit).
 - This is the largest UI item of the phase; build it after 4.2/4.3.
 
 ### 4.5 Force push + upstream management
-- [ ] Force push exists only via 3.5's rejected-push dialog (always `--force-with-lease`, destructive-styled, extra confirmation). "Set upstream" surfaced when a branch has none (badge area shows "not published" instead of nothing — fixes the silent `(0,0)` ahead/behind).
+- [x] Force push exists only via 3.5's rejected-push dialog (always `--force-with-lease`, destructive-styled, extra confirmation). "Set upstream" surfaced when a branch has none (badge area shows "not published" instead of nothing — fixes the silent `(0,0)` ahead/behind).
 
 ### 4.6 New Project polish
-- [ ] `git init` gains: warning when the target folder is non-empty; `--initial-branch` from a setting (default `main`); optional initial commit (empty or with generated `.gitignore`/`README`) so the repo isn't left unborn.
+- [x] `git init` gains: warning when the target folder is non-empty; `--initial-branch` from a setting (default `main`); optional initial commit (empty or with generated `.gitignore`/`README`) so the repo isn't left unborn.
 
 ### 4.7 SSH awareness
-- [ ] Detect SSH remotes before push/pull: if the agent has no identities (`ssh-add -l` non-zero), show a clear dialog ("SSH key not available in agent…") instead of the useless username/password dialog. Full passphrase askpass is out of scope; the goal is honest messaging.
+- [x] Detect SSH remotes before push/pull: if the agent has no identities (`ssh-add -l` non-zero), show a clear dialog ("SSH key not available in agent…") instead of the useless username/password dialog. Full passphrase askpass is out of scope; the goal is honest messaging.
 
 ### 4.8 Remote branch checkout
-- [ ] Branch popover: remote branches get "Checkout as local tracking branch" (backend `create_branch(from_ref=...)` already exists at `git_service.py` ~649 — UI just never uses it).
+- [x] Branch popover: remote branches get "Checkout as local tracking branch" (backend `create_branch(from_ref=...)` already exists at `git_service.py` ~649 — UI just never uses it).
 
 Deferred beyond v0.9 (record only): hunk-level staging, tags UI, remotes management, blame, cherry-pick UI, compare-arbitrary-commits.
 
