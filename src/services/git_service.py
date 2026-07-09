@@ -237,59 +237,54 @@ class GitService:
         except pygit2.GitError:
             pass
 
-    def commit(self, message: str) -> str:
-        """Create a commit. Returns the short hash.
+    def _run_git(self, args: list[str], timeout: int = 30) -> subprocess.CompletedProcess:
+        """Run a git subprocess in the repo with the deterministic env (roadmap 3.4).
 
-        Guards against silent corruption: resync the index (it may be stale
-        after a CLI pull/checkout), refuse a conflicted index, refuse while a
-        merge/revert/cherry-pick is in progress (the 2-parent merge commit is
-        handled in the terminal for now), and refuse an empty commit.
+        ``LC_ALL=C`` + ``GIT_TERMINAL_PROMPT=0`` make output stable and prompt-free.
+        Never raises on a non-zero exit — callers inspect ``returncode``/``stderr``.
         """
-        # The on-disk index may have moved under us (CLI pull/checkout, etc.).
-        try:
-            self.repo.index.read()
-        except pygit2.GitError:
-            pass
-
-        if self.repo.index.conflicts is not None:
-            raise RuntimeError("Resolve conflicts before committing.")
-        if self.repo.state() != pygit2.GIT_REPOSITORY_STATE_NONE:
-            raise RuntimeError("A merge is in progress — finish it in the terminal.")
-
-        # Get signature from git config
-        try:
-            config = self.repo.config
-            name = config["user.name"]
-            email = config["user.email"]
-            signature = pygit2.Signature(name, email)
-        except KeyError:
-            raise RuntimeError("Git user.name and user.email must be configured")
-
-        # Build the tree from the index.
-        tree_id = self.repo.index.write_tree()
-
-        # Parents + empty-commit guard.
-        try:
-            head_commit = self.repo.head.peel(pygit2.Commit)
-            parents = [head_commit.id]
-            if tree_id == head_commit.tree_id:
-                raise RuntimeError("Nothing staged to commit.")
-        except pygit2.GitError:
-            # Initial commit (no HEAD): refuse an empty tree.
-            parents = []
-            if len(self.repo.index) == 0:
-                raise RuntimeError("Nothing staged to commit.")
-
-        commit_id = self.repo.create_commit(
-            "HEAD",
-            signature,  # author
-            signature,  # committer
-            message,
-            tree_id,
-            parents,
+        return subprocess.run(
+            ["git", *args],
+            cwd=str(self.repo_path),
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            env=git_auth.build_git_env(),
         )
 
-        return str(commit_id)[:7]
+    def commit(self, message: str) -> str:
+        """Create a commit from the staged index. Returns the short hash.
+
+        Uses the git CLI (roadmap 3.4/3.8) so hooks, config, ``.gitattributes`` and
+        merge semantics match real git — committing during a merge correctly records
+        both parents, and there is no stale in-memory index. Refuses an empty commit;
+        unresolved conflicts are refused by git itself.
+        """
+        result = self._run_git(["commit", "-m", message])
+        if result.returncode != 0:
+            out = f"{result.stderr}\n{result.stdout}".lower()
+            if any(m in out for m in (
+                "nothing to commit", "nothing added to commit", "no changes added",
+            )):
+                raise RuntimeError("Nothing staged to commit.")
+            if "tell me who you are" in out or "user.name" in out or "user.email" in out:
+                raise RuntimeError("Git user.name and user.email must be configured")
+            raise RuntimeError(result.stderr.strip() or result.stdout.strip() or "Commit failed")
+        return self._run_git(["rev-parse", "--short", "HEAD"]).stdout.strip()
+
+    def amend_commit(self, message: str) -> str:
+        """Amend HEAD with the current index and a new message. Returns the short hash.
+
+        ``git commit --amend`` preserves the original author and rewrites HEAD; a
+        message-only amend (nothing newly staged) is allowed.
+        """
+        result = self._run_git(["commit", "--amend", "-m", message])
+        if result.returncode != 0:
+            out = f"{result.stderr}\n{result.stdout}".lower()
+            if "tell me who you are" in out or "user.name" in out or "user.email" in out:
+                raise RuntimeError("Git user.name and user.email must be configured")
+            raise RuntimeError(result.stderr.strip() or result.stdout.strip() or "Amend failed")
+        return self._run_git(["rev-parse", "--short", "HEAD"]).stdout.strip()
 
     def get_diff(self, path: str, staged: bool = False) -> tuple[str, str]:
         """
@@ -742,61 +737,58 @@ class GitService:
         Returns:
             The name of the created branch
         """
-        try:
-            # Get the commit to branch from
-            if from_ref:
-                # Try as branch name first
-                if from_ref in self.repo.branches:
-                    commit = self.repo.branches[from_ref].peel(pygit2.Commit)
-                else:
-                    # Try as commit hash
-                    commit = self.repo.get(from_ref)
-                    if commit is None:
-                        raise RuntimeError(f"Reference '{from_ref}' not found")
-            else:
-                commit = self.repo.head.peel(pygit2.Commit)
-
-            # Create the branch
-            self.repo.branches.local.create(name, commit)
-            return name
-
-        except pygit2.GitError as e:
-            raise RuntimeError(f"Failed to create branch: {e}")
+        # ``git branch <name> [<start-point>]`` — create-only (no checkout);
+        # start-point accepts a branch name or a commit hash, defaults to HEAD.
+        args = ["branch", name]
+        if from_ref:
+            args.append(from_ref)
+        result = self._run_git(args)
+        if result.returncode != 0:
+            raise RuntimeError(
+                result.stderr.strip() or result.stdout.strip()
+                or f"Failed to create branch '{name}'"
+            )
+        return name
 
     def switch_branch(self, name: str) -> None:
-        """Switch to a branch.
+        """Switch to a branch (git CLI).
 
-        Args:
-            name: Name of the branch to switch to
+        ``git switch`` performs its own safety check (refuses when the switch would
+        overwrite local changes, carries them when safe) and returns a clear message
+        on failure — replacing the raw pygit2 errors and the hand-rolled status guard.
         """
-        try:
-            # Check for uncommitted changes
-            if self.repo.status():
-                # Check if there are actual modifications (not just untracked)
-                for path, flags in self.repo.status().items():
-                    if flags & (pygit2.GIT_STATUS_INDEX_MODIFIED |
-                               pygit2.GIT_STATUS_INDEX_NEW |
-                               pygit2.GIT_STATUS_INDEX_DELETED |
-                               pygit2.GIT_STATUS_WT_MODIFIED |
-                               pygit2.GIT_STATUS_WT_DELETED):
-                        raise RuntimeError("You have uncommitted changes. Commit or stash them first.")
+        result = self._run_git(["switch", name])
+        if result.returncode != 0:
+            raise RuntimeError(
+                result.stderr.strip() or result.stdout.strip()
+                or f"Failed to switch to '{name}'"
+            )
 
-            # Get the branch
-            branch = self.repo.branches.get(name)
-            if branch is None:
-                raise RuntimeError(f"Branch '{name}' not found")
+    def checkout_remote_tracking(self, remote_branch: str) -> str:
+        """Check out a remote branch (e.g. ``origin/feature``) as a local tracking branch.
 
-            # Get the commit
-            commit = branch.peel(pygit2.Commit)
+        Returns the local branch name. If the local branch already exists, switches to it.
+        """
+        local = remote_branch.split("/", 1)[1] if "/" in remote_branch else remote_branch
+        result = self._run_git(["switch", "--track", remote_branch])
+        if result.returncode != 0:
+            out = f"{result.stderr}\n{result.stdout}".lower()
+            if "already exists" in out:
+                # Local branch is already there — just switch to it.
+                self.switch_branch(local)
+                return local
+            raise RuntimeError(
+                result.stderr.strip() or result.stdout.strip()
+                or f"Failed to check out '{remote_branch}'"
+            )
+        return local
 
-            # Checkout the tree
-            self.repo.checkout_tree(commit)
-
-            # Update HEAD to point to the branch
-            self.repo.set_head(branch.name)
-
-        except pygit2.GitError as e:
-            raise RuntimeError(f"Failed to switch branch: {e}")
+    def has_upstream(self) -> bool:
+        """True if the current branch has a configured upstream ('published')."""
+        result = self._run_git(
+            ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"]
+        )
+        return result.returncode == 0
 
     def delete_branch(self, name: str, force: bool = False) -> None:
         """Delete a branch.
