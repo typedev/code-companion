@@ -636,21 +636,6 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
         icon.set_valign(Gtk.Align.CENTER)
         header.append(icon)
 
-        # Session summary button — on the LEFT (after the icon) so the live dot on
-        # the right lines up vertically across all cards. Shown only when a summary
-        # exists for this project.
-        summary_button = Gtk.Button(icon_name="cc-file-symbolic")
-        summary_button.add_css_class("flat")
-        summary_button.set_valign(Gtk.Align.CENTER)
-        summary_button.set_tooltip_text("Last session summary")
-        summary_button.connect("clicked", self._on_summary_clicked, str(path))
-        header.append(summary_button)
-        row.summary_button = summary_button
-        pid = self._cached_project_id(str(path))
-        summary_button.set_visible(
-            session_summary_service.load(str(path), project_id=pid) is not None
-        )
-
         # Name + path
         text_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
         text_box.set_valign(Gtk.Align.CENTER)
@@ -671,6 +656,21 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
         text_box.append(path_label)
 
         header.append(text_box)
+
+        # Session summary button — just LEFT of the live dot (shown only when a
+        # summary exists). Keeping only the ⋮ menu to the right of the dot lets the
+        # dots line up vertically across all cards regardless of the summary button.
+        summary_button = Gtk.Button(icon_name="cc-file-symbolic")
+        summary_button.add_css_class("flat")
+        summary_button.set_valign(Gtk.Align.CENTER)
+        summary_button.set_tooltip_text("Last session summary")
+        summary_button.connect("clicked", self._on_summary_clicked, str(path))
+        header.append(summary_button)
+        row.summary_button = summary_button
+        pid = self._cached_project_id(str(path))
+        summary_button.set_visible(
+            session_summary_service.load(str(path), project_id=pid) is not None
+        )
 
         # Live-session indicator — a green dot shown when a tmux Claude session
         # is running for this project (toggled by _refresh_live_indicators).
