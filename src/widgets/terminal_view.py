@@ -119,6 +119,11 @@ class TerminalView(Gtk.Box):
         scrolled.set_vexpand(True)
         hbox.append(scrolled)
 
+        # Right padding with terminal background color (mirrors the left)
+        self._right_padding = Gtk.Box()
+        self._right_padding.set_size_request(24, -1)  # 24px width
+        hbox.append(self._right_padding)
+
         self.append(hbox)
 
         # Search bar (hidden by default)
@@ -456,6 +461,7 @@ class TerminalView(Gtk.Box):
             Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
         )
         self._left_padding.add_css_class("terminal-padding")
+        self._right_padding.add_css_class("terminal-padding")
 
     def open_system_terminal(self):
         """Open system terminal in current directory."""
