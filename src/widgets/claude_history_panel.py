@@ -1,12 +1,23 @@
 """Claude history panel widget for viewing sessions in sidebar."""
 
 import threading
+from datetime import datetime
 from pathlib import Path
 
 from gi.repository import Gtk, GLib, GObject
 
-from ..models import Session
-from ..services import HistoryAdapter
+from ..models import Session, SessionInsight, TokenUsage
+from ..services import HistoryAdapter, SessionInsightService, run_async
+from ..services import model_pricing
+
+
+def _format_tokens(n: int) -> str:
+    """Compact token count, e.g. 480_000_000 -> '480M', 48_200 -> '48.2k'."""
+    if n >= 1_000_000:
+        return f"{n / 1_000_000:.1f}M"
+    if n >= 1_000:
+        return f"{n / 1_000:.1f}k"
+    return str(n)
 
 
 class ClaudeHistoryPanel(Gtk.Box):
@@ -25,6 +36,7 @@ class ClaudeHistoryPanel(Gtk.Box):
         self.project_path = project_path
         self.adapter = adapter
         self._all_sessions = []  # Cache sessions for filtering
+        self._insights: dict[str, SessionInsight] = {}  # session id -> insight (8.2)
         self._filter_text = ""
         self._loaded = False  # Lazy loading flag
         self._loading = False  # Currently loading flag
@@ -48,6 +60,13 @@ class ClaudeHistoryPanel(Gtk.Box):
             padding: 2px 6px;
             border-radius: 4px;
             background: alpha(@accent_color, 0.2);
+        }
+        .session-tokens {
+            font-family: monospace;
+            font-size: 0.8em;
+        }
+        .session-totals {
+            font-size: 0.8em;
         }
         """
         provider = Gtk.CssProvider()
@@ -82,6 +101,17 @@ class ClaudeHistoryPanel(Gtk.Box):
         header_box.append(self.refresh_btn)
 
         self.append(header_box)
+
+        # Token / cost totals for this project (filled in the background, 8.2)
+        self.totals_label = Gtk.Label(xalign=0)
+        self.totals_label.add_css_class("session-totals")
+        self.totals_label.add_css_class("dim-label")
+        self.totals_label.set_margin_start(12)
+        self.totals_label.set_margin_end(12)
+        self.totals_label.set_margin_bottom(6)
+        self.totals_label.set_ellipsize(3)  # END
+        self.totals_label.set_visible(False)
+        self.append(self.totals_label)
 
         # Search entry
         self.search_entry = Gtk.SearchEntry()
@@ -183,6 +213,7 @@ class ClaudeHistoryPanel(Gtk.Box):
 
         self._all_sessions = sessions
         self._display_sessions()
+        self._start_insight_scan()
 
     def _on_search_changed(self, entry):
         """Handle search entry changes."""
@@ -255,6 +286,14 @@ class ClaudeHistoryPanel(Gtk.Box):
         spacer.set_hexpand(True)
         top_box.append(spacer)
 
+        # Token badge (8.2) — filled from the insight cache, empty until known
+        token_label = Gtk.Label()
+        token_label.add_css_class("session-tokens")
+        token_label.add_css_class("dim-label")
+        top_box.append(token_label)
+        row.token_label = token_label
+        self._apply_token_badge(row)
+
         # Message count badge
         count_label = Gtk.Label(label=str(session.message_count))
         count_label.add_css_class("session-count")
@@ -278,3 +317,82 @@ class ClaudeHistoryPanel(Gtk.Box):
         """Handle session activation."""
         if row and hasattr(row, "session"):
             self.emit("session-activated", row.session)
+
+    # -- observability: tokens & cost (8.2) -------------------------------
+
+    def _start_insight_scan(self):
+        """Compute per-session token/cost insights off-thread, then paint them."""
+        service = SessionInsightService.get_instance()
+        project_path = self.project_path
+        adapter = self.adapter
+
+        def work():
+            return service.get_project_insights(adapter, project_path)
+
+        run_async(self, worker=work, on_done=self._on_insights_loaded, key="insights")
+
+    def _on_insights_loaded(self, insights):
+        """Store insights, refresh visible token badges, update the totals line."""
+        self._insights = {ins.session_id: ins for ins in (insights or [])}
+        row = self.sessions_list.get_first_child()
+        while row is not None:
+            if hasattr(row, "token_label"):
+                self._apply_token_badge(row)
+            row = row.get_next_sibling()
+        self._update_totals()
+
+    def _apply_token_badge(self, row):
+        """Set a row's token badge from the cached insight (no-op if unknown)."""
+        insight = self._insights.get(row.session.id)
+        if insight is None or insight.total_tokens == 0:
+            row.token_label.set_text("")
+            row.token_label.set_visible(False)
+            return
+        row.token_label.set_text(f"{_format_tokens(insight.total_tokens)} tok")
+        row.token_label.set_visible(True)
+        row.token_label.set_tooltip_text(self._insight_tooltip(insight))
+
+    @staticmethod
+    def _insight_tooltip(insight: SessionInsight) -> str:
+        """Per-session breakdown: input/output/cache tokens + estimated cost."""
+        totals = {"input": 0, "output": 0, "cache_creation": 0, "cache_read": 0}
+        for usage in insight.usage_by_model.values():
+            totals["input"] += usage.input
+            totals["output"] += usage.output
+            totals["cache_creation"] += usage.cache_creation
+            totals["cache_read"] += usage.cache_read
+        cost = model_pricing.format_cost(model_pricing.estimate_cost(insight.usage_by_model))
+        lines = [
+            f"input: {totals['input']:,}",
+            f"output: {totals['output']:,}",
+            f"cache write: {totals['cache_creation']:,}",
+            f"cache read: {totals['cache_read']:,}",
+            f"cost: {cost}",
+        ]
+        if len(insight.models) > 1:
+            lines.append("models: " + ", ".join(insight.models))
+        return "\n".join(lines)
+
+    def _update_totals(self):
+        """Project-wide token/cost aggregate + a 'today' figure in the header."""
+        if not self._insights:
+            self.totals_label.set_visible(False)
+            return
+
+        merged: dict[str, TokenUsage] = {}
+        today_tokens = 0
+        today = datetime.now().astimezone().date()
+        for insight in self._insights.values():
+            for model, usage in insight.usage_by_model.items():
+                bucket = merged.setdefault(model, TokenUsage())
+                bucket.add(usage)
+            if insight.last_ts is not None and insight.last_ts.astimezone().date() == today:
+                today_tokens += insight.total_tokens
+
+        total_tokens = sum(u.total for u in merged.values())
+        cost = model_pricing.format_cost(model_pricing.estimate_cost(merged))
+        text = f"Σ {_format_tokens(total_tokens)} tok · {cost}"
+        if today_tokens:
+            text += f" · today {_format_tokens(today_tokens)}"
+        self.totals_label.set_text(text)
+        self.totals_label.set_visible(True)
