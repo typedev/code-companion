@@ -213,11 +213,27 @@ as a **separate step before completion**.
       (guarded by `preview_merge`): merge → run tests, no agent needed. Escalate to
       the agent/terminal only on conflicts. Built after the agent path.
 
-## Stage 6 — MCP orchestration tools (after Stages 2–5)
-- [ ] `list_worktrees()` — worktrees with branch/dirty/ahead-behind/last-activity.
-- [ ] `create_worktree(task_name)` — runs the Stage 3 pipeline; returns the path.
-- [ ] `preview_merge(branch)` / merge helpers exposed so an agent can drive the
-      Stage-5 flow programmatically.
+## Stage 6 — MCP orchestration tools — DONE
+So an agent can drive worktrees without the terminal (all in `mcp_server.py`):
+- [x] `list_worktrees()` — this repo's linked worktrees (main excluded) with
+      branch/head/dirty.
+- [x] `create_worktree(task_name, branch?, base?)` — derives `feature/<slug>` + a
+      sibling folder, runs `add_worktree`, registers it; returns the path.
+- [x] `preview_merge(branch)` (git merge-tree) and `merge_worktree(branch)`
+      (clean-only merge + resolve report) so main's agent runs the Stage-5 flow.
+- Tests in `tests/test_mcp_worktree.py` (create → list → preview → merge into main).
+
+---
+
+## Phase 6 status: COMPLETE (Stages 1–6)
+The redesigned worktree/multi-agent feature is shipped end to end: MRU + "Working"
+grouping, worktree correctness, create/remove, PM nesting, the completion → review
+→ local-report → merge flow, and MCP orchestration. The original roadmap's
+parent-window switcher and in-app merge-conflict UI were **intentionally dropped**
+(one window per worktree; conflicts resolved by the agent in the worktree terminal).
+
+PM polish shipped alongside: the session-summary button moved to the card's left so
+the live-session dots line up in one vertical column.
 
 ---
 

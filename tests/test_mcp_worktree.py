@@ -43,3 +43,51 @@ def test_report_rejected_outside_worktree(tmp_path, monkeypatch):
     srv = _srv(SimpleNamespace(_is_worktree=False))
     res = McpServer._do_report_worktree_complete(srv, "x", "", "")
     assert res["ok"] is False and "worktree" in res["error"]
+
+
+def _main_repo(tmp_path):
+    main = init_repo(tmp_path / "main", commit=True)
+    git(main, "branch", "-M", "main")
+    git(main, "config", "user.name", "T"); git(main, "config", "user.email", "t@e")
+    return main
+
+
+def test_create_list_preview_merge_orchestration(tmp_path, monkeypatch):
+    monkeypatch.setattr(wr, "get_config_dir", lambda: tmp_path / "cfg")
+    # keep create_worktree's registry write out of the real config
+    from src.services import project_registry as pr
+    monkeypatch.setattr(pr, "get_config_dir", lambda: tmp_path / "cfg")
+
+    main = _main_repo(tmp_path)
+    srv = _srv(SimpleNamespace(project_path=main))
+
+    # create a worktree via MCP
+    created = McpServer._do_create_worktree(srv, "add login", "", "")
+    assert created["ok"] is True and created["branch"] == "feature/add-login"
+    wt_path = created["path"]
+
+    # it appears in list_worktrees (main checkout excluded), initially clean
+    listed = McpServer._do_list_worktrees(srv)
+    assert listed["count"] == 1
+    w = listed["worktrees"][0]
+    assert w["branch"] == "feature/add-login" and w["dirty"] is False
+
+    # commit a change on the worktree branch -> preview merges clean -> merge
+    p = __import__("pathlib").Path(wt_path)
+    (p / "login.py").write_text("x\n", encoding="utf-8")
+    git(p, "add", "-A"); git(p, "commit", "-q", "-m", "add login")
+
+    prev = McpServer._do_preview_merge(srv, "feature/add-login")
+    assert prev["ok"] is True and prev["clean"] is True
+
+    merged = McpServer._do_merge_worktree(srv, "feature/add-login")
+    assert merged["ok"] is True
+    assert (main / "login.py").exists()  # integrated into main
+
+
+def test_create_worktree_needs_task(tmp_path, monkeypatch):
+    monkeypatch.setattr(wr, "get_config_dir", lambda: tmp_path / "cfg")
+    from src.services import project_registry as pr
+    monkeypatch.setattr(pr, "get_config_dir", lambda: tmp_path / "cfg")
+    srv = _srv(SimpleNamespace(project_path=_main_repo(tmp_path)))
+    assert McpServer._do_create_worktree(srv, "   ", "", "")["ok"] is False

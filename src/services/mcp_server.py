@@ -428,6 +428,39 @@ class McpServer:
             return self._do_resolve_worktree_report(branch)
 
         @mcp.tool()
+        def list_worktrees() -> dict:
+            """List this project's linked worktrees (Stage 6).
+
+            Returns ``{"ok", "count", "worktrees": [{path, branch, head, dirty}]}`` —
+            the main checkout is excluded.
+            """
+            return self._do_list_worktrees()
+
+        @mcp.tool()
+        def create_worktree(task_name: str, branch: str = "", base: str = "") -> dict:
+            """Create a worktree of this project for a task and register it (Stage 6).
+
+            Derives branch ``feature/<slug>`` and a sibling ``<repo>--<slug>`` folder
+            from ``task_name`` unless given explicitly. Returns ``{"ok", "path",
+            "branch"}``. Open it as its own window (or hand the path to a subagent).
+            """
+            return self._do_create_worktree(task_name, branch, base)
+
+        @mcp.tool()
+        def preview_merge(branch: str) -> dict:
+            """Check whether ``branch`` merges cleanly into this project's current
+            branch, without touching the working tree (git merge-tree). Returns
+            ``{"ok", "clean", "conflicts": [...]}`` (committed state only)."""
+            return self._do_preview_merge(branch)
+
+        @mcp.tool()
+        def merge_worktree(branch: str) -> dict:
+            """Merge a worktree ``branch`` into this project's current branch after a
+            clean ``preview_merge``, then clear its completion report. On conflicts it
+            does nothing and returns them. Returns ``{"ok", "branch"}`` or the conflicts."""
+            return self._do_merge_worktree(branch)
+
+        @mcp.tool()
         def gui_launch(cmd: str, width: int = 1280, height: int = 800) -> dict:
             """Launch a GUI app in an isolated headless compositor for inspection.
 
@@ -892,6 +925,68 @@ class McpServer:
 
         ok = worktree_reports.resolve_report(str(self.window.project_path), branch)
         return {"ok": ok, "branch": branch}
+
+    # -- worktree orchestration (Stage 6) --------------------------------
+    def _do_list_worktrees(self) -> dict:
+        from .git_service import GitService
+        from ..utils.git_worktree import is_linked_worktree
+
+        entries = GitService(self.window.project_path).list_worktrees()
+        out = []
+        for entry in entries:
+            path = entry.get("path")
+            if not path or not is_linked_worktree(path):
+                continue  # skip the main checkout (and bare)
+            st = GitService(path)._run_git(["status", "--porcelain"])
+            entry["dirty"] = bool(st.stdout.strip()) if st.returncode == 0 else False
+            out.append(entry)
+        return {"ok": True, "count": len(out), "worktrees": out}
+
+    def _do_create_worktree(self, task_name: str, branch: str, base: str) -> dict:
+        from pathlib import Path
+        from .git_service import GitService
+        from .project_registry import ProjectRegistry
+        from ..utils.git_worktree import slugify
+
+        slug = slugify(task_name) if task_name.strip() else ""
+        branch = branch.strip() or (f"feature/{slug}" if slug else "")
+        if not branch:
+            return {"ok": False, "error": "task_name (or an explicit branch) is required"}
+        main = Path(self.window.project_path)
+        wt_path = main.parent / f"{main.name}--{slug or slugify(branch)}"
+        if wt_path.exists():
+            return {"ok": False, "error": f"folder already exists: {wt_path}"}
+        try:
+            GitService(main).add_worktree(str(wt_path), branch, base or None)
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "error": str(exc)}
+        ProjectRegistry().register_project(str(wt_path))
+        return {"ok": True, "path": str(wt_path), "branch": branch}
+
+    def _do_preview_merge(self, branch: str) -> dict:
+        from .git_service import GitService
+
+        try:
+            clean, conflicts = GitService(self.window.project_path).preview_merge(branch)
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "error": str(exc)}
+        return {"ok": True, "clean": clean, "conflicts": conflicts}
+
+    def _do_merge_worktree(self, branch: str) -> dict:
+        from .git_service import GitService
+        from . import worktree_reports
+
+        gs = GitService(self.window.project_path)
+        try:
+            clean, conflicts = gs.preview_merge(branch)
+            if not clean:
+                return {"ok": False, "error": "conflicts — resolve in the worktree",
+                        "conflicts": conflicts}
+            gs.merge_branch(branch)
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "error": str(exc)}
+        worktree_reports.resolve_report(str(self.window.project_path), branch)
+        return {"ok": True, "branch": branch}
 
     def _do_reply_message(self, thread_id: str, body: str) -> dict:
         from . import message_store
