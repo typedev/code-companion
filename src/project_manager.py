@@ -33,6 +33,7 @@ from .models.sync import ProjectSyncStatus, SyncState
 from .services import session_notify
 from .utils import claude_session
 from .utils.relative_time import humanize_relative, humanize_relative_iso
+from .utils.git_worktree import is_linked_worktree, worktree_parent_root, slugify
 from .utils.markdown_markup import markdown_to_pango
 from .widgets.github_auth import show_github_credentials_dialog
 from .widgets.prompt_search_window import PromptSearchWindow
@@ -666,15 +667,38 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
         box.append(kill_btn)
         row.kill_session_btn = kill_btn
 
-        remove_btn = Gtk.Button()
-        remove_btn.add_css_class("flat")
-        remove_btn.set_child(self._menu_row("user-trash-symbolic", "Remove…"))
-        remove_btn.update_property([Gtk.AccessibleProperty.LABEL], ["Remove project"])
-        remove_btn.connect(
-            "clicked",
-            lambda _b: (popover.popdown(), self._on_remove_card(row)),
-        )
-        box.append(remove_btn)
+        if is_linked_worktree(row.project_path):
+            # A worktree card: remove the worktree itself (git worktree remove).
+            remove_wt_btn = Gtk.Button()
+            remove_wt_btn.add_css_class("flat")
+            remove_wt_btn.set_child(self._menu_row("user-trash-symbolic", "Remove Worktree…"))
+            remove_wt_btn.update_property([Gtk.AccessibleProperty.LABEL], ["Remove worktree"])
+            remove_wt_btn.connect(
+                "clicked",
+                lambda _b: (popover.popdown(), self._on_remove_worktree(row)),
+            )
+            box.append(remove_wt_btn)
+        else:
+            # A regular project: spin off a worktree, or drop it from the list.
+            new_wt_btn = Gtk.Button()
+            new_wt_btn.add_css_class("flat")
+            new_wt_btn.set_child(self._menu_row("list-add-symbolic", "New Worktree…"))
+            new_wt_btn.update_property([Gtk.AccessibleProperty.LABEL], ["New worktree"])
+            new_wt_btn.connect(
+                "clicked",
+                lambda _b: (popover.popdown(), self._on_new_worktree(row)),
+            )
+            box.append(new_wt_btn)
+
+            remove_btn = Gtk.Button()
+            remove_btn.add_css_class("flat")
+            remove_btn.set_child(self._menu_row("user-trash-symbolic", "Remove…"))
+            remove_btn.update_property([Gtk.AccessibleProperty.LABEL], ["Remove project"])
+            remove_btn.connect(
+                "clicked",
+                lambda _b: (popover.popdown(), self._on_remove_card(row)),
+            )
+            box.append(remove_btn)
 
         popover.set_child(box)
         return popover
@@ -1468,6 +1492,146 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
         if response == "remove":
             self.registry.unregister_project(path)
             self._load_projects()
+
+    # ------------------------------------------------------------------
+    # Worktrees (spin off / remove) — Stage 3
+    # ------------------------------------------------------------------
+    def _on_new_worktree(self, row: Gtk.ListBoxRow):
+        """Dialog: task name -> derived branch + sibling path (both editable)."""
+        parent = row.project_path
+        name = row.name_label.get_text() if hasattr(row, "name_label") else Path(parent).name
+
+        dialog = Adw.AlertDialog(
+            heading="New Worktree",
+            body=f"Spin off a worktree of “{name}” on its own branch.",
+        )
+        task_entry = Gtk.Entry(activates_default=True)
+        task_entry.set_placeholder_text("Task name — e.g. login flow")
+        branch_entry = Gtk.Entry()
+        path_entry = Gtk.Entry()
+        open_check = Gtk.CheckButton(label="Open the worktree in a window")
+        open_check.set_active(True)
+
+        # Auto-fill branch + path from the task name until the user edits them.
+        state = {"branch_auto": True, "path_auto": True}
+
+        def derive(*_):
+            task = task_entry.get_text().strip()
+            slug = slugify(task) if task else ""
+            if state["branch_auto"]:
+                branch_entry.set_text(f"feature/{slug}" if slug else "")
+            if state["path_auto"]:
+                base = Path(parent)
+                path_entry.set_text(str(base.parent / f"{base.name}--{slug}") if slug else "")
+
+        task_entry.connect("changed", derive)
+        branch_entry.connect(
+            "changed", lambda *_: branch_entry.has_focus() and state.update(branch_auto=False))
+        path_entry.connect(
+            "changed", lambda *_: path_entry.has_focus() and state.update(path_auto=False))
+
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        for label, widget in (("Task", task_entry), ("Branch", branch_entry), ("Folder", path_entry)):
+            lbl = Gtk.Label(label=label, xalign=0)
+            lbl.add_css_class("caption")
+            lbl.add_css_class("dim-label")
+            box.append(lbl)
+            box.append(widget)
+        box.append(open_check)
+        dialog.set_extra_child(box)
+
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("create", "Create")
+        dialog.set_response_appearance("create", Adw.ResponseAppearance.SUGGESTED)
+        dialog.set_default_response("create")
+        dialog.connect("response", self._on_new_worktree_response,
+                       parent, branch_entry, path_entry, open_check)
+        dialog.present(self)
+
+    def _on_new_worktree_response(self, _dialog, response, parent, branch_entry, path_entry, open_check):
+        if response != "create":
+            return
+        branch = branch_entry.get_text().strip()
+        wt_path = path_entry.get_text().strip()
+        if not branch or not wt_path:
+            ToastService.show("A worktree needs both a branch and a folder")
+            return
+        if Path(wt_path).exists():
+            ToastService.show("That folder already exists — pick another")
+            return
+        open_after = open_check.get_active()
+
+        def worker():
+            error = None
+            try:
+                GitService(Path(parent)).add_worktree(wt_path, branch)
+            except Exception as exc:  # noqa: BLE001 - surface any git failure
+                error = str(exc)
+            GLib.idle_add(self._on_worktree_created, wt_path, error, open_after)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_worktree_created(self, wt_path: str, error: str | None, open_after: bool):
+        if error:
+            err = Adw.AlertDialog(heading="Could Not Create Worktree", body=error)
+            err.add_response("ok", "OK")
+            err.present(self)
+            return False
+        self.registry.register_project(wt_path)
+        self._load_projects()
+        if open_after:
+            self._open_project(wt_path)
+        return False
+
+    def _on_remove_worktree(self, row: Gtk.ListBoxRow):
+        """Confirm, then `git worktree remove` (branch kept)."""
+        wt = row.project_path
+        name = row.name_label.get_text() if hasattr(row, "name_label") else wt
+        dialog = Adw.AlertDialog(
+            heading="Remove Worktree",
+            body=f"Remove the worktree “{name}”?\n\n{wt}\n\nIts branch is kept.",
+        )
+        force_check = Gtk.CheckButton(label="Force (discard uncommitted changes)")
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        box.append(force_check)
+        dialog.set_extra_child(box)
+
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("remove", "Remove")
+        dialog.set_response_appearance("remove", Adw.ResponseAppearance.DESTRUCTIVE)
+        dialog.set_default_response("cancel")
+        dialog.set_close_response("cancel")
+        dialog.connect("response", self._on_remove_worktree_response, wt, force_check)
+        dialog.present(self)
+
+    def _on_remove_worktree_response(self, _dialog, response, wt, force_check):
+        if response != "remove":
+            return
+        force = force_check.get_active()
+        parent = worktree_parent_root(wt)
+        if parent is None:  # no longer a linked worktree — just drop it from the list
+            self.registry.unregister_project(wt)
+            self._load_projects()
+            return
+
+        def worker():
+            error = None
+            try:
+                GitService(parent).remove_worktree(wt, force=force)
+            except Exception as exc:  # noqa: BLE001
+                error = str(exc)
+            GLib.idle_add(self._on_worktree_removed, wt, error)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_worktree_removed(self, wt: str, error: str | None):
+        if error:
+            ToastService.show_error(f"Could not remove worktree: {error}")
+            return False
+        self.registry.unregister_project(wt)
+        self._load_projects()
+        ToastService.show("Worktree removed")
+        return False
 
     # ------------------------------------------------------------------
     # New project (pick folder -> name -> git init -> register + open)

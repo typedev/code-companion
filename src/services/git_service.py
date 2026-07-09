@@ -587,6 +587,56 @@ class GitService:
         result = self._run_git(["rev-parse", "HEAD"])
         return result.stdout.strip() if result.returncode == 0 else ""
 
+    def add_worktree(self, worktree_path: str, branch: str, base: str | None = None) -> None:
+        """Create a linked worktree at ``worktree_path`` on a new ``branch`` (Stage 3).
+
+        Runs in the parent repo. Raises ``RuntimeError`` with git's message on failure.
+        """
+        args = ["worktree", "add", "-b", branch, str(worktree_path)]
+        if base:
+            args.append(base)
+        result = self._run_git(args, timeout=60)
+        if result.returncode != 0:
+            raise RuntimeError(result.stderr.strip() or "git worktree add failed")
+
+    def remove_worktree(self, worktree_path: str, force: bool = False) -> None:
+        """Remove a linked worktree. Git refuses a dirty worktree unless ``force``."""
+        args = ["worktree", "remove"]
+        if force:
+            args.append("--force")
+        args.append(str(worktree_path))
+        result = self._run_git(args, timeout=60)
+        if result.returncode != 0:
+            raise RuntimeError(result.stderr.strip() or "git worktree remove failed")
+
+    def list_worktrees(self) -> list[dict]:
+        """Parse ``git worktree list --porcelain`` into dicts (path/branch/head/…)."""
+        result = self._run_git(["worktree", "list", "--porcelain"])
+        if result.returncode != 0:
+            return []
+        entries: list[dict] = []
+        cur: dict = {}
+        for line in result.stdout.splitlines():
+            if not line.strip():
+                if cur:
+                    entries.append(cur)
+                    cur = {}
+                continue
+            key, _, val = line.partition(" ")
+            if key == "worktree":
+                cur["path"] = val
+            elif key == "branch":
+                cur["branch"] = val.replace("refs/heads/", "")
+            elif key == "HEAD":
+                cur["head"] = val
+            elif key == "bare":
+                cur["bare"] = True
+            elif key == "detached":
+                cur["detached"] = True
+        if cur:
+            entries.append(cur)
+        return entries
+
     def get_commits_in_range(self, since: datetime, until: datetime,
                              limit: int = 200) -> list[GitCommit]:
         """Commits whose commit date falls in [since, until] on the current branch.

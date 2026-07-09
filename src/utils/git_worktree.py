@@ -8,7 +8,14 @@ those locations by reading the pointer files — no subprocess needed.
 """
 from __future__ import annotations
 
+import re
 from pathlib import Path
+
+
+def slugify(text: str) -> str:
+    """A branch/path-safe slug from a task name, e.g. 'Add login!' -> 'add-login'."""
+    slug = re.sub(r"[^a-z0-9]+", "-", text.strip().lower()).strip("-")
+    return slug or "worktree"
 
 
 def is_linked_worktree(path: str | Path) -> bool:

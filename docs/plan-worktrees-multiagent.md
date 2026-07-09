@@ -110,18 +110,25 @@ below ("All projects")**, as sections in one `Gtk.ListBox`.
       (skip `is_linked_worktree` paths) — surgical, leaves `resolve_project_identity`
       untouched (mailbox identity unaffected). A test documents the id collision.
 
-## Stage 3 — Worktree lifecycle & provisioning
+## Stage 3 — Worktree lifecycle & provisioning — DONE
 
-- [ ] Registry model: extend `ProjectRegistry` with
-      `worktrees: {parent_path: [{path, name, branch}]}` (+ migration). Helpers:
-      `get_worktrees`, `is_worktree`, `get_parent_project`.
-- [ ] **New Worktree** dialog from the parent card's ⋮ menu: one input = task name
-      → derived branch `feature/<slug>` (editable) + sibling path `<parent>--<slug>`
-      (editable). On confirm, a background pipeline (`git worktree add -b …`) with
-      per-step progress; on success register + optionally open its window.
-- [ ] **Remove Worktree** (from the worktree row's ⋮): refuses if dirty or has
-      unpushed/unmerged commits unless the user confirms a destructive override;
-      then `git worktree remove` + optional branch delete + unregister.
+**Registry-model decision:** the separate `worktrees: {parent: [...]}` structure
+from the original roadmap is **skipped** — a worktree is registered as a normal
+project (opens in its own window, gets MRU/live-grouping for free) and the
+parent↔worktree relationship is **derived** from the filesystem via the Stage 2
+helpers (`is_linked_worktree` / `worktree_parent_root`). No schema change, no
+migration, always accurate. Stage 4 nesting groups by the derived parent.
+
+- [x] `GitService.add_worktree` / `remove_worktree` / `list_worktrees` (git CLI);
+      `slugify` in `git_worktree.py`. `tests/test_git_worktree_ops.py` (4).
+- [x] **New Worktree** from the parent card ⋮: dialog derives branch `feature/<slug>`
+      + sibling path `<parent>--<slug>` from the task name (both editable; auto-fill
+      stops once you edit them). Background `add_worktree` → register + optionally
+      open its window. Live smoke: dialog builds + derive correct.
+- [x] **Remove Worktree** from the worktree card ⋮ (`is_linked_worktree` swaps the
+      menu item): confirm dialog with a "Force" option (git refuses a dirty worktree
+      otherwise); background `remove_worktree` → unregister. Branch is kept
+      (it's merged/deleted via the Stage 5 flow).
 
 ## Stage 4 — PM as mission control (worktree visibility)
 
