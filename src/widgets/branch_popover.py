@@ -155,6 +155,15 @@ class BranchPopover(Gtk.Popover):
             delete_btn.add_css_class("flat")
             delete_btn.connect("clicked", self._on_delete_clicked, name)
             box.append(delete_btn)
+        elif is_remote and not name.endswith("/HEAD"):
+            # Remote branch (not the origin/HEAD symref): offer to check it out as a
+            # local tracking branch.
+            checkout_btn = Gtk.Button()
+            checkout_btn.set_icon_name("folder-download-symbolic")
+            checkout_btn.set_tooltip_text("Check out as local tracking branch")
+            checkout_btn.add_css_class("flat")
+            checkout_btn.connect("clicked", self._on_checkout_remote_clicked, name)
+            box.append(checkout_btn)
 
         row.set_child(box)
         return row
@@ -211,6 +220,16 @@ class BranchPopover(Gtk.Popover):
         try:
             self.service.switch_branch(branch_name)
             ToastService.show(f"Switched to: {branch_name}")
+            self.popdown()
+            self.emit("branch-switched")
+        except Exception as e:
+            ToastService.show_error(str(e))
+
+    def _on_checkout_remote_clicked(self, button, remote_branch: str):
+        """Check out a remote branch (e.g. origin/feature) as a local tracking branch."""
+        try:
+            local = self.service.checkout_remote_tracking(remote_branch)
+            ToastService.show(f"Checked out: {local}")
             self.popdown()
             self.emit("branch-switched")
         except Exception as e:
