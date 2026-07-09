@@ -628,6 +628,21 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
         icon.set_valign(Gtk.Align.CENTER)
         header.append(icon)
 
+        # Session summary button — on the LEFT (after the icon) so the live dot on
+        # the right lines up vertically across all cards. Shown only when a summary
+        # exists for this project.
+        summary_button = Gtk.Button(icon_name="cc-file-symbolic")
+        summary_button.add_css_class("flat")
+        summary_button.set_valign(Gtk.Align.CENTER)
+        summary_button.set_tooltip_text("Last session summary")
+        summary_button.connect("clicked", self._on_summary_clicked, str(path))
+        header.append(summary_button)
+        row.summary_button = summary_button
+        pid = self._cached_project_id(str(path))
+        summary_button.set_visible(
+            session_summary_service.load(str(path), project_id=pid) is not None
+        )
+
         # Name + path
         text_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
         text_box.set_valign(Gtk.Align.CENTER)
@@ -658,19 +673,6 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
         live_indicator.set_visible(False)
         header.append(live_indicator)
         row.live_indicator = live_indicator
-
-        # Session summary button — shown only when a summary exists for this project.
-        summary_button = Gtk.Button(icon_name="cc-file-symbolic")
-        summary_button.add_css_class("flat")
-        summary_button.set_valign(Gtk.Align.CENTER)
-        summary_button.set_tooltip_text("Last session summary")
-        summary_button.connect("clicked", self._on_summary_clicked, str(path))
-        header.append(summary_button)
-        row.summary_button = summary_button
-        pid = self._cached_project_id(str(path))
-        summary_button.set_visible(
-            session_summary_service.load(str(path), project_id=pid) is not None
-        )
 
         # Overflow menu (⋮): rename / remove and future per-project actions.
         menu_button = Gtk.MenuButton(icon_name="view-more-symbolic")
