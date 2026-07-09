@@ -254,22 +254,64 @@ class GitChangesPanel(Gtk.Box):
         actions_box.set_margin_end(12)
         actions_box.set_margin_bottom(12)
 
-        # Commit message entry
-        self.commit_entry = Gtk.Entry()
-        self.commit_entry.set_placeholder_text("Commit message...")
-        self.commit_entry.connect("changed", self._on_commit_entry_changed)
-        self.commit_entry.connect("activate", self._on_commit_clicked)
-        actions_box.append(self.commit_entry)
+        # Commit message: multi-line text view (Ctrl+Enter commits)
+        commit_scroller = Gtk.ScrolledWindow()
+        commit_scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        commit_scroller.set_min_content_height(52)
+        commit_scroller.set_max_content_height(120)
+        commit_scroller.add_css_class("card")
+
+        self.commit_view = Gtk.TextView()
+        self.commit_view.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
+        self.commit_view.set_top_margin(4)
+        self.commit_view.set_bottom_margin(4)
+        self.commit_view.set_left_margin(6)
+        self.commit_view.set_right_margin(6)
+        self.commit_buffer = self.commit_view.get_buffer()
+        self.commit_buffer.connect("changed", self._on_commit_entry_changed)
+        commit_scroller.set_child(self.commit_view)
+
+        # Placeholder overlay (Gtk.TextView has no native placeholder text).
+        commit_overlay = Gtk.Overlay()
+        commit_overlay.set_child(commit_scroller)
+        self._commit_placeholder = Gtk.Label(label="Commit message…")
+        self._commit_placeholder.add_css_class("dim-label")
+        self._commit_placeholder.set_halign(Gtk.Align.START)
+        self._commit_placeholder.set_valign(Gtk.Align.START)
+        self._commit_placeholder.set_margin_top(4)
+        self._commit_placeholder.set_margin_start(8)
+        self._commit_placeholder.set_can_target(False)
+        commit_overlay.add_overlay(self._commit_placeholder)
+        actions_box.append(commit_overlay)
+
+        # Ctrl+Enter commits (LOCAL scope so it won't interfere with dialogs).
+        commit_shortcuts = Gtk.ShortcutController()
+        commit_shortcuts.set_scope(Gtk.ShortcutScope.LOCAL)
+        commit_shortcuts.add_shortcut(Gtk.Shortcut(
+            trigger=Gtk.ShortcutTrigger.parse_string("<Control>Return"),
+            action=Gtk.CallbackAction.new(lambda *a: (self._on_commit_clicked(), True)[1]),
+        ))
+        self.commit_view.add_controller(commit_shortcuts)
 
         # Buttons row - use hexpand instead of homogeneous for flexible sizing
         buttons_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
 
-        self.commit_btn = Gtk.Button(label="Commit")
+        # Commit is a split button: primary = commit, menu = amend last commit.
+        commit_menu = Gio.Menu()
+        commit_menu.append("Amend last commit…", "gitcommit.amend")
+        self.commit_btn = Adw.SplitButton()
+        self.commit_btn.set_label("Commit")
         self.commit_btn.add_css_class("suggested-action")
-        self.commit_btn.set_sensitive(False)
         self.commit_btn.set_hexpand(True)
+        self.commit_btn.set_menu_model(commit_menu)
         self.commit_btn.connect("clicked", self._on_commit_clicked)
         buttons_box.append(self.commit_btn)
+
+        commit_actions = Gio.SimpleActionGroup()
+        amend_action = Gio.SimpleAction.new("amend", None)
+        amend_action.connect("activate", lambda a, p: self._on_amend_clicked())
+        commit_actions.add_action(amend_action)
+        self.insert_action_group("gitcommit", commit_actions)
 
         # Push is a split button: primary = normal push, menu = force / upstream.
         push_menu = Gio.Menu()
@@ -715,25 +757,35 @@ class GitChangesPanel(Gtk.Box):
 
         run_async(self, worker=work, on_done=done, on_error=err, key="mutate")
 
-    def _on_commit_entry_changed(self, entry):
-        """Handle commit message entry change."""
+    def _commit_message(self) -> str:
+        """The trimmed commit-message text from the multi-line view."""
+        buf = self.commit_buffer
+        return buf.get_text(buf.get_start_iter(), buf.get_end_iter(), False).strip()
+
+    def _clear_commit_message(self):
+        self.commit_buffer.set_text("")
+
+    def _on_commit_entry_changed(self, *args):
+        """Toggle the placeholder and refresh button state on message edits."""
+        self._commit_placeholder.set_visible(self.commit_buffer.get_char_count() == 0)
         self._update_commit_button()
 
     def _update_commit_button(self):
-        """Enable Commit only with staged changes + a message, and not mid-op.
+        """Keep Commit clickable except mid-op.
 
-        Reads the cached ``_has_staged`` (set on each refresh) instead of
-        scanning the content widgets, which raced the async refresh.
+        The button stays enabled (so the Amend menu is always reachable, including a
+        message-only amend); an empty message or an empty stage is reported via a toast
+        / the backend error rather than a disabled button.
         """
-        has_message = bool(self.commit_entry.get_text().strip())
-        self.commit_btn.set_sensitive(self._has_staged and has_message and not self._busy)
+        self.commit_btn.set_sensitive(not self._busy)
 
     def _on_commit_clicked(self, *args):
         """Handle commit button click (off-thread; the busy guard blocks double-commits)."""
         if self._busy:
             return
-        message = self.commit_entry.get_text().strip()
+        message = self._commit_message()
         if not message:
+            self._show_toast("Enter a commit message")
             return
         self._set_busy(True)
 
@@ -742,13 +794,67 @@ class GitChangesPanel(Gtk.Box):
 
         def done(commit_hash):
             self._set_busy(False)
-            self.commit_entry.set_text("")
+            self._clear_commit_message()
             self._show_toast(f"Committed: {commit_hash}")
             self.refresh()
 
         def err(e):
             self._set_busy(False)
             self._show_error(f"Commit failed: {e}")
+
+        run_async(self, worker=work, on_done=done, on_error=err, key="mutate")
+
+    def _on_amend_clicked(self):
+        """Amend HEAD with the message in the box (prefill it from HEAD if empty)."""
+        if self._busy:
+            return
+        message = self._commit_message()
+        if not message:
+            last = self.service.get_head_message()
+            if last:
+                self.commit_buffer.set_text(last)
+                self._show_toast("Loaded last commit message — edit, then Amend again")
+            else:
+                self._show_error("No commit to amend")
+            return
+        # Rewriting an already-pushed commit needs a force-push afterwards → confirm.
+        if self.service.has_upstream() and self.service.get_ahead_behind()[0] == 0:
+            self._confirm_amend(message)
+        else:
+            self._do_amend(message)
+
+    def _confirm_amend(self, message: str):
+        dialog = Adw.AlertDialog()
+        dialog.set_heading("Amend a pushed commit?")
+        dialog.set_body(
+            "HEAD appears to be already pushed. Amending rewrites history; you'll need "
+            "a force-push (with lease) to update the remote."
+        )
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("amend", "Amend")
+        dialog.set_response_appearance("amend", Adw.ResponseAppearance.DESTRUCTIVE)
+        dialog.set_close_response("cancel")
+        dialog.connect(
+            "response",
+            lambda _d, r: self._do_amend(message) if r == "amend" else None,
+        )
+        dialog.present(self.get_root())
+
+    def _do_amend(self, message: str):
+        self._set_busy(True)
+
+        def work():
+            return self.service.amend_commit(message)
+
+        def done(commit_hash):
+            self._set_busy(False)
+            self._clear_commit_message()
+            self._show_toast(f"Amended: {commit_hash}")
+            self.refresh()
+
+        def err(e):
+            self._set_busy(False)
+            self._show_error(f"Amend failed: {e}")
 
         run_async(self, worker=work, on_done=done, on_error=err, key="mutate")
 

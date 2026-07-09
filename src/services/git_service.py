@@ -286,6 +286,11 @@ class GitService:
             raise RuntimeError(result.stderr.strip() or result.stdout.strip() or "Amend failed")
         return self._run_git(["rev-parse", "--short", "HEAD"]).stdout.strip()
 
+    def get_head_message(self) -> str:
+        """Return the full message of HEAD (for prefilling an amend), or ''."""
+        result = self._run_git(["log", "-1", "--pretty=%B"])
+        return result.stdout.strip() if result.returncode == 0 else ""
+
     def get_diff(self, path: str, staged: bool = False) -> tuple[str, str]:
         """
         Get diff for a file.
