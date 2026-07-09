@@ -52,18 +52,30 @@ def read_markers() -> dict[str, dict]:
 
 
 def hook_settings(session_name: str) -> dict:
-    """A Claude Code ``--settings`` payload: a Notification hook that atomically
-    writes the event JSON to this session's marker file (no jq dependency)."""
+    """A Claude Code ``--settings`` payload driving this session's marker file.
+
+    - ``Notification`` writes the event JSON to the marker (Claude is waiting).
+    - ``UserPromptSubmit`` / ``Stop`` remove it — the user has answered or Claude
+      resumed, so the "needs attention" state is over. Without these clear hooks
+      the marker (and the PM's amber dot) would stick until the session dies.
+
+    Marker writes are atomic (tmp + ``mv``); clears are idempotent (``rm -f``).
+    No ``jq`` dependency.
+    """
     marker = str(marker_path(session_name))
     tmp = marker + ".tmp"
-    command = (
+    write_cmd = (
         f"mkdir -p {shlex.quote(str(notify_dir()))} && "
         f"cat > {shlex.quote(tmp)} && mv {shlex.quote(tmp)} {shlex.quote(marker)}"
     )
+    clear_cmd = f"rm -f {shlex.quote(marker)} {shlex.quote(tmp)}"
+    clear_hook = [{"hooks": [{"type": "command", "command": clear_cmd}]}]
     return {
         "hooks": {
             "Notification": [
-                {"matcher": "", "hooks": [{"type": "command", "command": command}]}
-            ]
+                {"matcher": "", "hooks": [{"type": "command", "command": write_cmd}]}
+            ],
+            "UserPromptSubmit": clear_hook,
+            "Stop": clear_hook,
         }
     }
