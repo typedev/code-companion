@@ -432,13 +432,21 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
         return label
 
     def _on_active_changed(self, *_args):
-        """When the manager regains focus, re-read open times and re-sort in place."""
+        """When the manager regains focus: pick up worktrees/projects registered in
+        another process, else just re-read open times and re-sort in place."""
         if not self.get_property("is-active"):
             return
         rows = getattr(self, "_rows_by_path", None)
-        if not rows:
+        if rows is None:
             return
-        for entry in self.registry.get_projects():
+        entries = self.registry.get_projects()
+        registered = {str(Path(e["path"]).resolve()) for e in entries}
+        if registered != set(rows.keys()):
+            # A worktree/project was registered (or removed) elsewhere while the PM
+            # was in the background — rebuild the list to reflect it.
+            self._load_projects()
+            return
+        for entry in entries:
             row = rows.get(str(Path(entry["path"]).resolve()))
             if row is not None:
                 row.last_opened = ProjectRegistry.last_opened_epoch(entry)

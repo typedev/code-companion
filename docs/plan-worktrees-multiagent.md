@@ -85,7 +85,9 @@ below ("All projects")**, as sections in one `Gtk.ListBox`.
       something is live). `_load_projects` reads `get_projects()` + stamps `row.last_opened`.
 - [x] `_refresh_live_indicators` stamps `row.is_live`/`is_attention` and re-groups
       (`invalidate_sort`/`invalidate_headers`) **only when the working set changed** —
-      never on the bare 4s dot tick. Focus (`notify::is-active`) re-reads open times.
+      never on the bare 4s dot tick. Focus (`notify::is-active`) re-reads open times,
+      and **rebuilds the list when the registered set changed** (picks up a worktree
+      created in another process, e.g. via MCP `create_worktree`).
 - [x] "Working" = a live tmux Claude session (`claude_session.live_session_names()`),
       so a backgrounded agent (window closed) stays on top. Tests:
       `tests/test_project_registry_mru.py` (5) + live GTK grouping smoke. DONE.
