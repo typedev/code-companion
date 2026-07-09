@@ -9,6 +9,7 @@ from ..services import GitService, GitFileStatus, FileStatus, ToastService, File
 from ..services.icon_cache import IconCache
 from ..utils import git_auth
 from .branch_popover import BranchPopover
+from .stash_popover import StashPopover
 
 
 # CSS classes for git status colors
@@ -224,6 +225,16 @@ class GitChangesPanel(Gtk.Box):
         self.branch_btn.set_popover(self.branch_popover)
 
         header_box.append(self.branch_btn)
+
+        # Stash button with popover (create / pop / drop)
+        self.stash_btn = Gtk.MenuButton()
+        self.stash_btn.set_icon_name("edit-cut-symbolic")
+        self.stash_btn.add_css_class("flat")
+        self.stash_btn.set_tooltip_text("Stash")
+        self.stash_popover = StashPopover(self.service)
+        self.stash_popover.connect("stash-changed", lambda _p: self.refresh())
+        self.stash_btn.set_popover(self.stash_popover)
+        header_box.append(self.stash_btn)
 
         # Refresh button
         refresh_btn = Gtk.Button()

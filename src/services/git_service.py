@@ -795,6 +795,49 @@ class GitService:
         )
         return result.returncode == 0
 
+    # -- stash (git CLI) --------------------------------------------------- #
+    def stash_save(self, message: str = "", include_untracked: bool = False) -> None:
+        """Stash the working tree. Raises if there is nothing to stash."""
+        args = ["stash", "push"]
+        if include_untracked:
+            args.append("--include-untracked")
+        if message:
+            args += ["-m", message]
+        result = self._run_git(args)
+        if result.returncode != 0:
+            raise RuntimeError(result.stderr.strip() or result.stdout.strip() or "Stash failed")
+        if "No local changes to save" in result.stdout:
+            raise RuntimeError("No local changes to stash.")
+
+    def stash_list(self) -> list[dict]:
+        """Return stashes newest-first as ``{ref, message, relative}`` dicts."""
+        result = self._run_git(["stash", "list", "--format=%gd%x1f%gs%x1f%cr"])
+        if result.returncode != 0:
+            return []
+        out = []
+        for line in result.stdout.splitlines():
+            if not line:
+                continue
+            parts = line.split("\x1f")
+            out.append({
+                "ref": parts[0],
+                "message": parts[1] if len(parts) > 1 else parts[0],
+                "relative": parts[2] if len(parts) > 2 else "",
+            })
+        return out
+
+    def stash_pop(self, ref: str = "stash@{0}") -> None:
+        """Apply and remove a stash (may raise on conflict)."""
+        result = self._run_git(["stash", "pop", ref])
+        if result.returncode != 0:
+            raise RuntimeError(result.stderr.strip() or result.stdout.strip() or "Stash pop failed")
+
+    def stash_drop(self, ref: str = "stash@{0}") -> None:
+        """Delete a stash without applying it."""
+        result = self._run_git(["stash", "drop", ref])
+        if result.returncode != 0:
+            raise RuntimeError(result.stderr.strip() or result.stdout.strip() or "Stash drop failed")
+
     def delete_branch(self, name: str, force: bool = False) -> None:
         """Delete a branch.
 

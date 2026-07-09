@@ -79,6 +79,32 @@ def test_switch_branch_changes_head_and_errors_clearly(tmp_path):
         svc.switch_branch("no-such-branch")
 
 
+def test_stash_lifecycle(tmp_path):
+    path, svc = _repo(tmp_path)
+    (path / "README.md").write_text("changed\n", encoding="utf-8")
+    assert svc.has_uncommitted_changes() is True
+
+    svc.stash_save("my wip")
+    assert svc.has_uncommitted_changes() is False  # tree clean after stash
+    stashes = svc.stash_list()
+    assert len(stashes) == 1 and "my wip" in stashes[0]["message"]
+
+    svc.stash_pop(stashes[0]["ref"])
+    assert svc.has_uncommitted_changes() is True  # restored
+
+    svc.stash_save("again")
+    refs = svc.stash_list()
+    assert len(refs) == 1
+    svc.stash_drop(refs[0]["ref"])
+    assert svc.stash_list() == []
+
+
+def test_stash_save_nothing_raises(tmp_path):
+    _, svc = _repo(tmp_path)
+    with pytest.raises(RuntimeError, match="No local changes"):
+        svc.stash_save()
+
+
 def test_has_upstream(tmp_path):
     bare = make_bare(tmp_path)
     path, svc = _repo(tmp_path, remote=str(bare))
