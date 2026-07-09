@@ -67,6 +67,7 @@ _BADGE_CSS = b"""
 .cc-badge-pr     { background: alpha(#2ec27e, 0.18); color: #26a269; }
 .cc-badge-issue  { background: alpha(@accent_color, 0.20); color: @accent_color; }
 .cc-badge-message { background: alpha(#3584e4, 0.20); color: #1c71d8; }
+.cc-badge-missing { background: alpha(#e01b24, 0.20); color: #c01c28; }
 .cc-badge-local  { background: alpha(@theme_fg_color, 0.10); color: alpha(@theme_fg_color, 0.55); }
 .cc-badge-synced   { background: alpha(#33d17a, 0.18); color: #26a269; }
 .cc-badge-conflict { background: alpha(#e01b24, 0.22); color: #c01c28; }
@@ -293,18 +294,23 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
             self._update_latest_refresh_label()
             return
 
-        existing = [Path(p) for p in projects if Path(p).exists()]
-        for path in existing:
+        # Show every registered project; missing ones are marked (not hidden) and
+        # sink to the bottom so the user can see and remove them.
+        all_paths = [Path(p) for p in projects]
+        present = [p for p in all_paths if p.exists()]
+        present_set = set(present)
+        for path in [*present, *(p for p in all_paths if p not in present_set)]:
             row = self._create_project_row(path)
             self.project_list.append(row)
             self._rows_by_path[str(path.resolve())] = row
             # Render any cached network status immediately (survives reopen).
-            cached = self.status_service.get_cached_remote(str(path))
-            if cached:
-                self._render_remote_badges(row, cached)
+            if path in present_set:
+                cached = self.status_service.get_cached_remote(str(path))
+                if cached:
+                    self._render_remote_badges(row, cached)
 
         self._update_latest_refresh_label()
-        self._start_local_scan(existing)
+        self._start_local_scan(present)
         self._refresh_live_indicators()
         if hasattr(self, "_msg_seen"):  # guard: _load_projects may run before init finishes
             self._scan_messages()
@@ -443,6 +449,9 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
         row = Gtk.ListBoxRow()
         row.add_css_class("project-card")
         row.project_path = str(path)
+        row.is_missing = not path.exists()
+        if row.is_missing:
+            row.add_css_class("dim-label")  # dim the whole card
 
         # Card is two rows: a header (identity + actions) over a git-status row.
         outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
@@ -453,8 +462,10 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
 
         header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=14)
 
-        # Folder icon (larger)
-        icon = Gtk.Image.new_from_icon_name("folder-symbolic")
+        # Folder icon (larger) — a warning glyph when the folder is gone.
+        icon = Gtk.Image.new_from_icon_name(
+            "dialog-warning-symbolic" if row.is_missing else "folder-symbolic"
+        )
         icon.set_pixel_size(32)
         icon.set_valign(Gtk.Align.CENTER)
         header.append(icon)
@@ -522,6 +533,11 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
         row.remote_badges = None
         row.sync_badges = None
         row.message_badges = None
+        if row.is_missing:
+            badges.append(
+                self._make_badge("cc-badge-missing", "Folder not found on disk",
+                                 text="not found")
+            )
         outer.append(badges)
 
         row.set_child(outer)
@@ -1770,6 +1786,10 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
 
     def _open_project(self, project_path: str, force: bool = False):
         """Open a project in a new process."""
+        if not Path(project_path).is_dir():
+            ToastService.show_error(f"Folder not found: {project_path}")
+            return
+
         # Check if project is already open via lock file
         from .services.project_lock import ProjectLock
 
