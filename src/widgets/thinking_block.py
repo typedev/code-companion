@@ -1,6 +1,6 @@
 """Collapsible thinking block widget."""
 
-from gi.repository import Adw, Gtk, GLib
+from gi.repository import Gtk
 
 
 class ThinkingBlock(Gtk.Box):

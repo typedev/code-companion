@@ -29,3 +29,8 @@ dev = [
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]
+
+[tool.ruff.lint]
+# E402 (module-level import not at top) is unavoidable in PyGObject code: every GTK
+# module must call gi.require_version(...) before `from gi.repository import ...`.
+ignore = ["E402"]

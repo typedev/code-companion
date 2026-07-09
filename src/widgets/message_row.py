@@ -1,6 +1,6 @@
 """Message row widget for displaying a single conversation message."""
 
-from gi.repository import Gtk, GLib
+from gi.repository import Gtk
 
 from ..models import Message, MessageRole, ContentType
 from .thinking_block import ThinkingBlock

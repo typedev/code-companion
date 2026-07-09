@@ -59,8 +59,6 @@ def decode_project_path(encoded: str) -> str:
             current_part = part
         else:
             # Neither exists yet, prefer combining (might be deep path)
-            # Check if parent of combined exists
-            parent_combined = "/" + "/".join(result_parts + [candidate.rsplit("-", 1)[0]]) if "-" in candidate else ""
             parent_separate = "/" + "/".join(result_parts + [current_part])
 
             if parent_separate and Path(parent_separate).exists():

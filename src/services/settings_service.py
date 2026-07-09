@@ -1,7 +1,6 @@
 """Settings service for application-wide configuration."""
 
 import json
-from pathlib import Path
 from typing import Any
 
 import gi

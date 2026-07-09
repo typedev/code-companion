@@ -1,7 +1,7 @@
 """Markdown rendering widget using Pango markup and GtkSourceView for code blocks."""
 
 import re
-from gi.repository import Gtk, Pango, GLib
+from gi.repository import Gtk, GLib
 
 from .code_view import CodeView
 

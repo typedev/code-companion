@@ -5,7 +5,7 @@ import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("GtkSource", "5")
 
-from gi.repository import Gtk, GtkSource, GObject, Pango
+from gi.repository import Gtk, GtkSource, GObject
 
 # libspelling (Spelling-1 typelib) is optional: on systems where it isn't
 # installed the editor still works, just without spell checking.
@@ -54,7 +54,7 @@ def list_simple_languages() -> list[tuple[str, str]]:
     result: list[tuple[str, str]] = []
     for base, langs in by_base.items():
         preferred = _PREFERRED_LOCALES.get(base)
-        chosen = next((l for l in langs if l.get_code() == preferred), langs[0])
+        chosen = next((lang for lang in langs if lang.get_code() == preferred), langs[0])
         result.append((chosen.get_code(), _simple_language_name(chosen.get_name())))
 
     result.sort(key=lambda item: item[1])

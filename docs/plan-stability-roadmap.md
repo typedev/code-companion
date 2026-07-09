@@ -5,7 +5,9 @@ complete** (5.2/5.3/5.4/5.5; go-to-symbol deferred to Phase 8) and **Phase 3 non
 (3.8 single status source + binary/rename, 3.5 push dialogs + force-with-lease, 3.7 libsecret credentials)
 done & tested (2026-07-08). **Remaining:** Phase 4 (git features: clone/stash/amend/merge/force-push UI/…),
 the deferred merge-UI cluster (3.1-merge/3.6/3.9 + 4.4), Phase 6 (worktrees), Phase 8 (agent observability).
-Phase 3 leftover: 3.9 branch-switch safety (tied to 4.2 stash); askpass-temp cleanup (tiny follow-up).
+Phase 3 leftover: 3.9 branch-switch safety (tied to 4.2 stash). (Coordination hub — cross-project
+catalog + synced inter-project messages, `memory/project_coordination_hub.md` — also shipped since.)
+askpass-temp cleanup done (`git_service._cleanup_askpass`, 2026-07-08).
 **Based on**: 4-track reliability audit + worktree architecture research (2026-07-06)
 **Code references**: valid as of commit `ef69c77` — line numbers may drift, symbol names are stable.
 

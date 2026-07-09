@@ -373,7 +373,6 @@ class IconCache:
         "output": "dist",
         "build": "dist",
         "builds": "dist",
-        "bin": "dist",
         "target": "target",
         "release": "dist",
         "debug": "dist",

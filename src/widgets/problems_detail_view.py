@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from gi.repository import Gtk, GObject, Gdk, GLib, GtkSource
+from gi.repository import Gtk, Gdk, GtkSource
 
 from ..services import FileProblems, Problem, SettingsService
 

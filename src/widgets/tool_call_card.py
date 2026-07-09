@@ -1,6 +1,6 @@
 """Tool call card widget with expandable content."""
 
-from gi.repository import Gtk, GLib
+from gi.repository import Gtk
 
 from ..models import TOOL_ICONS, DEFAULT_TOOL_ICON
 from .code_view import CodeView, DiffView

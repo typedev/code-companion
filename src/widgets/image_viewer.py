@@ -11,7 +11,7 @@ import gi
 
 gi.require_version("GdkPixbuf", "2.0")
 
-from gi.repository import Gtk, Gdk, GdkPixbuf, Gio, GLib, GObject, Graphene
+from gi.repository import Gtk, Gdk, GdkPixbuf, GLib, Graphene
 
 from ..services import SettingsService
 

@@ -5,8 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from ..models import (
-    Project, Session, Message, MessageRole, ContentBlock, ContentType, ToolCall,
-    SessionContent,
+    Project, Session, Message, MessageRole, ContentBlock, ContentType, SessionContent,
 )
 from ..utils import encode_project_path
 

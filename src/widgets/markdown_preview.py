@@ -6,7 +6,7 @@ import gi
 
 gi.require_version("WebKit", "6.0")
 
-from gi.repository import Gtk, WebKit, GLib
+from gi.repository import Gtk, WebKit
 import mistune
 
 from ..services import SettingsService

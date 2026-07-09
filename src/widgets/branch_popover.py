@@ -1,6 +1,6 @@
 """Branch management popover widget."""
 
-from gi.repository import Gtk, GObject, Adw, GLib
+from gi.repository import Gtk, GObject, Adw
 
 from ..services import GitService, ToastService
 

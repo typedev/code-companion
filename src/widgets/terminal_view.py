@@ -8,7 +8,7 @@ import gi
 
 gi.require_version("Vte", "3.91")
 
-from gi.repository import Vte, Gtk, GLib, Gdk, Gio, Pango, GObject
+from gi.repository import Vte, Gtk, GLib, Gdk, Pango, GObject
 
 from ..services import ToastService, SettingsService
 
@@ -205,7 +205,6 @@ class TerminalView(Gtk.Box):
             return
 
         # Build regex flags
-        import re
         flags = 0
         if not self.case_btn.get_active():
             flags |= GLib.RegexCompileFlags.CASELESS

@@ -252,7 +252,7 @@ Session files are JSONL with event types: `user`, `assistant`, `tool_use`, `tool
   - Markdown preview with WebKit (highlight.js for code blocks)
   - Preview toggle button in toolbar for .md files
   - Theme-aware preview (light/dark)
-  - TODO: Editor search/replace (see `docs/TODO-editor-search.md`)
+  - Editor find/replace: Ctrl+F search bar (case/word/regex, match counter) + Ctrl+H replace
 - [x] v0.7.5: Git-Centric Project Manager:
   - Per-project git status badges: dirty ●, ahead ↑N, behind ↓N, PR count, Issue count
   - Local markers (repo/remote/dirty/ahead) auto-computed in background thread

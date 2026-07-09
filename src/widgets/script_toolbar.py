@@ -357,12 +357,10 @@ class ScriptToolbar(Gtk.Box):
 
         # Find the item that contains this line
         # (the last item whose line <= cursor_line)
-        selected_item = None
         selected_index = -1
 
         for i, item in enumerate(self._outline_items):
             if item.line <= cursor_line:
-                selected_item = item
                 selected_index = i
             else:
                 break

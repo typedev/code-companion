@@ -6,7 +6,7 @@ import gi
 
 gi.require_version("GtkSource", "5")
 
-from gi.repository import Gtk, GtkSource, GLib, GObject, Pango, Adw, Gdk
+from gi.repository import Gtk, GtkSource, GLib, GObject, Adw, Gdk
 
 from .code_view import get_language_for_file
 from .script_toolbar import ScriptToolbar
@@ -528,7 +528,6 @@ class FileEditor(Gtk.Box):
         # Font
         font_family = self.settings.get("editor.font_family", "Monospace")
         font_size = self.settings.get("editor.font_size", 12)
-        font_desc = Pango.FontDescription.from_string(f"{font_family} {font_size}")
         self.source_view.set_monospace(True)
 
         # Apply font via CSS (more reliable for GtkSourceView)

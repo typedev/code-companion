@@ -43,6 +43,25 @@ def test_push_rejected_raises(diverged):
         svc.push()
 
 
+def test_cleanup_askpass_removes_temp_script(tmp_path):
+    """The temp GIT_ASKPASS helper must be deleted after a git op (no /tmp leak)."""
+    repo = tmp_path / "r"
+    repo.mkdir()
+    git(repo, "init", "-q")
+    svc = GitService(repo)
+
+    script = tmp_path / "git_askpass_x.sh"
+    script.write_text("#!/bin/bash\n", encoding="utf-8")
+    svc._askpass_script = str(script)
+
+    svc._cleanup_askpass()
+    assert not script.exists()
+    assert svc._askpass_script is None
+
+    # Idempotent: a second call with nothing to clean is a no-op.
+    svc._cleanup_askpass()
+
+
 def test_force_with_lease_refuses_when_lease_stale(diverged):
     # b never fetched the remote's c2, so its lease (origin/main) is stale;
     # --force-with-lease must refuse rather than clobber c2.

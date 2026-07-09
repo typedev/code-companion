@@ -1,5 +1,6 @@
 """Git service using pygit2 for repository operations."""
 
+import os
 import subprocess
 from dataclasses import dataclass
 from datetime import datetime
@@ -428,6 +429,8 @@ class GitService:
             raise RuntimeError("Pull timed out")
         except FileNotFoundError:
             raise RuntimeError("git command not found")
+        finally:
+            self._cleanup_askpass()
 
     @staticmethod
     def _is_rejected_push(error: str) -> bool:
@@ -512,6 +515,8 @@ class GitService:
             raise RuntimeError("Push timed out")
         except FileNotFoundError:
             raise RuntimeError("git command not found")
+        finally:
+            self._cleanup_askpass()
 
     def get_file_status_map(self) -> dict[str, FileStatus]:
         """Get a map of path -> status for FileTree indicators (single source)."""
@@ -972,10 +977,20 @@ class GitService:
         if not credentials and remote_url.lower().startswith(("http://", "https://")):
             credentials = self._get_stored_credentials(remote_url)
         env, askpass_path = git_auth.build_auth_env(remote_url, credentials, self.repo_path)
-        if askpass_path:
-            # Store path for cleanup (preserves prior behaviour).
-            self._askpass_script = askpass_path
+        # Track the temp GIT_ASKPASS script so the caller can remove it after the
+        # git operation (see _cleanup_askpass); otherwise it leaks in /tmp.
+        self._askpass_script = askpass_path
         return env
+
+    def _cleanup_askpass(self):
+        """Delete the temporary GIT_ASKPASS helper script, if one was created."""
+        path = getattr(self, "_askpass_script", None)
+        if path:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+            self._askpass_script = None
 
     def _store_credentials(self, remote_url: str, credentials: tuple[str, str]):
         """Store credentials (keyring if available, else git credential helper)."""

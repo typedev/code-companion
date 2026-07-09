@@ -6,9 +6,8 @@ import gi
 
 gi.require_version("GtkSource", "5")
 
-from gi.repository import Gtk, GtkSource, GLib, GObject, Pango, Adw, Gdk, GdkPixbuf, Gio
+from gi.repository import Gtk, GtkSource, GLib, GObject, Adw, Gdk, GdkPixbuf, Gio
 
-from .code_view import get_language_for_file
 from .script_toolbar import ScriptToolbar
 from .image_viewer import PixelImage, _pixbuf_to_cairo_surface, _get_display_scale
 from .disk_sync import DiskSyncController

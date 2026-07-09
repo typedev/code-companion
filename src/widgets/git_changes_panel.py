@@ -927,7 +927,7 @@ class GitChangesPanel(Gtk.Box):
     def _show_credentials_dialog(self, operation: str, remote_url: str, retry_callback):
         """Show dialog to get git credentials."""
         dialog = Adw.AlertDialog()
-        dialog.set_heading(f"Authentication Required")
+        dialog.set_heading("Authentication Required")
         dialog.set_body(f"Enter credentials for {remote_url}")
 
         # Create form

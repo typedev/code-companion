@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from gi.repository import Gtk, GObject, Adw, Gdk, GLib
+from gi.repository import Gtk, Gdk
 
 from ..services import GitService, GitCommit
 from .code_view import DiffView

@@ -7,7 +7,7 @@ from pathlib import Path
 import pathspec
 from gi.repository import Adw, Gtk, Gio, GLib, GObject, Pango, Gdk
 
-from ..services import GitService, FileStatus, IconCache, ToastService, SettingsService, FileMonitorService, run_async
+from ..services import GitService, FileStatus, IconCache, ToastService, FileMonitorService, run_async
 from ..utils import git_auth
 
 
@@ -571,7 +571,6 @@ class FileTree(Gtk.Box):
         if self.context_menu:
             self.context_menu.unparent()
 
-        old_list_box = self.list_box
         self.list_box = Gtk.ListBox()
         self.list_box.set_selection_mode(Gtk.SelectionMode.NONE)
         self.list_box.add_css_class("navigation-sidebar")

@@ -13,7 +13,6 @@ still guiding work) · **Historical** (early milestone plan, superseded by CLAUD
 |-----|-------|--------|
 | [plan-stability-roadmap.md](plan-stability-roadmap.md) | 6-phase hardening (async, git status, monitors, freeze fix, keyring, ports) | Mostly done; a few items open |
 | [plan-session-supervisor.md](plan-session-supervisor.md) | Claude survives IDE restart via tmux | Tier 1 shipped; idle-reaping / Tier 2 deferred |
-| [TODO-editor-search.md](TODO-editor-search.md) | In-editor find/replace | TODO |
 
 ## Shipped
 | Doc | Feature |
