@@ -1,6 +1,7 @@
 """Project Manager window for selecting and opening projects."""
 
 import json
+import shutil
 import signal
 import subprocess
 import sys
@@ -16,7 +17,7 @@ from .services.project_status_service import (
     LocalStatus,
     RemoteStatus,
 )
-from .services.git_service import AuthenticationRequired
+from .services.git_service import AuthenticationRequired, GitService
 from .services.issues_service import GitHubError
 from .services.sync_service import SyncService
 from .services import session_summary_service
@@ -235,6 +236,11 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
         new_button = Gtk.Button(label="New Project...")
         new_button.connect("clicked", self._on_new_project_clicked)
         buttons_box.append(new_button)
+
+        # Clone button (clone a remote repo into a chosen folder)
+        clone_button = Gtk.Button(label="Clone...")
+        clone_button.connect("clicked", self._on_clone_clicked)
+        buttons_box.append(clone_button)
 
         # Add project button
         add_button = Gtk.Button(label="Add Project...")
@@ -1455,6 +1461,170 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
         self.registry.register_project(path, name)
         self._load_projects()
         self._open_project(path)
+        return False
+
+    # ------------------------------------------------------------------
+    # Clone (URL -> transient "Cloning…" card -> registered project)
+    # ------------------------------------------------------------------
+    def _on_clone_clicked(self, _button):
+        dialog = Adw.AlertDialog()
+        dialog.set_heading("Clone Repository")
+
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        url_entry = Gtk.Entry()
+        url_entry.set_placeholder_text("Repository URL (https:// or git@…)")
+        box.append(url_entry)
+
+        name_entry = Gtk.Entry()
+        name_entry.set_placeholder_text("Folder name (optional — derived from URL)")
+        box.append(name_entry)
+
+        dest_holder = {"parent": None}
+        dest_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        dest_label = Gtk.Label(label="No destination chosen")
+        dest_label.add_css_class("dim-label")
+        dest_label.set_hexpand(True)
+        dest_label.set_xalign(0)
+        dest_label.set_ellipsize(1)  # PANGO_ELLIPSIZE_START
+        dest_row.append(dest_label)
+        choose_btn = Gtk.Button(label="Choose folder…")
+        choose_btn.connect("clicked", lambda _b: self._pick_clone_dest(dest_holder, dest_label))
+        dest_row.append(choose_btn)
+        box.append(dest_row)
+
+        dialog.set_extra_child(box)
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("clone", "Clone")
+        dialog.set_response_appearance("clone", Adw.ResponseAppearance.SUGGESTED)
+        dialog.set_default_response("clone")
+        dialog.connect("response", self._on_clone_response, url_entry, name_entry, dest_holder)
+        dialog.present(self)
+
+    def _pick_clone_dest(self, holder, label):
+        fd = Gtk.FileDialog()
+
+        def done(dlg, res):
+            try:
+                folder = dlg.select_folder_finish(res)
+            except GLib.Error:
+                return
+            if folder:
+                holder["parent"] = folder.get_path()
+                label.set_text(folder.get_path())
+                label.remove_css_class("dim-label")
+
+        fd.select_folder(self, None, done)
+
+    def _on_clone_response(self, _dialog, response, url_entry, name_entry, dest_holder):
+        if response != "clone":
+            return
+        url = url_entry.get_text().strip()
+        parent = dest_holder.get("parent")
+        if not url:
+            ToastService.show_error("Enter a repository URL")
+            return
+        if not parent:
+            ToastService.show_error("Choose a destination folder")
+            return
+        name = name_entry.get_text().strip() or self._clone_name_from_url(url)
+        self._start_clone(url, parent, name)
+
+    @staticmethod
+    def _clone_name_from_url(url: str) -> str:
+        base = url.rstrip("/").split("/")[-1]
+        if base.endswith(".git"):
+            base = base[:-4]
+        return base or "repo"
+
+    def _start_clone(self, url, parent, name, credentials=None):
+        target = Path(parent) / name
+        n = 2
+        while target.exists():
+            target = Path(parent) / f"{name}-{n}"
+            n += 1
+        target = str(target)
+
+        row, label = self._create_cloning_row(name)
+        self.project_list.append(row)
+
+        def worker():
+            def progress(msg):
+                GLib.idle_add(label.set_text, f"Cloning {name}… {msg[:40]}")
+            try:
+                GitService.clone(url, target, credentials=credentials, progress=progress)
+                GLib.idle_add(self._on_clone_done, target, name, row)
+            except AuthenticationRequired as exc:
+                GLib.idle_add(self._on_clone_auth, url, parent, name, exc.remote_url, row)
+            except Exception as exc:  # noqa: BLE001 - surfaced on the error card
+                GLib.idle_add(self._on_clone_error, row, url, parent, name, target, str(exc))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _create_cloning_row(self, name):
+        row = Gtk.ListBoxRow()
+        row.set_activatable(False)
+        box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        box.set_margin_start(12)
+        box.set_margin_end(12)
+        box.set_margin_top(12)
+        box.set_margin_bottom(12)
+        spinner = Gtk.Spinner()
+        spinner.start()
+        box.append(spinner)
+        label = Gtk.Label(label=f"Cloning {name}…")
+        label.set_xalign(0)
+        label.set_hexpand(True)
+        label.set_ellipsize(3)  # PANGO_ELLIPSIZE_END
+        box.append(label)
+        row.set_child(box)
+        return row, label
+
+    def _on_clone_done(self, target, name, row):
+        self.project_list.remove(row)
+        self.registry.register_project(target, name)
+        self._load_projects()
+        self._open_project(target)
+        return False
+
+    def _on_clone_auth(self, url, parent, name, remote_url, row):
+        self.project_list.remove(row)
+        show_github_credentials_dialog(
+            self, remote_url,
+            lambda creds: self._start_clone(url, parent, name, credentials=creds),
+        )
+        return False
+
+    def _on_clone_error(self, row, url, parent, name, target, error):
+        # Remove any partial clone directory.
+        if Path(target).is_dir():
+            shutil.rmtree(target, ignore_errors=True)
+
+        # Swap the transient card to an error state with Retry / Dismiss.
+        row.set_child(None)
+        box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        box.set_margin_start(12)
+        box.set_margin_end(12)
+        box.set_margin_top(12)
+        box.set_margin_bottom(12)
+        icon = Gtk.Image.new_from_icon_name("dialog-error-symbolic")
+        box.append(icon)
+        label = Gtk.Label(label=f"Clone failed: {name}")
+        label.set_xalign(0)
+        label.set_hexpand(True)
+        label.set_ellipsize(3)
+        label.set_tooltip_text(error)
+        box.append(label)
+        retry = Gtk.Button(label="Retry")
+        retry.connect("clicked", lambda _b: (self.project_list.remove(row),
+                                             self._start_clone(url, parent, name)))
+        box.append(retry)
+        dismiss = Gtk.Button()
+        dismiss.set_icon_name("window-close-symbolic")
+        dismiss.add_css_class("flat")
+        dismiss.connect("clicked", lambda _b: self.project_list.remove(row))
+        box.append(dismiss)
+        row.set_child(box)
+        ToastService.show_error(f"Clone failed: {error[:80]}")
         return False
 
     def _open_project(self, project_path: str, force: bool = False):

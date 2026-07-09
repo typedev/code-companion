@@ -838,6 +838,47 @@ class GitService:
         if result.returncode != 0:
             raise RuntimeError(result.stderr.strip() or result.stdout.strip() or "Stash drop failed")
 
+    @staticmethod
+    def clone(url: str, dest: str, credentials=None, progress=None) -> None:
+        """Clone ``url`` into ``dest`` (git CLI, --progress).
+
+        ``progress`` is called with each git progress line (from stderr). Raises
+        ``AuthenticationRequired`` on an auth failure, ``RuntimeError`` otherwise.
+        Does not register the project — the caller decides what to do on success.
+        """
+        dest = str(dest)
+        parent = str(Path(dest).parent)
+        env, askpass = git_auth.build_auth_env(url, credentials, parent)
+        stderr_lines: list[str] = []
+        proc = None
+        try:
+            proc = subprocess.Popen(
+                ["git", "clone", "--progress", url, dest],
+                cwd=parent,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=env,
+            )
+            for line in proc.stderr:
+                stderr_lines.append(line)
+                if progress:
+                    msg = line.strip()
+                    if msg:
+                        progress(msg)
+            proc.wait(timeout=600)
+        finally:
+            if askpass:
+                try:
+                    Path(askpass).unlink()
+                except OSError:
+                    pass
+        if proc.returncode != 0:
+            error = "".join(stderr_lines).strip()
+            if git_auth.is_auth_error(error):
+                raise AuthenticationRequired(error, url)
+            raise RuntimeError(error or "Clone failed")
+
     def delete_branch(self, name: str, force: bool = False) -> None:
         """Delete a branch.
 

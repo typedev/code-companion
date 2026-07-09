@@ -79,6 +79,22 @@ def test_switch_branch_changes_head_and_errors_clearly(tmp_path):
         svc.switch_branch("no-such-branch")
 
 
+def test_clone_from_local_bare(tmp_path):
+    bare = make_bare(tmp_path)
+    prod, _ = _repo(tmp_path, name="prod", remote=str(bare))
+    git(prod, "push", "-q", "-u", "origin", "main")
+
+    dest = tmp_path / "cloned"
+    GitService.clone(str(bare), str(dest))
+    assert (dest / ".git").exists()
+    assert git(dest, "rev-parse", "--abbrev-ref", "HEAD") == "main"
+
+
+def test_clone_bad_url_raises(tmp_path):
+    with pytest.raises(RuntimeError):
+        GitService.clone(str(tmp_path / "does-not-exist.git"), str(tmp_path / "out"))
+
+
 def test_stash_lifecycle(tmp_path):
     path, svc = _repo(tmp_path)
     (path / "README.md").write_text("changed\n", encoding="utf-8")
