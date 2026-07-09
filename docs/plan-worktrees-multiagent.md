@@ -70,38 +70,45 @@ message system + an agent, not an in-app merge UI.
 
 ---
 
-## Stage 1 — PM sorting (shippable NOW, independent of worktrees)
+## Stage 1 — PM sorting: "Working" on top, MRU below (shippable, worktree-independent)
 
-The single most-wanted PM improvement, useful immediately even before any
-worktree work: **most-recently-opened project at the top (MRU), rotating down.**
-Simple and predictable — opening a project bumps it to the top; status is shown
-by the colored live/attention dots, not by the sort.
+The most-wanted PM improvement. Refined after real use: pure MRU wrongly bumped a
+"just opened to look" project above one with a live agent. Fix: **two groups** —
+projects with a **live Claude session on top ("Working"), everything else MRU
+below ("All projects")**, as sections in one `Gtk.ListBox`.
 
-- [x] Stamp a `last_opened` timestamp **on `ProjectWindow` startup**
-      (`ProjectRegistry.mark_opened`, called at `project_window.py` after
-      `register_project`); atomic `_save`. Covers CLI `--project` opens.
-- [x] PM sorts via a `Gtk.ListBox` sort func (`_sort_rows`): present before missing,
-      then `last_opened` desc; never-opened → bottom (epoch 0). `_load_projects` reads
-      `get_projects()` and stamps `row.last_opened`.
-- [x] Re-sort in place on PM `notify::is-active` (regaining focus) — **not** on the 4s
-      tick. `tests/test_project_registry_mru.py` (5) + live GTK sort-func smoke. DONE.
+- [x] Stamp `last_opened` **on `ProjectWindow` startup** (`ProjectRegistry.mark_opened`,
+      after `register_project`); atomic `_save`. Covers CLI `--project` opens.
+- [x] Sort func `_sort_rows` key = `(not is_live, is_missing, not is_attention,
+      -last_opened)`: live group first (attention-first within), then MRU; missing sink.
+      `set_header_func` draws "Working" / "All projects" section headers (only when
+      something is live). `_load_projects` reads `get_projects()` + stamps `row.last_opened`.
+- [x] `_refresh_live_indicators` stamps `row.is_live`/`is_attention` and re-groups
+      (`invalidate_sort`/`invalidate_headers`) **only when the working set changed** —
+      never on the bare 4s dot tick. Focus (`notify::is-active`) re-reads open times.
+- [x] "Working" = a live tmux Claude session (`claude_session.live_session_names()`),
+      so a backgrounded agent (window closed) stays on top. Tests:
+      `tests/test_project_registry_mru.py` (5) + live GTK grouping smoke. DONE.
 
 > MRU-by-open, not frequency and not session-activity recency — the author wants
 > "the one I just opened is on top." A single `last_opened` field is enough.
 
-## Stage 2 — Worktree correctness base
+## Stage 2 — Worktree correctness base — DONE
 
-- [ ] `FileMonitorService` worktree support: when `project_path/.git` is a **file**,
-      read its `gitdir:` pointer; watch `HEAD`/`index`/`logs/HEAD` in the resolved
-      per-worktree gitdir and shared refs (`refs/`, `packed-refs`, `logs/`) in the
-      common gitdir (`git rev-parse --git-common-dir`). Today it requires `.git` to
-      be a directory, so worktree monitors are silently skipped.
-- [ ] Worktree self-detection in `ProjectWindow`: header badge
-      "worktree of <parent> · <branch>". (pygit2's `discover_repository` already
-      handles the `.git` file.)
-- [ ] Sync exclusion: `resolve_project_identity` keys on origin/root-commit, so a
-      worktree collides with its parent's sync slot — exclude worktree-registered
-      projects from sync (detect via `.git`-is-file).
+- [x] Shared helper `src/utils/git_worktree.py`: `is_linked_worktree`,
+      `resolve_worktree_dirs` (→ per-worktree gitdir + common dir, by reading the
+      `.git` pointer + `commondir` file, no subprocess), `worktree_parent_root`.
+      `tests/test_git_worktree.py` (real `git worktree add`).
+- [x] `FileMonitorService` worktree support: resolves the two gitdirs in `__init__`
+      (and `_maybe_attach_git_monitors`); per-worktree `HEAD`/`index`/`logs/HEAD`
+      watched under the gitdir, shared `refs/`/`packed-refs` under the common dir.
+      Verified live: a worktree resolves + attaches monitors (was silently skipped).
+- [x] Worktree self-detection in `ProjectWindow` (`_build_sidebar` sets
+      `_is_worktree`/`_worktree_parent`); `_update_window_title` shows a
+      "⑂ worktree of <parent> · <branch>" subtitle.
+- [x] Sync exclusion at the `SyncService._run` choke point + `list_restorable`
+      (skip `is_linked_worktree` paths) — surgical, leaves `resolve_project_identity`
+      untouched (mailbox identity unaffected). A test documents the id collision.
 
 ## Stage 3 — Worktree lifecycle & provisioning
 

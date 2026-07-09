@@ -245,8 +245,9 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
         self.project_list.set_selection_mode(Gtk.SelectionMode.SINGLE)
         self.project_list.add_css_class("boxed-list")
         self.project_list.set_filter_func(self._filter_row)
-        # MRU order: most-recently-opened project on top, missing ones sink.
+        # Group live-session projects on top ("Working"), the rest MRU below.
         self.project_list.set_sort_func(self._sort_rows)
+        self.project_list.set_header_func(self._list_header)
 
         scrolled.set_child(self.project_list)
         content_box.append(scrolled)
@@ -335,11 +336,40 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
             self._scan_messages()
 
     @staticmethod
-    def _sort_rows(row_a, row_b) -> int:
-        """MRU sort: present before missing, then most-recently-opened first."""
-        key_a = (getattr(row_a, "is_missing", False), -getattr(row_a, "last_opened", 0.0))
-        key_b = (getattr(row_b, "is_missing", False), -getattr(row_b, "last_opened", 0.0))
+    def _sort_key(row):
+        """Working (live) first — attention within — then MRU; missing sink."""
+        return (
+            not getattr(row, "is_live", False),        # live session → top group
+            getattr(row, "is_missing", False),          # missing → bottom of its group
+            not getattr(row, "is_attention", False),    # "needs you" above plain live
+            -getattr(row, "last_opened", 0.0),          # MRU within group
+        )
+
+    @classmethod
+    def _sort_rows(cls, row_a, row_b) -> int:
+        key_a, key_b = cls._sort_key(row_a), cls._sort_key(row_b)
         return (key_a > key_b) - (key_a < key_b)
+
+    def _list_header(self, row, before):
+        """Section headers: 'Working' (live sessions) over 'All projects'."""
+        if not getattr(self, "_any_working", False):
+            row.set_header(None)  # nothing running → a plain flat list
+            return
+        working = getattr(row, "is_live", False)
+        if before is None or getattr(before, "is_live", False) != working:
+            row.set_header(self._section_header("Working" if working else "All projects"))
+        else:
+            row.set_header(None)
+
+    @staticmethod
+    def _section_header(text: str) -> Gtk.Label:
+        label = Gtk.Label(label=text, xalign=0)
+        label.add_css_class("dim-label")
+        label.add_css_class("heading")
+        label.set_margin_top(10)
+        label.set_margin_bottom(2)
+        label.set_margin_start(6)
+        return label
 
     def _on_active_changed(self, *_args):
         """When the manager regains focus, re-read open times and re-sort in place."""
@@ -353,6 +383,7 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
             if row is not None:
                 row.last_opened = ProjectRegistry.last_opened_epoch(entry)
         self.project_list.invalidate_sort()
+        self.project_list.invalidate_headers()
 
     def _refresh_live_indicators(self):
         """Reflect running tmux sessions on the cards (dot + kill action) and
@@ -363,17 +394,31 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
         live = claude_session.live_session_names()
         markers = session_notify.read_markers()
         known = set()
+        working: list[tuple[str, bool]] = []  # (path, attention) — grouping signature
         for row in getattr(self, "_rows_by_path", {}).values():
             name = claude_session.session_name(row.project_path)
             known.add(name)
             is_live = name in live
+            marker = markers.get(name)
+            row.is_live = is_live
+            row.is_attention = bool(is_live and marker)
+            if is_live:
+                working.append((row.project_path, row.is_attention))
             indicator = getattr(row, "live_indicator", None)
             if indicator is not None:
                 indicator.set_visible(is_live)
-                self._apply_indicator_state(indicator, is_live, markers.get(name))
+                self._apply_indicator_state(indicator, is_live, marker)
             kill_btn = getattr(row, "kill_session_btn", None)
             if kill_btn is not None:
                 kill_btn.set_sensitive(is_live)
+        # Re-group only when the working set/attention actually changed, so a
+        # blinking dot never reshuffles rows mid-glance.
+        sig = frozenset(working)
+        if sig != getattr(self, "_working_sig", None):
+            self._working_sig = sig
+            self._any_working = bool(sig)
+            self.project_list.invalidate_sort()
+            self.project_list.invalidate_headers()
         # Desktop-notify once per fresh marker on a live session (incl. orphans).
         self._process_notifications(markers, live)
         # Drop stale markers whose session is no longer running.
@@ -489,6 +534,8 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
         row.add_css_class("project-card")
         row.project_path = str(path)
         row.is_missing = not path.exists()
+        row.is_live = False       # updated by _refresh_live_indicators (grouping)
+        row.is_attention = False
         if row.is_missing:
             row.add_css_class("dim-label")  # dim the whole card
 
