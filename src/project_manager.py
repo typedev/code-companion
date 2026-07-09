@@ -8,7 +8,7 @@ import sys
 import threading
 from pathlib import Path
 
-from gi.repository import Adw, Gtk, GLib, Gio, Gdk
+from gi.repository import Adw, Gtk, GLib, Gio, Gdk, GObject
 
 from .services.project_registry import ProjectRegistry
 from .services.project_lock import ManagerLock
@@ -22,6 +22,8 @@ from .services.issues_service import GitHubError
 from .services.sync_service import SyncService
 from .services import session_summary_service
 from .services import message_store
+from .services import github_repos
+from .services.credential_service import CredentialService
 from .services.toast_service import ToastService
 from .services.config_path import get_config_dir
 from .services.icon_cache import IconCache
@@ -73,6 +75,19 @@ _BADGE_CSS = b"""
 .cc-live-dot-attention { color: #e5a50a; -gtk-icon-size: 12px; }
 .cc-orphan-btn { color: #c07f00; font-weight: bold; }
 """
+
+
+class _RepoItem(GObject.Object):
+    """One row in the Clone dialog's GitHub-repo dropdown."""
+
+    __gtype_name__ = "CloneRepoItem"
+    label = GObject.Property(type=str, default="")
+
+    def __init__(self, label="", name="", clone_url="", private=False):
+        super().__init__(label=label)
+        self.name = name
+        self.clone_url = clone_url
+        self.private = private
 
 
 class ProjectManagerWindow(Adw.ApplicationWindow):
@@ -1471,13 +1486,110 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
         dialog.set_heading("Clone Repository")
 
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+
         url_entry = Gtk.Entry()
         url_entry.set_placeholder_text("Repository URL (https:// or git@…)")
-        box.append(url_entry)
-
         name_entry = Gtk.Entry()
         name_entry.set_placeholder_text("Folder name (optional — derived from URL)")
+
+        # --- GitHub repo picker: a searchable dropdown that fills the URL below ---
+        gh_label = Gtk.Label(label="From your GitHub:")
+        gh_label.set_xalign(0)
+        gh_label.add_css_class("dim-label")
+        gh_label.add_css_class("caption")
+        box.append(gh_label)
+
+        gh_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        repo_store = Gio.ListStore(item_type=_RepoItem)
+        repo_store.append(_RepoItem(label="Loading your GitHub repos…"))
+        repo_dropdown = Gtk.DropDown(model=repo_store)
+        repo_dropdown.set_hexpand(True)
+        # Set the search expression BEFORE enabling search (the internal search filter
+        # is built from the expression), and match anywhere in "owner/repo".
+        repo_dropdown.set_expression(Gtk.PropertyExpression.new(_RepoItem, None, "label"))
+        repo_dropdown.set_search_match_mode(Gtk.StringFilterMatchMode.SUBSTRING)
+        repo_dropdown.set_enable_search(True)
+        repo_dropdown.set_factory(self._build_repo_factory())
+        repo_dropdown.set_sensitive(False)
+        gh_row.append(repo_dropdown)
+        connect_btn = Gtk.Button(label="Connect")
+        connect_btn.set_visible(False)
+        gh_row.append(connect_btn)
+        box.append(gh_row)
+
+        box.append(url_entry)
         box.append(name_entry)
+
+        def on_repo_selected(dropdown, _pspec):
+            item = dropdown.get_selected_item()
+            if item is not None and item.clone_url:
+                url_entry.set_text(item.clone_url)
+                name_entry.set_text(item.name)
+
+        repo_dropdown.connect("notify::selected", on_repo_selected)
+
+        def _set_items(items):
+            repo_store.splice(0, repo_store.get_n_items(), items)
+
+        def apply_repos(repos):
+            if repos:
+                # Group by owner (contiguous), then repo name — so the list isn't
+                # interleaved by update time.
+                repos = sorted(
+                    repos,
+                    key=lambda r: (r["full_name"].split("/", 1)[0].lower(), r["name"].lower()),
+                )
+                items = [_RepoItem(label="— select a repo —")] + [
+                    _RepoItem(label=r["full_name"], name=r["name"],
+                              clone_url=r["clone_url"], private=r["private"])
+                    for r in repos
+                ]
+                repo_dropdown.set_sensitive(True)
+            else:
+                items = [_RepoItem(label="No repositories found")]
+                repo_dropdown.set_sensitive(False)
+            _set_items(items)
+            connect_btn.set_visible(False)
+            return False
+
+        def need_auth(_remote):
+            _set_items([_RepoItem(label="Connect GitHub to list repos")])
+            repo_dropdown.set_sensitive(False)
+            connect_btn.set_visible(True)
+            return False
+
+        def load_error(msg):
+            _set_items([_RepoItem(label="Couldn't load repos")])
+            repo_dropdown.set_sensitive(False)
+            ToastService.show_error(f"GitHub: {msg}")
+            return False
+
+        def do_load(credentials=None):
+            def worker():
+                try:
+                    repos = github_repos.list_user_repos(credentials=credentials)
+                    GLib.idle_add(apply_repos, repos)
+                except AuthenticationRequired as exc:
+                    GLib.idle_add(need_auth, exc.remote_url)
+                except Exception as exc:  # noqa: BLE001 - surfaced as an error state
+                    GLib.idle_add(load_error, str(exc))
+
+            threading.Thread(target=worker, daemon=True).start()
+
+        def on_connect(_b):
+            def got(creds):
+                try:
+                    CredentialService.get_instance().store(
+                        "https://github.com", creds[0], creds[1]
+                    )
+                except Exception:  # noqa: BLE001 - storing is best-effort
+                    pass
+                do_load(credentials=creds)
+
+            show_github_credentials_dialog(self, "github.com", got)
+
+        connect_btn.connect("clicked", on_connect)
+        do_load()
 
         dest_holder = {"parent": None}
         dest_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
@@ -1499,6 +1611,35 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
         dialog.set_default_response("clone")
         dialog.connect("response", self._on_clone_response, url_entry, name_entry, dest_holder)
         dialog.present(self)
+
+    @staticmethod
+    def _build_repo_factory() -> Gtk.SignalListItemFactory:
+        """Factory for the Clone repo dropdown: label + a lock icon on private repos."""
+        factory = Gtk.SignalListItemFactory()
+
+        def setup(_f, list_item):
+            row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+            label = Gtk.Label()
+            label.set_xalign(0)
+            label.set_hexpand(True)
+            label.set_ellipsize(3)  # PANGO_ELLIPSIZE_END
+            row.append(label)
+            lock = Gtk.Image.new_from_icon_name("channel-secure-symbolic")
+            lock.add_css_class("dim-label")
+            row.append(lock)
+            list_item.set_child(row)
+
+        def bind(_f, list_item):
+            repo = list_item.get_item()
+            row = list_item.get_child()
+            label = row.get_first_child()
+            lock = label.get_next_sibling()
+            label.set_label(repo.label)
+            lock.set_visible(repo.private)
+
+        factory.connect("setup", setup)
+        factory.connect("bind", bind)
+        return factory
 
     def _pick_clone_dest(self, holder, label):
         fd = Gtk.FileDialog()
