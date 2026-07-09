@@ -580,6 +580,60 @@ class GitService:
         except pygit2.GitError:
             return None
 
+    # git's canonical empty tree — the base for diffing a root commit.
+    _EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+
+    def _head_hash(self) -> str:
+        result = self._run_git(["rev-parse", "HEAD"])
+        return result.stdout.strip() if result.returncode == 0 else ""
+
+    def get_commits_in_range(self, since: datetime, until: datetime,
+                             limit: int = 200) -> list[GitCommit]:
+        """Commits whose commit date falls in [since, until] on the current branch.
+
+        Used to correlate a Claude session with the commits it produced (8.3).
+        Pure ``git log`` (CLI) so it works without opening the pygit2 repo.
+        """
+        result = self._run_git([
+            "log",
+            f"--since={since.isoformat()}",
+            f"--until={until.isoformat()}",
+            f"--max-count={limit}",
+            "--pretty=format:%H%x1f%h%x1f%s%x1f%an%x1f%ae%x1f%ct",
+        ])
+        if result.returncode != 0:
+            return []
+        head = self._head_hash()
+        commits: list[GitCommit] = []
+        for line in result.stdout.splitlines():
+            parts = line.split("\x1f")
+            if len(parts) != 6:
+                continue
+            h, sh, msg, an, ae, ct = parts
+            try:
+                ts = datetime.fromtimestamp(int(ct))
+            except (ValueError, OSError):
+                continue
+            commits.append(GitCommit(
+                hash=h, short_hash=sh, message=msg.strip(),
+                author=an, author_email=ae, timestamp=ts, is_head=(h == head),
+            ))
+        return commits
+
+    def get_commit_range_diff(self, first_hash: str, last_hash: str) -> str:
+        """Unified diff spanning ``<first>^..<last>`` (root-commit safe)."""
+        parent = self._run_git(["rev-parse", f"{first_hash}^"])
+        base = parent.stdout.strip() if parent.returncode == 0 else self._EMPTY_TREE
+        result = self._run_git(["diff", f"{base}..{last_hash}"])
+        return result.stdout if result.returncode == 0 else ""
+
+    def get_paths_diff(self, paths: list[str], ref: str = "HEAD") -> str:
+        """Working-tree diff vs ``ref`` limited to ``paths`` (uncommitted changes)."""
+        if not paths:
+            return ""
+        result = self._run_git(["diff", ref, "--", *paths])
+        return result.stdout if result.returncode == 0 else ""
+
     def get_commit_diff(self, commit_hash: str) -> tuple[str, str]:
         """
         Get diff for a commit (compared to its parent).

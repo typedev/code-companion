@@ -54,6 +54,8 @@ class ProjectWindow(Adw.ApplicationWindow):
         self.commit_detail_view: CommitDetailView | None = None
         self.session_detail_page: Adw.TabPage | None = None
         self.session_detail_view: SessionView | None = None
+        self.session_diff_page: Adw.TabPage | None = None
+        self.session_diff_view: DiffView | None = None
         self.git_diff_page: Adw.TabPage | None = None
         self.git_diff_view: DiffView | None = None
         self.git_diff_path: str | None = None
@@ -1394,8 +1396,14 @@ class ProjectWindow(Adw.ApplicationWindow):
             self.tab_view.set_selected_page(self.session_detail_page)
             return
 
-        # Create new session detail view
-        self.session_detail_view = SessionView(self.adapter)
+        # Create new session detail view (with git access for the Changes section)
+        self.session_detail_view = SessionView(
+            self.adapter,
+            project_path=self.project_path,
+            git_service=self.git_service if self._is_git_repo else None,
+        )
+        self.session_detail_view.connect("commit-selected", self._on_session_commit_selected)
+        self.session_detail_view.connect("show-diff", self._on_session_show_diff)
         self.session_detail_view.load_session(session)
 
         # Add tab
@@ -1905,6 +1913,23 @@ class ProjectWindow(Adw.ApplicationWindow):
 
         self.tab_view.set_selected_page(self.commit_detail_page)
 
+    def _on_session_commit_selected(self, session_view, commit_hash: str):
+        """A commit in a session's Changes section was clicked — open its detail."""
+        self._on_commit_view_diff(None, commit_hash)
+
+    def _on_session_show_diff(self, session_view, title: str, raw_diff: str):
+        """Show a session's aggregate diff in a single reused diff tab."""
+        if self.session_diff_page is not None:
+            self.tab_view.close_page(self.session_diff_page)
+            self.session_diff_page = None
+            self.session_diff_view = None
+
+        self.session_diff_view = DiffView("", "", file_path=None, raw_diff=raw_diff)
+        self.session_diff_page = self.tab_view.append(self.session_diff_view)
+        self.session_diff_page.set_title(title)
+        self.session_diff_page.set_icon(Gio.ThemedIcon.new("emblem-documents-symbolic"))
+        self.tab_view.set_selected_page(self.session_diff_page)
+
     def _on_task_run(self, tasks_panel, label: str, command: str):
         """Handle task run - create terminal and execute command."""
         terminal = TerminalView(
@@ -2073,6 +2098,11 @@ class ProjectWindow(Adw.ApplicationWindow):
             self.git_diff_view = None
             self.git_diff_path = None
             self.git_diff_staged = None
+
+        # Session-changes diff tab - clear references when closed
+        if page == getattr(self, "session_diff_page", None):
+            self.session_diff_page = None
+            self.session_diff_view = None
 
         # Problems detail tab - clear references when closed
         if page == self.problems_detail_page:

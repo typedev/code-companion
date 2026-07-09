@@ -1,9 +1,12 @@
 """Session view widget for displaying full session content."""
 
-from gi.repository import Gtk, GLib
+from pathlib import Path
 
-from ..models import Session, Message, SessionContent
-from ..services import HistoryAdapter, run_async
+from gi.repository import Gtk, GLib, GObject
+
+from ..models import Session, Message, SessionContent, SessionInsight
+from ..services import HistoryAdapter, SessionInsightService, GitService, run_async
+from ..utils.relative_time import humanize_relative
 from .message_row import MessageRow
 
 # How many messages to render at once. Large agent sessions hold tens of
@@ -13,13 +16,29 @@ PAGE_SIZE = 200
 
 
 class SessionView(Gtk.Box):
-    """A scrollable view of session messages (off-thread load, paginated)."""
+    """A scrollable view of session messages (off-thread load, paginated).
 
-    def __init__(self, adapter: HistoryAdapter):
+    When a project path + git service are supplied, a collapsible "Changes"
+    section (8.3) correlates the session with the files it touched and the
+    commits made during its time window, with a one-click range diff.
+    """
+
+    __gsignals__ = {
+        # A commit row in the Changes section was clicked (commit hash).
+        "commit-selected": (GObject.SignalFlags.RUN_FIRST, None, (str,)),
+        # A computed session diff is ready to show (tab title, raw unified diff).
+        "show-diff": (GObject.SignalFlags.RUN_FIRST, None, (str, str)),
+    }
+
+    def __init__(self, adapter: HistoryAdapter, project_path: Path | str | None = None,
+                 git_service: GitService | None = None):
         super().__init__(orientation=Gtk.Orientation.VERTICAL)
 
         self.adapter = adapter
+        self.project_path = Path(project_path) if project_path else None
+        self.git_service = git_service
         self.current_session: Session | None = None
+        self._changes: tuple[SessionInsight, list] | None = None  # (insight, commits)
 
         # Pagination state.
         self._all_messages: list[Message] = []
@@ -50,6 +69,12 @@ class SessionView(Gtk.Box):
 
     def _build_ui(self):
         """Build the session view UI."""
+        # "Changes this session" section (8.3) — filled in the background, above
+        # the message list; hidden until it has something to show.
+        self.changes_container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        self.changes_container.set_visible(False)
+        self.append(self.changes_container)
+
         # Scrolled window for messages
         self._scrolled = Gtk.ScrolledWindow()
         self._scrolled.set_vexpand(True)
@@ -82,6 +107,155 @@ class SessionView(Gtk.Box):
             on_done=self._render,
             key="session",
         )
+
+        # Correlate the session with its files/commits off-thread (8.3).
+        self._changes = None
+        self.changes_container.set_visible(False)
+        run_async(
+            self,
+            worker=lambda: self._compute_changes(session),
+            on_done=self._render_changes,
+            key="changes",
+        )
+
+    def _compute_changes(self, session: Session):
+        """Worker: session insight + commits made during its time window."""
+        insight = SessionInsightService.get_instance().get_insight(
+            session, self.adapter, str(self.project_path) if self.project_path else session.path.parent
+        )
+        commits = []
+        if (self.git_service is not None and insight.first_ts is not None
+                and insight.last_ts is not None):
+            try:
+                commits = self.git_service.get_commits_in_range(
+                    insight.first_ts, insight.last_ts
+                )
+            except Exception:
+                commits = []
+        return insight, commits
+
+    def _render_changes(self, result) -> None:
+        """Render the Changes section: touched files + session-range commits."""
+        self._changes = result
+        self._clear_box(self.changes_container)
+        insight, commits = result
+        files = insight.files_touched
+
+        if not files and not commits:
+            self.changes_container.set_visible(False)
+            return
+
+        section = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        section.set_margin_top(8)
+        section.set_margin_bottom(8)
+        section.set_margin_start(12)
+        section.set_margin_end(12)
+
+        header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        title = Gtk.Label(label="Changes this session", xalign=0)
+        title.add_css_class("heading")
+        title.set_hexpand(True)
+        header.append(title)
+        # Review is possible when we have git access + something to diff.
+        if self.git_service is not None and (commits or self._repo_paths(files)):
+            review = Gtk.Button(label="Review session changes")
+            review.add_css_class("flat")
+            review.connect("clicked", self._on_review_clicked)
+            header.append(review)
+        section.append(header)
+
+        if files:
+            files_exp = Gtk.Expander(label=f"Files touched ({len(files)})")
+            fbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+            fbox.set_margin_start(12)
+            for path in files:
+                lbl = Gtk.Label(label=path, xalign=0)
+                lbl.add_css_class("dim-label")
+                lbl.set_ellipsize(1)  # START — keep the filename visible
+                fbox.append(lbl)
+            files_exp.set_child(fbox)
+            section.append(files_exp)
+
+        if commits:
+            commits_exp = Gtk.Expander(label=f"Commits ({len(commits)})")
+            commits_exp.set_expanded(True)
+            cbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+            cbox.set_margin_start(12)
+            for commit in commits:
+                cbox.append(self._commit_button(commit))
+            commits_exp.set_child(cbox)
+            section.append(commits_exp)
+
+        section.append(Gtk.Separator())
+        self.changes_container.append(section)
+        self.changes_container.set_visible(True)
+
+    def _commit_button(self, commit) -> Gtk.Button:
+        """A flat, clickable row for one commit → opens the commit detail tab."""
+        btn = Gtk.Button()
+        btn.add_css_class("flat")
+        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        sha = Gtk.Label(label=commit.short_hash)
+        sha.add_css_class("dim-label")
+        sha.add_css_class("monospace")
+        row.append(sha)
+        subject = (commit.message.splitlines() or [""])[0]
+        msg = Gtk.Label(label=subject, xalign=0)
+        msg.set_hexpand(True)
+        msg.set_ellipsize(3)  # END
+        row.append(msg)
+        when = Gtk.Label(label=humanize_relative(commit.timestamp))
+        when.add_css_class("dim-label")
+        row.append(when)
+        btn.set_child(row)
+        btn.connect("clicked", lambda _b, h=commit.hash: self.emit("commit-selected", h))
+        return btn
+
+    def _on_review_clicked(self, _button) -> None:
+        """Compute the session diff off-thread and emit it for a diff tab."""
+        if not self._changes or self.git_service is None:
+            return
+        insight, commits = self._changes
+        gs = self.git_service
+
+        def work():
+            if commits:
+                first, last = commits[-1].hash, commits[0].hash  # log order = newest first
+                return "Session diff", gs.get_commit_range_diff(first, last)
+            paths = self._repo_paths(insight.files_touched)
+            if paths:
+                return "Uncommitted session changes", gs.get_paths_diff(paths)
+            return "", ""
+
+        run_async(self, worker=work, on_done=self._emit_diff, key="review")
+
+    def _emit_diff(self, result) -> None:
+        title, diff = result
+        if diff.strip():
+            self.emit("show-diff", title, diff)
+        else:
+            from ..services import ToastService
+            ToastService.show("No changes to review for this session")
+
+    def _repo_paths(self, files: list[str]) -> list[str]:
+        """The touched files that live inside the project, as repo-relative paths."""
+        if not self.project_path:
+            return []
+        out = []
+        for f in files:
+            try:
+                out.append(str(Path(f).resolve().relative_to(self.project_path.resolve())))
+            except ValueError:
+                continue  # touched a file outside this project
+        return out
+
+    @staticmethod
+    def _clear_box(box: Gtk.Box) -> None:
+        child = box.get_first_child()
+        while child is not None:
+            nxt = child.get_next_sibling()
+            box.remove(child)
+            child = nxt
 
     def _render(self, content: SessionContent) -> None:
         """Render the parsed session: last PAGE_SIZE messages + paging affordances."""
@@ -193,4 +367,7 @@ class SessionView(Gtk.Box):
         self._all_messages = []
         self._rendered_from = 0
         self._load_earlier_btn = None
+        self._changes = None
+        self._clear_box(self.changes_container)
+        self.changes_container.set_visible(False)
         self._clear_children()

@@ -75,11 +75,20 @@ The 8.1 insight index still powers 8.2; only the PM card hint (label, background
 - GUI (headless `gui_harness`): badges render, header aggregate shows, PM card shows a
   resume hint, no UI freeze on a project with many/large sessions (parsing off-thread).
 
-## Milestone B (deferred — documented for continuity)
+## Milestone B
 
-- **8.3** What changed this session: `GitService.get_commits_in_range/get_commits_since`
-  (`git log --since` via `build_git_env`); `SessionView` **Changes** section (touched files
-  + session-range commits) reusing `commit_detail_view`; "Review session changes" diff.
+### 8.3 — What changed this session — DONE
+- [x] `GitService.get_commits_in_range` (`git log --since/--until`, CLI), `get_commit_range_diff`
+      (`<first>^..<last>`, root-safe via empty-tree), `get_paths_diff` (uncommitted, path-filtered).
+      `tests/test_git_session_changes.py`.
+- [x] `SessionView` gains a collapsible **Changes** section (touched files from 8.1 +
+      session-range commits), each commit clickable → existing commit detail tab
+      (`commit-selected` signal). "Review session changes" → range diff (or uncommitted
+      path diff) shown in a reused `DiffView` tab (`show-diff` signal). Computed off-thread.
+- Verified on real sessions: the current session correctly correlated its own 4 commits;
+  range diff spans the expected files.
+
+### Still deferred
 - **8.5** Cross-project prompt search: new PM search surface reusing the rg engine in
   `unified_search._search_content` over `claude_paths.projects_root()` (`-g "*.jsonl"
   '"type":"user"'`); results grouped project→session, open at session.
