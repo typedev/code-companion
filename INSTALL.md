@@ -192,10 +192,18 @@ update-desktop-database ~/.local/share/applications/
 
 Settings are stored in `~/.config/code-companion/`:
 
-| File | Description |
+| Path | Description |
 |------|-------------|
-| `settings.json` | App preferences (theme, font, etc.) |
+| `settings.json` | App preferences (theme, font, sync, mcp, etc.) |
 | `projects.json` | Registered projects list |
+| `snippets/` | User text snippets |
+| `session-summaries/` | Per-project session handoff summaries (synced) |
+| `messages/`, `messages-seen.json` | Inter-project mailbox store + per-machine seen state |
+| `notify/` | Claude Notification-hook markers (→ desktop notifications) |
+| `sync/`, `sync_state.json`, `sync_status_cache.json` | Cross-machine sync clone + state |
+
+> Git/GitHub credentials are **not** stored here — they go to the desktop keyring (libsecret)
+> when available, otherwise git's own credential helper.
 
 ---
 

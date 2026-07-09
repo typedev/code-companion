@@ -7,7 +7,10 @@ A native GTK4/libadwaita desktop application for working with AI coding assistan
 ![Code Companion](images/cc-pict.jpg)
 
 
-> **v0.8** introduces multi-provider architecture. While currently supporting Claude Code, the codebase is designed to support additional AI CLI tools (Gemini CLI, Codex CLI, etc.) in future versions.
+> Beyond the IDE basics, Code Companion adds an **MCP control surface** for the embedded session, a
+> **tmux session supervisor** (Claude survives IDE restarts), **cross-machine sync**, and a
+> **cross-project coordination hub** (catalog + inter-project mailbox). The provider layer is a
+> multi-adapter architecture — Claude Code today, room for Gemini/Codex CLIs next.
 
 ![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)
 ![Python](https://img.shields.io/badge/python-3.12+-green.svg)
@@ -22,7 +25,11 @@ A native GTK4/libadwaita desktop application for working with AI coding assistan
 
 ### Project Workspace
 
-**Vertical toolbar with 5 tabs:**
+The embedded Claude session lives in a **persistent bottom pane** (survives IDE-window restarts —
+see [Session supervisor](#ai-session-integration)); a **header activity bar** switches the sidebar
+between Files, Git, AI Sessions, Notes, Problems, Issues, and Messages.
+
+**Sidebar tabs:**
 
 #### Files Tab (F)
 - **File Tree** — Browse project files with Material Design icons and git status indicators
@@ -62,6 +69,18 @@ A native GTK4/libadwaita desktop application for working with AI coding assistan
 - **Code Preview** — View problem location with syntax highlighting
 - **Copy to Clipboard** — Copy single problem or all problems
 
+#### Issues Tab
+- Browse/filter GitHub issues (open/closed/all) for the project's repo
+- Create issues; open a detail view with body + comments (Markdown), close/reopen
+- **Send to Claude** — hand an issue to the embedded session as a prepared prompt
+- Auth via the git credential/keyring PAT (no separate login)
+
+#### Messages Tab
+- **Inter-project mailbox** — send/receive messages between your projects without GitHub
+- Inbox/Sent/All filter; thread view with replies, status (open/in-progress/done/rejected)
+- Recipient picked from the project catalog; addressed by canonical git remote
+- Private and synced across machines alongside your other synced data
+
 ### Main Area
 - **File Editor** — Syntax highlighting via GtkSourceView 5, autosave on focus loss, go-to-line
 - **Script Toolbar** — Run button with arguments dialog, code outline for .py/.sh/.md files
@@ -79,6 +98,43 @@ A native GTK4/libadwaita desktop application for working with AI coding assistan
 - **File Tree:** Show/hide hidden files
 - **Linters:** Enable/disable ruff and mypy, ignore specific codes
 - **Window State:** Auto-saves size, position, sidebar width, maximized state
+
+### AI Session Integration
+
+<a name="ai-session-integration"></a>
+
+- **MCP control surface** — each project window runs a local Model Context Protocol server
+  (bearer-token, `127.0.0.1`) so the embedded Claude session can act on *this* window: read the
+  workspace state and selection, open files, show diffs/commits, read problems, run tasks, add
+  notes, and create GitHub issues. Toggle with the `mcp.enabled` preference.
+- **Cross-project tools** — from any session, `list_projects` / `resolve_project` discover sibling
+  projects and `send_message` / `list_messages` / `reply_message` / `resolve_message` drive the
+  inter-project mailbox.
+- **Session supervisor** — the Claude session runs inside a per-project **tmux** session, so closing
+  and reopening the IDE window (or restarting Code Companion) **re-attaches** instead of killing
+  `claude`. The MCP port is stable and reserved across the restart. The Project Manager shows a live
+  dot per project (green = running, amber = needs attention) and can kill or reconcile orphan
+  sessions. Requires `tmux`; without it the session simply ends on window close.
+- **Notifications** — Claude `Notification` hooks surface as desktop notifications and an amber card
+  indicator in the Project Manager.
+
+### Multi-Project & Sync
+
+- **Git-centric Project Manager** — per-project status badges (dirty ●, ahead ↑N, behind ↓N, PR/issue
+  counts, pending-messages ✉N), a smart "Updated <relative>" label, rename, and a New Project button
+  (`git init` → register → open).
+- **Cross-machine sync** — opt-in, git-backed 3-way merge of Claude session history, memory, plans,
+  session summaries, and the message store to a **private** remote you control. Keyed by each
+  project's canonical git identity, so data follows a project across machines. Selected-projects or
+  backup (registry-wide) modes.
+- **Secure credentials** — git/GitHub tokens are stored in the desktop keyring (libsecret) when
+  available, with a graceful fallback to git's credential helper.
+
+### GUI Test Harness (optional)
+
+- The assistant can launch, drive (click/type by accessibility role+name), and screenshot **another
+  project's** GTK/Qt GUI in an isolated headless Wayland compositor — like Playwright, but for native
+  desktop apps. Requires `cage`/`grim`/`wlr-randr`/`ydotool` (see [INSTALL.md](INSTALL.md)).
 
 
 
@@ -201,23 +257,22 @@ src/
 │   ├── preferences_dialog.py# Settings dialog
 │   └── ...
 ├── services/                # Business logic
-│   ├── history_adapter.py   # Abstract base for AI CLI adapters
-│   ├── adapter_registry.py  # Adapter registration and lookup
-│   ├── adapters/            # AI CLI provider adapters
-│   │   └── claude_adapter.py    # Claude Code adapter
-│   ├── history.py           # Claude session reader (low-level)
-│   ├── project_registry.py  # Registered projects storage
-│   ├── project_lock.py      # Lock files for single-instance per project
-│   ├── git_service.py       # Git operations via pygit2 (with HTTPS auth)
-│   ├── tasks_service.py     # tasks.json parser
-│   ├── toast_service.py     # Toast notifications singleton
-│   ├── settings_service.py  # App settings (JSON storage)
-│   ├── snippets_service.py  # Text snippets management
-│   ├── file_monitor_service.py  # Centralized file monitoring
-│   ├── problems_service.py  # Linter runner (ruff/mypy)
-│   ├── icon_cache.py        # Material Design icons cache
-│   ├── python_outline.py    # Python AST parser for outline
-│   └── markdown_outline.py  # Markdown heading parser
+│   ├── history_adapter.py / adapter_registry.py / adapters/  # Multi-provider AI-CLI adapters
+│   ├── history.py           # Claude session reader (low-level JSONL)
+│   ├── project_registry.py / project_lock.py    # Projects storage + FlockLock locks
+│   ├── project_status_service.py    # PM card status badges + cache
+│   ├── git_service.py / credential_service.py   # Git ops + keyring credentials
+│   ├── issues_service.py    # GitHub Issues (REST via urllib)
+│   ├── tasks_service.py / toast_service.py / settings_service.py / snippets_service.py
+│   ├── rules_service.py     # CLAUDE.md rules management
+│   ├── file_monitor_service.py / problems_service.py / async_runner.py
+│   ├── icon_cache.py / python_outline.py / markdown_outline.py
+│   ├── mcp_server.py        # Per-window MCP control surface (FastMCP)
+│   ├── gui_harness.py / gui_agent.py    # Headless GUI test harness
+│   ├── session_summary_service.py / session_notify.py   # Handoff summaries + notifications
+│   ├── project_catalog.py / message_store.py    # Coordination hub (catalog + mailbox)
+│   └── sync_*.py            # Cross-machine sync (service/engine/repo/recovery/lock/state)
+├── utils/                   # paths, project_identity, claude_session (tmux), git_auth, …
 └── resources/
     └── icons/               # Material Design SVG icons
 ```
@@ -251,7 +306,15 @@ src/
 - [x] v0.7.2: Problems Panel (ruff/mypy integration, vertical toolbar)
 - [x] v0.7.3: Script Toolbar (Run button, Python outline)
 - [x] v0.7.4: Markdown Support (outline, WebKit preview)
-- [x] v0.8: Code Companion (multi-provider architecture, AI settings page)
+- [x] v0.7.5: Git-centric Project Manager (status badges, New Project)
+- [x] v0.8: Code Companion (multi-provider adapter architecture)
+- [x] GitHub Issues, Rules management, spell-checked query editor
+- [x] Persistent Claude pane + header activity bar
+- [x] MCP control surface (per-window server + read/act tools + `/refresh` hook)
+- [x] GUI test harness (headless compositor, drive & screenshot native GUIs)
+- [x] Cross-machine sync (git-backed 3-way merge to a private remote)
+- [x] Session supervisor (Claude survives IDE restart via tmux; live dots, reserved port)
+- [x] Coordination hub (cross-project catalog + synced inter-project mailbox, GUI + MCP)
 - [ ] v0.9: Packaging (Flatpak, .desktop file)
 - [ ] v1.0: Multi-agent orchestration with Git worktrees
 

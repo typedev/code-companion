@@ -1,5 +1,12 @@
 # Claude Companion
 
+> **⚠️ Historical document.** This is the original design vision from before the project was
+> renamed to **Code Companion** and grew a multi-provider adapter architecture, an MCP control
+> surface, a tmux session supervisor, cross-machine sync, and the cross-project coordination hub.
+> It is kept for context only. For the current state see **[README.md](README.md)** and
+> **[CLAUDE.md](CLAUDE.md)**; for the architecture and milestones, CLAUDE.md; for design history,
+> the `docs/` plans (indexed in [docs/README.md](docs/README.md)).
+
 A native GTK4/libadwaita application for working with Claude Code — session history viewer, active session management, Git integration, and project notes.
 
 ## Problem

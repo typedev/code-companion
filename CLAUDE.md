@@ -74,23 +74,46 @@ src/
 │   ├── markdown_preview.py  # WebKit-based markdown preview with highlight.js
 │   └── ...
 ├── services/            # Business logic
-│   ├── history.py       # Claude session history reader
-│   ├── project_registry.py  # Registered projects storage
-│   ├── project_lock.py  # Lock files for single-instance per project
-│   ├── git_service.py   # Git operations via pygit2 (push/pull via git CLI with auth)
+│   ├── history.py       # Claude session history reader (low-level JSONL)
+│   ├── history_adapter.py   # Abstract AI-CLI adapter interface
+│   ├── adapter_registry.py  # Adapter registration/lookup (multi-provider)
+│   ├── adapters/claude_adapter.py  # Claude Code history adapter
+│   ├── config_path.py   # Config dir resolution (+ legacy claude-companion migration)
+│   ├── project_registry.py  # Registered projects storage (v2 {path,name})
+│   ├── project_lock.py  # FlockLock base + Project/Manager locks (single-instance)
+│   ├── project_status_service.py  # PM card status (dirty/ahead/behind/PR/issue) + cache
+│   ├── git_service.py   # Git ops: porcelain status + git-CLI push/pull with auth
+│   ├── credential_service.py  # Git creds in the libsecret keyring (opt-in; plaintext fallback)
+│   ├── issues_service.py  # GitHub Issues via REST (urllib), PAT from the keyring
 │   ├── tasks_service.py # VSCode tasks.json parser
 │   ├── toast_service.py # Toast notifications singleton
 │   ├── settings_service.py  # App settings singleton (JSON storage)
-│   ├── snippets_service.py  # Text snippets management (files in ~/.config/code-companion/snippets/)
-│   ├── file_monitor_service.py  # Centralized file monitoring (git, working tree, notes, tasks)
+│   ├── snippets_service.py  # Text snippets (~/.config/code-companion/snippets/)
+│   ├── rules_service.py # CLAUDE.md rules management
+│   ├── file_monitor_service.py  # Centralized file monitoring (git, tree, notes, tasks)
 │   ├── problems_service.py  # Linter runner (ruff, mypy) with JSON parsing
+│   ├── async_runner.py  # run_async: off-thread worker + generation token + liveness guard
 │   ├── icon_cache.py    # Material Design icons cache (O(1) lookup)
-│   ├── python_outline.py  # Python AST parser for code outline
-│   └── markdown_outline.py  # Markdown heading parser for outline
+│   ├── python_outline.py / markdown_outline.py  # Outline parsers
+│   ├── mcp_server.py    # Per-window MCP control surface (FastMCP, streamable-HTTP)
+│   ├── gui_harness.py / gui_agent.py  # Headless GUI test harness (cage + AT-SPI + grim)
+│   ├── session_summary_service.py  # Per-project session handoff summaries (synced)
+│   ├── session_notify.py  # Claude Notification-hook markers -> PM desktop notifications
+│   ├── project_catalog.py  # Cross-project catalog + hint resolver (coordination hub A)
+│   ├── message_store.py # Event-sourced inter-project mailbox (coordination hub B)
+│   └── sync_*.py        # Cross-machine sync: sync_service/engine/repo/recovery/
+│                        #   lock/state_store (git-backed 3-way merge to a private remote)
 ├── resources/
 │   └── icons/           # Material Design SVG icons (from vscode-material-icon-theme)
-└── utils/               # Helpers (path encoding)
+└── utils/               # Helpers: paths, project_identity (canonical remote id),
+                         #   claude_session (tmux), claude_paths, git_auth, atomic_write,
+                         #   relative_time, text_files, markdown_markup
 ```
+
+Newer widgets not in the tree above: `issues_panel.py`/`issue_detail_view.py` (GitHub Issues),
+`messages_panel.py`/`message_thread_view.py` (inter-project mailbox), `query_editor.py`
+(GtkSourceView editor with spellcheck), `image_viewer.py`/`svg_editor.py`/`binary_file_view.py`,
+`markdown_view.py`, `thinking_block.py`, `tool_call_card.py`, `github_auth.py`.
 
 **UI Structure**:
 ```
@@ -140,6 +163,23 @@ Key patterns:
 - **Problems panel**: Linter integration (ruff, mypy) with file grouping and copy functionality
 - Parse Claude Code JSONL session files from `~/.claude/projects/[encoded-path]/`
 - Project paths are encoded by replacing `/` with `-`
+- **Async layer**: `run_async(widget, worker, on_done, key=…)` runs blocking work off the GTK
+  thread with a per-(widget,key) generation token + liveness guard (never touch a dead widget)
+- **MCP control surface**: one FastMCP streamable-HTTP server per `ProjectWindow` (bearer token,
+  worker-thread tools marshalled to the main loop via `call_on_main`); lets the embedded Claude
+  session read/act on the window (open files, diffs, notes, issues) and reach cross-project tools
+- **Session supervisor**: `claude` runs as the root of a per-project **tmux** session
+  (`cc-<sha1(path)>`), so restarting the IDE window re-attaches instead of killing the session;
+  stable `(port, token)` recovered from the tmux env; PM shows live/attention dots
+- **Cross-machine sync**: git-backed 3-way merge (`sync_service`/`sync_engine`) of Claude history,
+  memory, plans, session summaries and the message store to a private remote; keyed by
+  `resolve_project_identity` (canonical git remote → stable `project_id`)
+- **Coordination hub**: `project_catalog` (list/resolve sibling projects) + `message_store`
+  (event-sourced, synced inter-project mailbox); both exposed as MCP tools and a GUI Messages panel
+- **Credential keyring**: `CredentialService` stores git/GitHub PATs in libsecret (opt-in), with a
+  graceful fallback to git's plaintext store helper when unavailable
+- **Locks**: all locks (Project/Manager/Sync) share the `fcntl.flock`-based `FlockLock` base
+  (kernel auto-release on process death → no stale locks)
 
 ## Claude Code Data Format
 
@@ -223,13 +263,28 @@ Session files are JSONL with event types: `user`, `assistant`, `tool_use`, `tool
   - Rename project label (custom name, folder untouched)
   - New Project button (folder picker + name → `git init` → register + open)
   - See `docs/plan-git-centric-project-manager.md`
-- [ ] v0.8: Code Companion Refactor:
-  - Rename to "Code Companion"
-  - Abstract HistoryService into interface + adapters
-  - ClaudeHistoryAdapter for ~/.claude/
-  - AI provider selection in Settings
-  - Prepare for future Gemini/Codex adapters
+- [x] v0.8: Code Companion Refactor:
+  - Renamed to "Code Companion"; `HistoryService` abstracted into `HistoryAdapter` interface +
+    `adapter_registry`; `ClaudeHistoryAdapter` for `~/.claude/`; groundwork for Gemini/Codex
   - See `docs/plan-code-companion-refactor.md`
+- [x] GitHub Issues: sidebar Issues panel + detail view (REST via urllib, PAT from keyring),
+  MCP `create_issue`; see `docs/plan-github-issues.md`
+- [x] Rules management: edit CLAUDE.md guideline rules; see `docs/plan-rules.md`
+- [x] Query editor: GtkSourceView editor with libspelling spellcheck (`editor.spellcheck_language`)
+- [x] Persistent Claude pane: bottom Claude pane + header activity bar (F/G/C/N/P/Issues/Messages);
+  see `docs/plan-ui-persistent-claude-pane.md`
+- [x] MCP integration (Part A): per-window FastMCP server + read/act tools (workspace state,
+  selection, open file, diff, commit, problems, tasks, notes, issues, session summary) + `/refresh`
+  hook; Preference `mcp.enabled`. GUI test harness (Part B). See `docs/plan-mcp-integration.md`
+- [x] Cross-machine sync: git-backed 3-way merge of history/memory/plans/summaries to a private
+  remote (`sync.*` settings, selected/backup modes); see `docs/plan-sync-across-machines.md`
+- [x] Session supervisor (Tier 1): Claude survives IDE-window restart via tmux; live/attention dots,
+  kill/orphan reconcile, stable reserved MCP port; see `docs/plan-session-supervisor.md`
+- [x] Coordination hub (A→D): cross-project catalog + resolver MCP (`list_projects`/`resolve_project`)
+  and a synced event-sourced inter-project mailbox (GUI Messages panel + `send`/`list`/`reply`/
+  `resolve_message` MCP tools); design in `memory/project_coordination_hub.md`
+- [~] Stability roadmap: 6-phase hardening (async layer, git status unification, file-monitor gaps,
+  session-viewer freeze fix, keyring, port reservation) — mostly done; `docs/plan-stability-roadmap.md`
 - [ ] v0.9: Packaging (Flatpak, .desktop file)
 - [ ] v1.0: Multi-agent orchestration with Git worktrees
 
@@ -327,12 +382,26 @@ def on_setting_changed(settings, key, value):
 | `editor.tab_size` | `4` | Tab width |
 | `editor.insert_spaces` | `true` | Use spaces for indentation |
 | `editor.word_wrap` | `true` | Wrap long lines at word boundaries |
+| `editor.spellcheck_language` | `"auto"` | libspelling language for the query editor |
 | `window.width/height` | `1200/800` | Window size |
 | `window.maximized` | `false` | Maximized state |
 | `window.sidebar_width` | `370` | Sidebar pane width |
+| `window.workspace_split_position` | `260` | Height of the tabs area above the Claude pane |
+| `window.workspace_collapsed` | `false` | Tabs area collapsed to the tab bar |
 | `linters.ruff_enabled` | `true` | Enable ruff linter |
 | `linters.mypy_enabled` | `true` | Enable mypy type checker |
 | `linters.ignored_codes` | `""` | Comma-separated codes to ignore (e.g. "import-untyped, E402") |
+| `mcp.enabled` | `true` | Per-window MCP control surface for the embedded session |
+| `sessions.notifications` | `true` | Desktop notifications from Claude Notification hooks |
+| `sync.enabled` | `false` | Cross-machine sync of history/memory/plans/summaries/messages |
+| `sync.repo_url` | `""` | Private git remote that backs sync |
+| `sync.mode` | `"selected"` | `selected` (chosen projects) or `backup` (registry-wide) |
+| `ai.provider` | `"claude"` | Active AI-CLI adapter |
+
+> Config artifacts under `~/.config/code-companion/`: `settings.json`, `projects.json`,
+> `snippets/`, `session-summaries/`, `messages/` + `messages-seen.json`, `notify/`, `sync/` +
+> `sync_state.json` + `sync_status_cache.json`. Git/GitHub credentials live in the libsecret
+> keyring (not on disk) when available.
 
 ## Running the Application
 
