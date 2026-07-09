@@ -52,6 +52,9 @@ _BADGE_CSS = b"""
 .project-card-path {
     font-size: 0.85em;
 }
+.cc-worktree-child {
+    border-left: 3px solid alpha(@accent_color, 0.4);
+}
 .cc-badge {
     font-size: 11px;
     font-weight: bold;
@@ -318,9 +321,10 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
         }
         present = [p for p in all_paths if p.exists()]
         present_set = set(present)
-        for path in all_paths:
+        for idx, path in enumerate(all_paths):
             row = self._create_project_row(path)
             row.last_opened = epoch_by_path.get(str(path.resolve()), 0.0)
+            row._wt_order = idx  # worktrees keep registration (creation) order
             self.project_list.append(row)
             self._rows_by_path[str(path.resolve())] = row
             # Render any cached network status immediately (survives reopen).
@@ -329,21 +333,53 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
                 if cached:
                     self._render_remote_badges(row, cached)
 
+        self._recompute_units()
         self.project_list.invalidate_sort()
+        self.project_list.invalidate_headers()
         self._update_latest_refresh_label()
         self._start_local_scan(present)
         self._refresh_live_indicators()
         if hasattr(self, "_msg_seen"):  # guard: _load_projects may run before init finishes
             self._scan_messages()
 
+    def _recompute_units(self):
+        """Aggregate live/attention/MRU per project *unit* (a parent + its worktrees).
+
+        A worktree clusters under its parent, and the whole unit floats up together
+        when any member is live. Sets ``unit_*`` on every row; call before a re-sort.
+        """
+        rows = getattr(self, "_rows_by_path", {})
+        units: dict[str, list] = {}
+        for row in rows.values():
+            units.setdefault(getattr(row, "_parent_path", row.project_path), []).append(row)
+
+        any_working = False
+        for parent_path, unit_rows in units.items():
+            working = any(getattr(r, "is_live", False) for r in unit_rows)
+            attention = any(getattr(r, "is_attention", False) for r in unit_rows)
+            mru = max((getattr(r, "last_opened", 0.0) for r in unit_rows), default=0.0)
+            parent_row = rows.get(parent_path)
+            missing = getattr(parent_row, "is_missing", False) if parent_row else False
+            any_working = any_working or working
+            for r in unit_rows:
+                r.unit_working = working
+                r.unit_attention = attention
+                r.unit_mru = mru
+                r.unit_missing = missing
+        self._any_working = any_working
+
     @staticmethod
     def _sort_key(row):
-        """Working (live) first — attention within — then MRU; missing sink."""
+        """Units (parent + worktrees) sort together: working first, attention within,
+        then MRU; a parent sits above its worktrees; missing units sink."""
         return (
-            not getattr(row, "is_live", False),        # live session → top group
-            getattr(row, "is_missing", False),          # missing → bottom of its group
-            not getattr(row, "is_attention", False),    # "needs you" above plain live
-            -getattr(row, "last_opened", 0.0),          # MRU within group
+            not getattr(row, "unit_working", False),     # working unit → top group
+            getattr(row, "unit_missing", False),          # missing → bottom
+            not getattr(row, "unit_attention", False),    # "needs you" unit higher
+            -getattr(row, "unit_mru", 0.0),               # MRU across units
+            getattr(row, "_parent_path", ""),             # keep a unit contiguous
+            getattr(row, "_is_wt", False),                # parent above its worktrees
+            getattr(row, "_wt_order", 0),                 # worktrees in creation order
         )
 
     @classmethod
@@ -352,12 +388,12 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
         return (key_a > key_b) - (key_a < key_b)
 
     def _list_header(self, row, before):
-        """Section headers: 'Working' (live sessions) over 'All projects'."""
+        """Section headers: 'Working' (units with a live session) over 'All projects'."""
         if not getattr(self, "_any_working", False):
             row.set_header(None)  # nothing running → a plain flat list
             return
-        working = getattr(row, "is_live", False)
-        if before is None or getattr(before, "is_live", False) != working:
+        working = getattr(row, "unit_working", False)
+        if before is None or getattr(before, "unit_working", False) != working:
             row.set_header(self._section_header("Working" if working else "All projects"))
         else:
             row.set_header(None)
@@ -383,6 +419,7 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
             row = rows.get(str(Path(entry["path"]).resolve()))
             if row is not None:
                 row.last_opened = ProjectRegistry.last_opened_epoch(entry)
+        self._recompute_units()
         self.project_list.invalidate_sort()
         self.project_list.invalidate_headers()
 
@@ -417,7 +454,7 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
         sig = frozenset(working)
         if sig != getattr(self, "_working_sig", None):
             self._working_sig = sig
-            self._any_working = bool(sig)
+            self._recompute_units()  # roll live state up to units, then re-group
             self.project_list.invalidate_sort()
             self.project_list.invalidate_headers()
         # Desktop-notify once per fresh marker on a live session (incl. orphans).
@@ -540,11 +577,21 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
         if row.is_missing:
             row.add_css_class("dim-label")  # dim the whole card
 
+        # Worktree awareness (Stage 4): a linked worktree clusters + indents under
+        # its parent project. Both are static — a worktree stays a worktree.
+        row._is_wt = is_linked_worktree(path)
+        if row._is_wt:
+            parent = worktree_parent_root(path)
+            row._parent_path = str(parent.resolve()) if parent else str(path.resolve())
+            row.add_css_class("cc-worktree-child")
+        else:
+            row._parent_path = str(path.resolve())
+
         # Card is two rows: a header (identity + actions) over a git-status row.
         outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
         outer.set_margin_top(10)
         outer.set_margin_bottom(10)
-        outer.set_margin_start(14)
+        outer.set_margin_start(38 if row._is_wt else 14)  # indent worktree cards
         outer.set_margin_end(10)
 
         header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=14)

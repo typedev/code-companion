@@ -130,17 +130,24 @@ migration, always accurate. Stage 4 nesting groups by the derived parent.
       otherwise); background `remove_worktree` → unregister. Branch is kept
       (it's merged/deleted via the Stage 5 flow).
 
-## Stage 4 — PM as mission control (worktree visibility)
+## Stage 4 — PM as mission control (worktree visibility) — DONE
 
-- [ ] Worktrees render as **indented child rows (layout A)** under the parent card,
-      in **creation order (no sorting)** — there won't be many and the live/attention
-      dot + badges are enough to tell them apart. Badges: branch, dirty ●,
-      ahead/behind **vs the parent's branch**, last agent-activity time, live/attention dot.
-- [ ] With Stage 1's MRU sort, the project you're working floats up **with its
-      worktree rows**, so you just watch their dots.
-- [ ] Double-click a worktree row → opens it in its **own window** (existing flow;
-      per-path locks already allow parent + worktrees open at once).
-- [ ] Worktree row ⋮ menu: **Merge back** (Stage 5 button, later), **Remove**, **Open**.
+Worktrees are already first-class rows (own dots, badges, ⋮ menu, double-click-open
+— they're registered projects), so Stage 4 is just clustering + nesting:
+
+- [x] `_recompute_units` aggregates live/attention/MRU per **unit** (a parent + its
+      worktrees, grouped by the derived `_parent_path`). The sort key keeps a unit
+      contiguous (parent above its worktrees in creation order) and floats the whole
+      unit into "Working" when **any** member has a live session — so a live worktree
+      lifts its parent too. Recomputed on load / focus / live-set change.
+- [x] Worktree cards render **indented** (margin 38 vs 14) with a faint accent
+      left-border (`cc-worktree-child`). Live smoke: `[P, W1, W2, Q]` — unit P
+      (parent+worktrees) on top because W1 is live, Q below; headers Working/All.
+- [x] Double-click a worktree row opens its **own window** (existing per-path flow).
+- [x] Worktree row ⋮ menu: **Remove Worktree** (Stage 3). "Merge back" button is the
+      later Stage 5 fast-path.
+- Badges (branch/dirty/ahead-behind, activity) come for free via the existing
+      per-project status machinery — no extra work.
 
 ## Stage 5 — Completion → review → message → merge (the core flow)
 
