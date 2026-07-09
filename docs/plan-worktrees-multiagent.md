@@ -154,6 +154,18 @@ Worktrees are already first-class rows (own dots, badges, ⋮ menu, double-click
 The integration flow, built on the message system + an agent, with the reviewer
 as a **separate step before completion**.
 
+> **DONE (Option 1).** Key finding during build: the message system addresses by
+> canonical git remote, which a worktree **shares** with its parent — so a
+> worktree→main message is a self-addressed thread (no notification). Worktree
+> completions are local + ephemeral anyway, so the report travels over a **new
+> local channel** (`worktree_reports`), not the synced message store. Shipped:
+> `GitService.preview_merge`/`merge_branch` (git merge-tree, 4 tests);
+> `services/worktree_reports.py` (markdown+frontmatter, 4 tests); an
+> `--append-system-prompt` completion protocol for worktree sessions; MCP
+> `report_worktree_complete` / `list_worktree_reports` / `resolve_worktree_report`
+> (2 tests); a PM "⑂ N ready" parent badge + a "Merge back" button (preview →
+> clean merge / conflict guidance → resolve report). 306 tests green.
+
 **5a. Reviewer step (before completion).** Two complementary signals, both required:
 - [ ] **Behavioral run** — the worktree agent runs the feature (the `verify` skill /
       GUI harness) + any existing tests, and records *what it ran and observed*

@@ -587,6 +587,39 @@ class GitService:
         result = self._run_git(["rev-parse", "HEAD"])
         return result.stdout.strip() if result.returncode == 0 else ""
 
+    def preview_merge(self, branch: str, into: str = "HEAD") -> tuple[bool, list[str]]:
+        """Check whether ``branch`` merges into ``into`` cleanly — no working-tree touch.
+
+        Uses ``git merge-tree --write-tree`` (git 2.38+), which merges in memory:
+        returns ``(clean, conflicts)``. Sees **committed** state only, so the worktree
+        agent must commit before reporting done. Raises on an unexpected git error.
+        """
+        result = self._run_git(
+            ["merge-tree", "--write-tree", "--name-only", into, branch]
+        )
+        if result.returncode == 0:
+            return True, []
+        if result.returncode == 1:
+            # stdout: <tree-oid>\n<conflicted path>...  — drop the leading OID line.
+            lines = [ln for ln in result.stdout.splitlines() if ln.strip()]
+            return False, lines[1:]
+        raise RuntimeError(result.stderr.strip() or "git merge-tree failed")
+
+    def merge_branch(self, branch: str, message: str | None = None) -> None:
+        """Merge ``branch`` into the current branch. Aborts + raises on conflict/failure.
+
+        Always passes ``-m`` so git never opens an editor. Only call after
+        :meth:`preview_merge` reports clean — on any failure the half-merge is
+        aborted so the repo is never left in a conflicted state.
+        """
+        msg = message or f"Merge {branch}"
+        result = self._run_git(["merge", "--no-ff", "-m", msg, branch], timeout=60)
+        if result.returncode != 0:
+            self._run_git(["merge", "--abort"])
+            raise RuntimeError(
+                result.stderr.strip() or result.stdout.strip() or "git merge failed"
+            )
+
     def add_worktree(self, worktree_path: str, branch: str, base: str | None = None) -> None:
         """Create a linked worktree at ``worktree_path`` on a new ``branch`` (Stage 3).
 

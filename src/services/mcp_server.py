@@ -398,6 +398,36 @@ class McpServer:
             return self._do_resolve_message(thread_id, status)
 
         @mcp.tool()
+        def report_worktree_complete(summary: str, tests: str = "", review: str = "") -> dict:
+            """Report this worktree's task as complete to its parent project (Stage 5).
+
+            Only valid in a worktree window. Writes a local completion report that the
+            parent surfaces ("N ready") and its agent reads to integrate your branch.
+            Call this AFTER you have verified the feature works, run /code-review, and
+            **committed** (the merge preview only sees committed state). Put a short
+            summary in ``summary``, the reviewer's findings in ``review``, and the test
+            status in ``tests``. Returns ``{"ok", "branch"}``.
+            """
+            return self._do_report_worktree_complete(summary, tests, review)
+
+        @mcp.tool()
+        def list_worktree_reports() -> dict:
+            """List completion reports from this project's worktrees, ready to integrate.
+
+            Returns ``{"ok", "count", "reports": [{branch, worktree_path, tests,
+            created, body}]}``. Use before merging so you know what's done + its review.
+            """
+            return self._do_list_worktree_reports()
+
+        @mcp.tool()
+        def resolve_worktree_report(branch: str) -> dict:
+            """Clear a worktree's completion report after merging its branch.
+
+            Returns ``{"ok", "branch"}``.
+            """
+            return self._do_resolve_worktree_report(branch)
+
+        @mcp.tool()
         def gui_launch(cmd: str, width: int = 1280, height: int = 800) -> dict:
             """Launch a GUI app in an isolated headless compositor for inspection.
 
@@ -828,6 +858,40 @@ class McpServer:
         threads = message_store.threads_for(me, box=box, status=status)
         messages = [self._thread_dict(t) for t in threads]
         return {"ok": True, "count": len(messages), "messages": messages}
+
+    # -- worktree completion reports (Stage 5) ----------------------------
+    def _do_report_worktree_complete(self, summary: str, tests: str, review: str) -> dict:
+        from . import worktree_reports
+        from .git_service import GitService
+
+        if not getattr(self.window, "_is_worktree", False):
+            return {"ok": False,
+                    "error": "not a worktree — report_worktree_complete only works in a worktree window"}
+        parent = getattr(self.window, "_worktree_parent", None)
+        if parent is None:
+            return {"ok": False, "error": "could not resolve the parent project"}
+        branch = GitService(self.window.project_path).get_branch_name()
+        worktree_reports.write_report(
+            str(parent), branch, str(self.window.project_path), summary, tests, review
+        )
+        return {"ok": True, "branch": branch}
+
+    def _do_list_worktree_reports(self) -> dict:
+        from . import worktree_reports
+
+        reports = worktree_reports.list_reports(str(self.window.project_path))
+        slim = [
+            {"branch": r["branch"], "worktree_path": r["worktree_path"],
+             "tests": r["tests"], "created": r["created"], "body": r["body"]}
+            for r in reports
+        ]
+        return {"ok": True, "count": len(slim), "reports": slim}
+
+    def _do_resolve_worktree_report(self, branch: str) -> dict:
+        from . import worktree_reports
+
+        ok = worktree_reports.resolve_report(str(self.window.project_path), branch)
+        return {"ok": ok, "branch": branch}
 
     def _do_reply_message(self, thread_id: str, body: str) -> dict:
         from . import message_store

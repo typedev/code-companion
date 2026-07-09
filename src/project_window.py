@@ -1151,7 +1151,31 @@ class ProjectWindow(Adw.ApplicationWindow):
         settings_path = self._write_notify_settings()
         if settings_path:
             cli_command = f"{cli_command} --settings {GLib.shell_quote(settings_path)}"
+        prompt = self._worktree_system_prompt()
+        if prompt:
+            cli_command = f"{cli_command} --append-system-prompt {GLib.shell_quote(prompt)}"
         return cli_command
+
+    def _worktree_system_prompt(self) -> str | None:
+        """The completion protocol appended for a worktree session (Stage 5).
+
+        Tells the agent to self-verify, review, commit, and report to the parent
+        via MCP — and never to merge from the worktree. None for a normal project.
+        """
+        if not getattr(self, "_is_worktree", False):
+            return None
+        parent = getattr(self, "_worktree_parent", None)
+        parent_name = parent.name if parent else "the parent project"
+        branch = self.git_service.get_branch_name() if self._is_git_repo else "this branch"
+        return (
+            f"You are working in a git worktree of “{parent_name}” on branch "
+            f"“{branch}”. When the task is complete: (1) run the feature and "
+            f"confirm it actually works; (2) run /code-review on your branch; "
+            f"(3) commit your work (the merge preview only sees committed state); "
+            f"(4) call the report_worktree_complete MCP tool with a short summary, the "
+            f"review findings, and the test status. Do NOT merge or switch branches "
+            f"from this worktree — the parent project integrates your branch."
+        )
 
     def _write_notify_settings(self) -> str | None:
         """Write a temp --settings file with a Notification hook that marks this

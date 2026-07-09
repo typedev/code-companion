@@ -22,6 +22,7 @@ from .services.issues_service import GitHubError
 from .services.sync_service import SyncService
 from .services import session_summary_service
 from .services import message_store
+from .services import worktree_reports
 from .services import github_repos
 from .services.credential_service import CredentialService
 from .services.toast_service import ToastService
@@ -72,6 +73,7 @@ _BADGE_CSS = b"""
 .cc-badge-pr     { background: alpha(#2ec27e, 0.18); color: #26a269; }
 .cc-badge-issue  { background: alpha(@accent_color, 0.20); color: @accent_color; }
 .cc-badge-message { background: alpha(#3584e4, 0.20); color: #1c71d8; }
+.cc-badge-worktree { background: alpha(#f5a623, 0.22); color: #c46a00; }
 .cc-badge-missing { background: alpha(#e01b24, 0.20); color: #c01c28; }
 .cc-badge-local  { background: alpha(@theme_fg_color, 0.10); color: alpha(@theme_fg_color, 0.55); }
 .cc-badge-synced   { background: alpha(#33d17a, 0.18); color: #26a269; }
@@ -398,6 +400,27 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
         else:
             row.set_header(None)
 
+    def _apply_worktree_ready_badge(self, row):
+        """Show "⑂ N ready" on a parent card when its worktrees have completion reports."""
+        if getattr(row, "_is_wt", False):
+            return
+        count = worktree_reports.count_reports(row.project_path)
+        badge = getattr(row, "_wt_ready_badge", None)
+        if count > 0:
+            text = f"⑂ {count} ready"
+            if badge is None:
+                badge = self._make_badge(
+                    "cc-badge-worktree", "Worktrees ready to merge", text=text)
+                row.badges_box.append(badge)
+                row._wt_ready_badge = badge
+            else:
+                label = badge.get_last_child()
+                if isinstance(label, Gtk.Label):
+                    label.set_text(text)
+        elif badge is not None:
+            row.badges_box.remove(badge)
+            row._wt_ready_badge = None
+
     @staticmethod
     def _section_header(text: str) -> Gtk.Label:
         label = Gtk.Label(label=text, xalign=0)
@@ -449,6 +472,7 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
             kill_btn = getattr(row, "kill_session_btn", None)
             if kill_btn is not None:
                 kill_btn.set_sensitive(is_live)
+            self._apply_worktree_ready_badge(row)
         # Re-group only when the working set/attention actually changed, so a
         # blinking dot never reshuffles rows mid-glance.
         sig = frozenset(working)
@@ -715,7 +739,17 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
         row.kill_session_btn = kill_btn
 
         if is_linked_worktree(row.project_path):
-            # A worktree card: remove the worktree itself (git worktree remove).
+            # A worktree card: merge its branch back, or remove the worktree.
+            merge_btn = Gtk.Button()
+            merge_btn.add_css_class("flat")
+            merge_btn.set_child(self._menu_row("object-select-symbolic", "Merge back…"))
+            merge_btn.update_property([Gtk.AccessibleProperty.LABEL], ["Merge worktree back"])
+            merge_btn.connect(
+                "clicked",
+                lambda _b: (popover.popdown(), self._on_merge_back(row)),
+            )
+            box.append(merge_btn)
+
             remove_wt_btn = Gtk.Button()
             remove_wt_btn.add_css_class("flat")
             remove_wt_btn.set_child(self._menu_row("user-trash-symbolic", "Remove Worktree…"))
@@ -1678,6 +1712,78 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
         self.registry.unregister_project(wt)
         self._load_projects()
         ToastService.show("Worktree removed")
+        return False
+
+    # -- Merge back (worktree branch -> parent) -------------------------
+    def _on_merge_back(self, row: Gtk.ListBoxRow):
+        """Preview the merge (no working-tree touch), then merge or flag conflicts."""
+        wt = row.project_path
+        parent = worktree_parent_root(wt)
+        if parent is None:
+            ToastService.show_error("Not a linked worktree")
+            return
+
+        def worker():
+            error = None
+            clean = False
+            conflicts: list[str] = []
+            branch = ""
+            try:
+                branch = GitService(wt).get_branch_name()
+                clean, conflicts = GitService(parent).preview_merge(branch)
+            except Exception as exc:  # noqa: BLE001
+                error = str(exc)
+            GLib.idle_add(self._on_merge_preview, str(parent), branch, clean, conflicts, error)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_merge_preview(self, parent, branch, clean, conflicts, error):
+        if error:
+            ToastService.show_error(f"Merge preview failed: {error}")
+            return False
+        if not clean:
+            files = "\n".join(f"  • {c}" for c in conflicts[:12]) or "  • (unknown)"
+            dialog = Adw.AlertDialog(
+                heading="Conflicts — resolve in the worktree",
+                body=f"Merging “{branch}” into the parent branch conflicts in:\n\n{files}\n\n"
+                     "Open the worktree and let its agent resolve the conflicts, then try again.",
+            )
+            dialog.add_response("ok", "OK")
+            dialog.present(self)
+            return False
+        dialog = Adw.AlertDialog(
+            heading="Merge back",
+            body=f"Merge “{branch}” into the parent project’s current branch?",
+        )
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("merge", "Merge")
+        dialog.set_response_appearance("merge", Adw.ResponseAppearance.SUGGESTED)
+        dialog.set_default_response("merge")
+        dialog.connect("response", self._on_merge_back_confirm, parent, branch)
+        dialog.present(self)
+        return False
+
+    def _on_merge_back_confirm(self, _dialog, response, parent, branch):
+        if response != "merge":
+            return
+
+        def worker():
+            error = None
+            try:
+                GitService(parent).merge_branch(branch)
+            except Exception as exc:  # noqa: BLE001
+                error = str(exc)
+            GLib.idle_add(self._on_merge_done, parent, branch, error)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_merge_done(self, parent, branch, error):
+        if error:
+            ToastService.show_error(f"Merge failed: {error}")
+            return False
+        worktree_reports.resolve_report(parent, branch)
+        self._load_projects()  # refresh the "N ready" badge
+        ToastService.show(f"Merged {branch} into the parent")
         return False
 
     # ------------------------------------------------------------------
