@@ -78,8 +78,10 @@ class ProjectWindow(Adw.ApplicationWindow):
         # Connect destroy handler early so lock is always released on crash
         self.connect("destroy", self._on_destroy)
 
-        # Register project if not already
+        # Register project if not already, and stamp it as just-opened so the
+        # Project Manager floats it to the top (MRU). Runs for CLI opens too.
         self.registry.register_project(str(self.project_path))
+        self.registry.mark_opened(str(self.project_path))
 
         self._setup_window()
         self._build_ui()

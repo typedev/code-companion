@@ -127,6 +127,9 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
         )
 
         self.connect("destroy", self._on_destroy)
+        # Re-sort MRU when the manager regains focus (a project opened in another
+        # process only writes projects.json; this picks up the new open order).
+        self.connect("notify::is-active", self._on_active_changed)
 
     def _setup_signal_handler(self):
         """Setup SIGUSR1 handler to bring window to front."""
@@ -242,6 +245,8 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
         self.project_list.set_selection_mode(Gtk.SelectionMode.SINGLE)
         self.project_list.add_css_class("boxed-list")
         self.project_list.set_filter_func(self._filter_row)
+        # MRU order: most-recently-opened project on top, missing ones sink.
+        self.project_list.set_sort_func(self._sort_rows)
 
         scrolled.set_child(self.project_list)
         content_box.append(scrolled)
@@ -290,24 +295,30 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
 
     def _load_projects(self):
         """Load projects from registry and kick off a background status scan."""
-        projects = self.registry.get_registered_projects()
+        entries = self.registry.get_projects()
 
         # Clear existing
         self.project_list.remove_all()
         self._rows_by_path = {}
 
-        if not projects:
+        if not entries:
             self._show_empty_state()
             self._update_latest_refresh_label()
             return
 
-        # Show every registered project; missing ones are marked (not hidden) and
-        # sink to the bottom so the user can see and remove them.
-        all_paths = [Path(p) for p in projects]
+        # Row order is handled by the ListBox sort func (MRU; missing sink to the
+        # bottom), so append order here doesn't matter — just stamp each row with
+        # its open time and let the sort func place it.
+        all_paths = [Path(e["path"]) for e in entries]
+        epoch_by_path = {
+            str(Path(e["path"]).resolve()): ProjectRegistry.last_opened_epoch(e)
+            for e in entries
+        }
         present = [p for p in all_paths if p.exists()]
         present_set = set(present)
-        for path in [*present, *(p for p in all_paths if p not in present_set)]:
+        for path in all_paths:
             row = self._create_project_row(path)
+            row.last_opened = epoch_by_path.get(str(path.resolve()), 0.0)
             self.project_list.append(row)
             self._rows_by_path[str(path.resolve())] = row
             # Render any cached network status immediately (survives reopen).
@@ -316,11 +327,32 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
                 if cached:
                     self._render_remote_badges(row, cached)
 
+        self.project_list.invalidate_sort()
         self._update_latest_refresh_label()
         self._start_local_scan(present)
         self._refresh_live_indicators()
         if hasattr(self, "_msg_seen"):  # guard: _load_projects may run before init finishes
             self._scan_messages()
+
+    @staticmethod
+    def _sort_rows(row_a, row_b) -> int:
+        """MRU sort: present before missing, then most-recently-opened first."""
+        key_a = (getattr(row_a, "is_missing", False), -getattr(row_a, "last_opened", 0.0))
+        key_b = (getattr(row_b, "is_missing", False), -getattr(row_b, "last_opened", 0.0))
+        return (key_a > key_b) - (key_a < key_b)
+
+    def _on_active_changed(self, *_args):
+        """When the manager regains focus, re-read open times and re-sort in place."""
+        if not self.get_property("is-active"):
+            return
+        rows = getattr(self, "_rows_by_path", None)
+        if not rows:
+            return
+        for entry in self.registry.get_projects():
+            row = rows.get(str(Path(entry["path"]).resolve()))
+            if row is not None:
+                row.last_opened = ProjectRegistry.last_opened_epoch(entry)
+        self.project_list.invalidate_sort()
 
     def _refresh_live_indicators(self):
         """Reflect running tmux sessions on the cards (dot + kill action) and
