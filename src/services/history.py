@@ -6,8 +6,12 @@ from pathlib import Path
 
 from ..models import (
     Project, Session, Message, MessageRole, ContentBlock, ContentType, SessionContent,
+    SessionInsight, TokenUsage,
 )
 from ..utils import encode_project_path
+
+# Tool names whose input names a file the session touched (8.1 files_touched).
+_FILE_TOOL_KEYS = {"Edit": "file_path", "Write": "file_path", "NotebookEdit": "notebook_path"}
 
 
 class HistoryService:
@@ -136,6 +140,108 @@ class HistoryService:
 
         except (OSError, IOError):
             return None
+
+    def parse_session_insight(self, session_file: Path) -> SessionInsight:
+        """Extract observability data (tokens, files, timing) in one streaming pass.
+
+        Mirrors ``_parse_session_metadata``'s cheap line-by-line read (never builds
+        ``Message`` objects). Token ``usage`` is bucketed per ``message.model`` since
+        a session can mix models (main agent + subagents). Robust to a still-writing
+        tail: an unparsable last line is simply skipped.
+        """
+        insight = SessionInsight(session_id=session_file.stem, path=session_file)
+        seen_files: set[str] = set()
+        counted_ids: set[str] = set()  # usage is counted once per assistant message id
+
+        try:
+            with open(session_file, "r", encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    if not line.strip():
+                        continue
+                    try:
+                        event = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+
+                    event_type = event.get("type", "")
+                    if event_type in ("user", "assistant"):
+                        insight.message_count += 1
+
+                    ts = self._parse_timestamp(event.get("timestamp"))
+                    if ts is not None:
+                        if insight.first_ts is None:
+                            insight.first_ts = ts
+                        insight.last_ts = ts
+
+                    if event_type == "assistant":
+                        self._accumulate_assistant_insight(event, insight, seen_files, counted_ids)
+                    elif event_type == "user" and not insight.first_prompt:
+                        insight.first_prompt = self._extract_user_text(event)
+
+        except (OSError, IOError):
+            pass
+
+        return insight
+
+    def _accumulate_assistant_insight(
+        self, event: dict, insight: SessionInsight, seen_files: set[str], counted_ids: set[str]
+    ) -> None:
+        """Fold one assistant event's usage / touched files / last text into ``insight``.
+
+        A single assistant message is split across several JSONL lines (one per
+        content block: thinking / text / tool_use), and **every line repeats the
+        same ``usage``**. So usage is counted once per ``message.id`` (falling back
+        to ``requestId``), while content blocks are processed on every line.
+        All-zero usage (e.g. ``<synthetic>`` placeholder messages) is ignored.
+        """
+        msg = event.get("message", {})
+
+        usage = msg.get("usage") or {}
+        if usage:
+            tokens = TokenUsage(
+                input=int(usage.get("input_tokens", 0) or 0),
+                output=int(usage.get("output_tokens", 0) or 0),
+                cache_creation=int(usage.get("cache_creation_input_tokens", 0) or 0),
+                cache_read=int(usage.get("cache_read_input_tokens", 0) or 0),
+            )
+            msg_id = msg.get("id") or event.get("requestId")
+            if tokens.total > 0 and (msg_id is None or msg_id not in counted_ids):
+                if msg_id is not None:
+                    counted_ids.add(msg_id)
+                model = msg.get("model") or "unknown"
+                insight.usage_by_model.setdefault(model, TokenUsage()).add(tokens)
+
+        content = msg.get("content", [])
+        if not isinstance(content, list):
+            return
+        for item in content:
+            if not isinstance(item, dict):
+                continue
+            item_type = item.get("type", "")
+            if item_type == "text":
+                text = (item.get("text") or "").strip()
+                if text:
+                    insight.last_assistant_text = text
+            elif item_type == "tool_use":
+                key = _FILE_TOOL_KEYS.get(item.get("name", ""))
+                if not key:
+                    continue
+                path = (item.get("input") or {}).get(key)
+                if path and path not in seen_files:
+                    seen_files.add(path)
+                    insight.files_touched.append(path)
+
+    @staticmethod
+    def _extract_user_text(event: dict) -> str:
+        """First textual content of a user event (skips tool_result-only messages)."""
+        content = event.get("message", {}).get("content", "")
+        if isinstance(content, str):
+            return content.strip()
+        if isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "text":
+                    return (block.get("text") or "").strip()
+        return ""
 
     def load_session_content(self, session: Session) -> SessionContent:
         """Load full session content with all messages and tool calls.

@@ -6,6 +6,7 @@ from .config_path import get_config_dir, migrate_config_if_needed
 from .project_registry import ProjectRegistry
 from .project_lock import ProjectLock
 from .project_status_service import ProjectStatusService, LocalStatus, RemoteStatus
+from .session_insight_service import SessionInsightService
 from .tasks_service import TasksService, Task, TaskInput
 from .git_service import GitService, GitFileStatus, FileStatus, GitCommit, AuthenticationRequired, PushRejected
 from .issues_service import IssuesService, Issue, IssueComment, PullRequest, GitHubError
@@ -34,6 +35,7 @@ __all__ = [
     "ProjectRegistry",
     "ProjectLock",
     "ProjectStatusService",
+    "SessionInsightService",
     "LocalStatus",
     "RemoteStatus",
     "TasksService",

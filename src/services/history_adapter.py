@@ -3,7 +3,7 @@
 from abc import ABC, abstractmethod
 from pathlib import Path
 
-from ..models import Session, SessionContent
+from ..models import Session, SessionContent, SessionInsight
 
 
 class HistoryAdapter(ABC):
@@ -58,6 +58,15 @@ class HistoryAdapter(ABC):
         Returns:
             A SessionContent with the parsed messages (chronological order) and
             an ``in_progress`` flag when the file's tail is still being written.
+        """
+        pass
+
+    @abstractmethod
+    def get_session_insight(self, session: Session) -> SessionInsight:
+        """Extract observability data (tokens, files touched, timing) for a session.
+
+        A cheap streaming pass — does not build the full message list. Providers
+        other than Claude supply their own extraction from their own log format.
         """
         pass
 

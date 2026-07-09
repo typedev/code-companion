@@ -4,7 +4,7 @@ from pathlib import Path
 
 from ..history_adapter import HistoryAdapter
 from ..history import HistoryService
-from ...models import Session, SessionContent
+from ...models import Session, SessionContent, SessionInsight
 
 
 class ClaudeHistoryAdapter(HistoryAdapter):
@@ -37,6 +37,10 @@ class ClaudeHistoryAdapter(HistoryAdapter):
     def load_session_content(self, session: Session) -> SessionContent:
         """Load full session content."""
         return self._service.load_session_content(session)
+
+    def get_session_insight(self, session: Session) -> SessionInsight:
+        """Extract observability data for a Claude session."""
+        return self._service.parse_session_insight(session.path)
 
     @classmethod
     def is_available(cls) -> bool:
