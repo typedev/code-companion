@@ -16,6 +16,7 @@ from .services import get_adapter, ProjectLock, ProjectRegistry, GitService, Ico
 from .services import session_notify, message_store
 from .utils import git_auth, claude_session
 from .utils.project_identity import resolve_project_identity
+from .utils.git_worktree import is_linked_worktree, worktree_parent_root
 from .widgets import SessionView, TerminalView, FileTree, FileEditor, TasksPanel, GitChangesPanel, GitHistoryPanel, DiffView, CommitDetailView, ClaudeHistoryPanel, FileSearchDialog, UnifiedSearch, NotesPanel, PreferencesDialog, SnippetsBar, QueryEditor, ProblemsPanel, ProblemsDetailView, IssuesPanel, IssueDetailView, MessagesPanel, MessageThreadView, ImageViewer, SvgEditor, BinaryFileView
 from .utils.text_files import is_binary
 
@@ -142,6 +143,15 @@ class ProjectWindow(Adw.ApplicationWindow):
         # Also update header title widget if available
         if hasattr(self, "window_title"):
             self.window_title.set_title(title)
+            # A linked worktree advertises its parent + branch in the subtitle so
+            # it's obvious this window is a worktree, not the main checkout.
+            if getattr(self, "_is_worktree", False):
+                parent = getattr(self, "_worktree_parent", None)
+                parent_name = parent.name if parent else "parent"
+                subtitle = f"⑂ worktree of {parent_name}"
+                if branch:
+                    subtitle += f" · {branch}"
+                self.window_title.set_subtitle(subtitle)
 
     def _apply_theme(self):
         """Apply color theme from settings."""
@@ -464,6 +474,13 @@ class ProjectWindow(Adw.ApplicationWindow):
         self._is_git_repo = self.git_service.is_git_repo()
         if self._is_git_repo:
             self.git_service.open()
+
+        # Worktree self-awareness: a linked worktree gets a "worktree of <parent>"
+        # subtitle so it's never mistaken for the main checkout.
+        self._is_worktree = is_linked_worktree(self.project_path)
+        self._worktree_parent = (
+            worktree_parent_root(self.project_path) if self._is_worktree else None
+        )
 
         # Issues service (GitHub Issues); harmless for non-GitHub repos
         self.issues_service = IssuesService(self.project_path)

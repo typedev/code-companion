@@ -4,6 +4,8 @@ from pathlib import Path
 
 import gi
 
+from ..utils.git_worktree import resolve_worktree_dirs
+
 gi.require_version("Gio", "2.0")
 gi.require_version("GLib", "2.0")
 gi.require_version("GObject", "2.0")
@@ -60,9 +62,21 @@ class FileMonitorService(GObject.Object):
         # Debounce state
         self._pending_signals: dict[str, int] = {}  # signal_name -> timeout_id
 
-        # Check if git repo
+        # Check if git repo. In a linked worktree `.git` is a *file*, and git
+        # state splits across two real dirs: the per-worktree gitdir (HEAD/index/
+        # logs) and the shared common dir (refs/packed-refs). For a normal repo
+        # both are the same `.git` directory.
         self._git_dir = self.project_path / ".git"
-        self._is_git_repo = self._git_dir.is_dir()
+        self._git_common_dir = self._git_dir
+        if self._git_dir.is_dir():
+            self._is_git_repo = True
+        else:
+            dirs = resolve_worktree_dirs(self.project_path)
+            if dirs is not None:
+                self._git_dir, self._git_common_dir = dirs
+                self._is_git_repo = True
+            else:
+                self._is_git_repo = False
 
         self._setup_monitors()
 
@@ -90,8 +104,8 @@ class FileMonitorService(GObject.Object):
                 callback=self._on_git_index_changed
             )
 
-        # .git/refs/heads/ - branch updates, new commits
-        refs_heads = self._git_dir / "refs" / "heads"
+        # refs/heads/ - branch updates, new commits (shared: common dir)
+        refs_heads = self._git_common_dir / "refs" / "heads"
         if refs_heads.exists():
             self._add_monitor(
                 refs_heads,
@@ -99,7 +113,7 @@ class FileMonitorService(GObject.Object):
                 callback=self._on_git_refs_changed
             )
 
-        # .git/logs/HEAD - all git operations (commit, reset, checkout, etc)
+        # logs/HEAD - this worktree's operations (per-worktree: gitdir)
         logs_head = self._git_dir / "logs" / "HEAD"
         if logs_head.exists():
             self._add_monitor(
@@ -108,8 +122,8 @@ class FileMonitorService(GObject.Object):
                 callback=self._on_git_log_changed
             )
 
-        # .git/refs/remotes/*/ - remote tracking branches (push/pull updates)
-        refs_remotes = self._git_dir / "refs" / "remotes"
+        # refs/remotes/*/ - remote tracking branches (shared: common dir)
+        refs_remotes = self._git_common_dir / "refs" / "remotes"
         if refs_remotes.exists():
             for remote_dir in refs_remotes.iterdir():
                 if remote_dir.is_dir():
@@ -128,8 +142,8 @@ class FileMonitorService(GObject.Object):
                 callback=self._on_git_refs_changed
             )
 
-        # .git/packed-refs - refs packed by gc/clone (loose refs may not exist)
-        packed_refs = self._git_dir / "packed-refs"
+        # packed-refs - refs packed by gc/clone (shared: common dir)
+        packed_refs = self._git_common_dir / "packed-refs"
         if packed_refs.exists():
             self._add_monitor(
                 packed_refs,
@@ -213,8 +227,13 @@ class FileMonitorService(GObject.Object):
         """Attach git monitors once, after an in-app `git init` creates .git."""
         if self._is_git_repo:
             return
-        if not self._git_dir.is_dir():
-            return
+        if self._git_dir.is_dir():
+            self._git_common_dir = self._git_dir
+        else:
+            dirs = resolve_worktree_dirs(self.project_path)
+            if dirs is None:
+                return
+            self._git_dir, self._git_common_dir = dirs
         self._is_git_repo = True
         self._setup_git_monitors()
         # Flip any repo-unaware panels to live git state.

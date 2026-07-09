@@ -20,6 +20,7 @@ from ..models.sync import (
     SyncState,
 )
 from ..utils import claude_paths, git_auth
+from ..utils.git_worktree import is_linked_worktree
 from ..utils.project_identity import (
     ProjectIdentity,
     origin_url,
@@ -196,6 +197,13 @@ class SyncService:
         # Resolve identities; non-syncable projects are reported and skipped.
         syncable: list[tuple[str, ProjectIdentity]] = []
         for path in project_paths:
+            # A linked worktree shares its parent's identity — syncing it would
+            # collide with the parent over one slot. It's synced via the parent.
+            if is_linked_worktree(path):
+                self._emit(result, progress, self._status(
+                    path, "", SyncState.NOT_CONFIGURED,
+                    detail="linked worktree (synced via its parent)"))
+                continue
             ident = resolve_project_identity(path)
             if ident is None:
                 self._emit(result, progress, self._status(path, "", SyncState.NOT_CONFIGURED))
@@ -497,6 +505,8 @@ class SyncService:
         """Backup entries whose project is not registered on this machine."""
         known: set[str] = set()
         for p in registered_paths:
+            if is_linked_worktree(p):
+                continue  # worktree shares the parent's id; the parent covers it
             ident = resolve_project_identity(p)
             if ident:
                 known.add(ident.project_id)
