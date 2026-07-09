@@ -9,6 +9,7 @@ from gi.repository import Gtk, Gdk, GObject, Adw
 from ..services import SnippetsService, RulesService, ToastService, GitService, FileStatus, FileMonitorService, run_async
 from ..services.icon_cache import IconCache
 from ..services.config_path import get_config_dir
+from ..utils.markdown_tasks import count_checkboxes_in_file
 
 
 # CSS classes for git status colors (same as file_tree.py)
@@ -99,6 +100,15 @@ class NotesPanel(Gtk.Box):
         .git-renamed { color: #3498db; }
         /* Normal font weight for file labels */
         .notes-file-label { font-weight: normal; }
+        /* Plan-progress badge (8.6): 12/45 next to plan docs */
+        .plan-progress {
+            font-family: monospace;
+            font-size: 0.8em;
+            padding: 1px 6px;
+            border-radius: 8px;
+            background: alpha(@accent_color, 0.18);
+        }
+        .plan-progress-done { background: alpha(@success_color, 0.22); }
         """
         provider = Gtk.CssProvider()
         provider.load_from_data(css)
@@ -523,6 +533,19 @@ class NotesPanel(Gtk.Box):
                 label.add_css_class(css_class)
 
         btn_box.append(label)
+
+        # Plan-progress badge (8.6): "done/total" for docs that have task
+        # checkboxes (e.g. docs/plan-*.md). Cheap inline read — docs are small.
+        if section == "docs":
+            done, total = count_checkboxes_in_file(file_path)
+            if total > 0:
+                badge = Gtk.Label(label=f"{done}/{total}")
+                badge.add_css_class("plan-progress")
+                if done == total:
+                    badge.add_css_class("plan-progress-done")
+                badge.set_tooltip_text(f"{done} of {total} tasks done")
+                badge.set_valign(Gtk.Align.CENTER)
+                btn_box.append(badge)
 
         btn.set_child(btn_box)
         btn.connect("clicked", self._on_file_clicked)

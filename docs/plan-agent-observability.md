@@ -88,9 +88,15 @@ The 8.1 insight index still powers 8.2; only the PM card hint (label, background
 - Verified on real sessions: the current session correctly correlated its own 4 commits;
   range diff spans the expected files.
 
+### 8.6 — Plan progress from checkboxes — DONE (Notes panel only)
+- [x] `src/utils/markdown_tasks.py` — `count_checkboxes` / `count_checkboxes_in_file`
+      (`- [ ]` / `- [x]`, any bullet/indent). `tests/test_markdown_tasks.py`.
+- [x] `NotesPanel._add_file_row` shows a `done/total` badge on **docs** rows that have
+      task checkboxes (green when complete); cheap inline read (docs are small).
+- PM-card badge from the plan (the roadmap's optional second half) **intentionally skipped** —
+  it duplicates the lean-card guidance that killed 8.4 (see feedback note in the roadmap memory).
+
 ### Still deferred
 - **8.5** Cross-project prompt search: new PM search surface reusing the rg engine in
   `unified_search._search_content` over `claude_paths.projects_root()` (`-g "*.jsonl"
   '"type":"user"'`); results grouped project→session, open at session.
-- **8.6** Plan-checkbox progress: `- [ ]`/`- [x]` counter util; `12/45` next to
-  `docs/plan-*.md` rows in `notes_panel._add_file_row`; optional PM card badge.
