@@ -13,9 +13,10 @@ from gi.repository import Adw, Gtk, GLib, Gdk, Gio
 
 from .models import Session
 from .services import get_adapter, ProjectLock, ProjectRegistry, GitService, IconCache, ToastService, SettingsService, FileMonitorService, IssuesService, McpServer, run_async
-from .services import session_notify
+from .services import session_notify, message_store
 from .utils import git_auth, claude_session
-from .widgets import SessionView, TerminalView, FileTree, FileEditor, TasksPanel, GitChangesPanel, GitHistoryPanel, DiffView, CommitDetailView, ClaudeHistoryPanel, FileSearchDialog, UnifiedSearch, NotesPanel, PreferencesDialog, SnippetsBar, QueryEditor, ProblemsPanel, ProblemsDetailView, IssuesPanel, IssueDetailView, ImageViewer, SvgEditor, BinaryFileView
+from .utils.project_identity import resolve_project_identity
+from .widgets import SessionView, TerminalView, FileTree, FileEditor, TasksPanel, GitChangesPanel, GitHistoryPanel, DiffView, CommitDetailView, ClaudeHistoryPanel, FileSearchDialog, UnifiedSearch, NotesPanel, PreferencesDialog, SnippetsBar, QueryEditor, ProblemsPanel, ProblemsDetailView, IssuesPanel, IssueDetailView, MessagesPanel, MessageThreadView, ImageViewer, SvgEditor, BinaryFileView
 from .utils.text_files import is_binary
 
 # Managed tmux config for the persistent Claude pane (see the session supervisor
@@ -62,6 +63,9 @@ class ProjectWindow(Adw.ApplicationWindow):
         self.issue_detail_page: Adw.TabPage | None = None
         self.issue_detail_view: IssueDetailView | None = None
         self.issues_service: IssuesService | None = None
+        self.message_detail_page: Adw.TabPage | None = None
+        self.message_detail_view: MessageThreadView | None = None
+        self._project_remote: str | None = None  # canonical remote (messages address)
 
         # Acquire lock
         if not self.lock.acquire():
@@ -328,6 +332,11 @@ class ProjectWindow(Adw.ApplicationWindow):
         group.append(self._issues_toolbar_btn)
         self._tab_buttons["issues"] = self._issues_toolbar_btn
 
+        # Messages button (inter-project mailbox)
+        self._messages_toolbar_btn = self._create_toolbar_button("mail", "Messages", "messages")
+        group.append(self._messages_toolbar_btn)
+        self._tab_buttons["messages"] = self._messages_toolbar_btn
+
         return group
 
     def _setup_badge_css(self):
@@ -455,6 +464,11 @@ class ProjectWindow(Adw.ApplicationWindow):
         # Issues service (GitHub Issues); harmless for non-GitHub repos
         self.issues_service = IssuesService(self.project_path)
 
+        # Canonical git remote — the address this project uses to send/receive messages.
+        # None for a local-only project (which cannot participate in the mailbox).
+        identity = resolve_project_identity(self.project_path)
+        self._project_remote = identity.canonical_remote if identity else None
+
         # Show/hide Git button based on git repo status
         if hasattr(self, "_git_toolbar_btn"):
             self._git_toolbar_btn.set_visible(self._is_git_repo)
@@ -462,6 +476,10 @@ class ProjectWindow(Adw.ApplicationWindow):
         # Show/hide Issues button based on GitHub remote
         if hasattr(self, "_issues_toolbar_btn"):
             self._issues_toolbar_btn.set_visible(self.issues_service.is_github_repo())
+
+        # Show/hide Messages button based on whether the project has a remote identity
+        if hasattr(self, "_messages_toolbar_btn"):
+            self._messages_toolbar_btn.set_visible(self._project_remote is not None)
 
         # Track which sidebar tabs have been fully built (for lazy loading)
         self._built_tabs: set[str] = set()
@@ -485,6 +503,7 @@ class ProjectWindow(Adw.ApplicationWindow):
         self.sidebar_stack.add_named(self._create_tab_placeholder(), "notes")
         self.sidebar_stack.add_named(self._create_tab_placeholder(), "problems")
         self.sidebar_stack.add_named(self._create_tab_placeholder(), "issues")
+        self.sidebar_stack.add_named(self._create_tab_placeholder(), "messages")
 
         # Wrap stack in scrolled window to allow shrinking
         scrolled = Gtk.ScrolledWindow()
@@ -533,6 +552,8 @@ class ProjectWindow(Adw.ApplicationWindow):
             page = self._build_problems_page()
         elif tab_name == "issues":
             page = self._build_issues_page()
+        elif tab_name == "messages":
+            page = self._build_messages_page()
         else:
             return
 
@@ -568,6 +589,9 @@ class ProjectWindow(Adw.ApplicationWindow):
             # Lazy load Issues when tab is shown
             if tab_name == "issues" and hasattr(self, "issues_panel"):
                 self.issues_panel.load_if_needed()
+            # Lazy load Messages when tab is shown
+            if tab_name == "messages" and hasattr(self, "messages_panel"):
+                self.messages_panel.load_if_needed()
         else:
             # Don't allow deactivating without activating another
             # Check if any other visible button is active
@@ -658,6 +682,10 @@ class ProjectWindow(Adw.ApplicationWindow):
 
     def _on_send_issue_to_claude(self, view, prompt: str):
         """Feed a prepared issue prompt into the singleton Claude terminal."""
+        self._feed_prompt_to_claude(prompt)
+
+    def _feed_prompt_to_claude(self, prompt: str):
+        """Feed a prepared prompt into the singleton Claude terminal (starting it if needed)."""
         started_now = self.claude_terminal is None
         if started_now:
             self._on_claude_clicked(None)
@@ -689,6 +717,67 @@ class ProjectWindow(Adw.ApplicationWindow):
                 self._set_button_badge(self._issues_toolbar_btn, count, "blue")
 
         run_async(self, worker=_fetch, on_done=_apply, key="issues_badge")
+
+    # ------------------------------------------------------------------
+    # Messages (inter-project mailbox)
+    # ------------------------------------------------------------------
+    def _build_messages_page(self) -> Gtk.Box:
+        """Build the Messages tab content (inter-project mailbox)."""
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        box.set_vexpand(True)
+
+        self.messages_panel = MessagesPanel(self._project_remote)
+        self.messages_panel.connect("message-selected", self._on_message_selected)
+        self.messages_panel.connect(
+            "messages-changed", lambda _p: self._update_messages_badge()
+        )
+        box.append(self.messages_panel)
+        return box
+
+    def _on_message_selected(self, panel, thread):
+        """Show a message thread in the main area (single-tab reuse)."""
+        if self.message_detail_view is not None and self.message_detail_page is not None:
+            self.message_detail_view.update(thread)
+            self.message_detail_page.set_title(thread.subject or "Message")
+            self.tab_view.set_selected_page(self.message_detail_page)
+            return
+
+        self.message_detail_view = MessageThreadView(thread, self._project_remote or "")
+        self.message_detail_view.connect("send-to-claude", self._on_send_thread_to_claude)
+        self.message_detail_view.connect("thread-changed", self._on_thread_changed)
+
+        self.message_detail_page = self.tab_view.append(self.message_detail_view)
+        self.message_detail_page.set_title(thread.subject or "Message")
+        self.message_detail_page.set_icon(Gio.ThemedIcon.new("mail-read-symbolic"))
+        self.tab_view.set_selected_page(self.message_detail_page)
+
+    def _on_thread_changed(self, view, thread):
+        """After a reply/status/delete: refresh the list and badge."""
+        if hasattr(self, "messages_panel"):
+            self.messages_panel.refresh()
+        self._update_messages_badge()
+
+    def _on_send_thread_to_claude(self, view, prompt: str):
+        """Feed a prepared message-thread prompt into the singleton Claude terminal."""
+        self._feed_prompt_to_claude(prompt)
+
+    def _update_messages_badge(self):
+        """Update the Messages toolbar badge with the open-inbox count."""
+        if not hasattr(self, "_messages_toolbar_btn") or not self._project_remote:
+            return
+        me = self._project_remote
+
+        def _fetch():
+            try:
+                return len(message_store.threads_for(me, box="inbox", status="open"))
+            except Exception:
+                return 0
+
+        def _apply(count):
+            if hasattr(self, "_messages_toolbar_btn"):
+                self._set_button_badge(self._messages_toolbar_btn, count, "blue")
+
+        run_async(self, worker=_fetch, on_done=_apply, key="messages_badge")
 
     def _on_notes_open_file(self, panel, file_path: str):
         """Handle notes panel file open."""
@@ -1290,6 +1379,10 @@ class ProjectWindow(Adw.ApplicationWindow):
         # Issues badge (only meaningful for GitHub repos)
         if self.issues_service is not None and self.issues_service.is_github_repo():
             self._update_issues_badge()  # Initial badge
+
+        # Messages badge (only for projects with a remote identity)
+        if self._project_remote is not None:
+            self._update_messages_badge()  # Initial badge
 
     def _on_session_activated(self, panel, session: Session):
         """Handle session activation - show in main area, reuse single tab."""

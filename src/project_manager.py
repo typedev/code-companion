@@ -1,5 +1,6 @@
 """Project Manager window for selecting and opening projects."""
 
+import json
 import signal
 import subprocess
 import sys
@@ -19,7 +20,11 @@ from .services.git_service import AuthenticationRequired
 from .services.issues_service import GitHubError
 from .services.sync_service import SyncService
 from .services import session_summary_service
+from .services import message_store
+from .services.config_path import get_config_dir
 from .services.icon_cache import IconCache
+from .utils.atomic_write import atomic_write_text
+from .utils.project_identity import resolve_project_identity
 from .models.sync import ProjectSyncStatus, SyncState
 from .services import session_notify
 from .utils import claude_session
@@ -57,6 +62,7 @@ _BADGE_CSS = b"""
 .cc-badge-behind { background: alpha(#e66100, 0.22); color: #c64600; }
 .cc-badge-pr     { background: alpha(#2ec27e, 0.18); color: #26a269; }
 .cc-badge-issue  { background: alpha(@accent_color, 0.20); color: @accent_color; }
+.cc-badge-message { background: alpha(#3584e4, 0.20); color: #1c71d8; }
 .cc-badge-local  { background: alpha(@theme_fg_color, 0.10); color: alpha(@theme_fg_color, 0.55); }
 .cc-badge-synced   { background: alpha(#33d17a, 0.18); color: #26a269; }
 .cc-badge-conflict { background: alpha(#e01b24, 0.22); color: #c01c28; }
@@ -244,6 +250,14 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
         # Keep the live-session dots fresh while the manager is open.
         GLib.timeout_add_seconds(4, self._refresh_live_indicators)
 
+        # Inter-project message state: per-remote canonical-remote cache + the
+        # persisted "seen" store (so restarts don't re-notify). A first run with no
+        # store bootstraps silently (marks everything seen without notifying).
+        self._msg_remote_cache: dict[str, str | None] = {}
+        self._msg_bootstrapped = self._msg_seen_path().exists()
+        self._msg_seen = self._load_msg_seen()
+        GLib.timeout_add_seconds(10, self._scan_messages)
+
     def _load_projects(self):
         """Load projects from registry and kick off a background status scan."""
         projects = self.registry.get_registered_projects()
@@ -270,6 +284,8 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
         self._update_latest_refresh_label()
         self._start_local_scan(existing)
         self._refresh_live_indicators()
+        if hasattr(self, "_msg_seen"):  # guard: _load_projects may run before init finishes
+            self._scan_messages()
 
     def _refresh_live_indicators(self):
         """Reflect running tmux sessions on the cards (dot + kill action) and
@@ -483,6 +499,7 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
         row.local_badges = None
         row.remote_badges = None
         row.sync_badges = None
+        row.message_badges = None
         outer.append(badges)
 
         row.set_child(outer)
@@ -733,6 +750,117 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
         for badge in badges:
             row.badges_box.append(badge)
         row.remote_badges = badges
+
+    # ------------------------------------------------------------------
+    # Inter-project messages (badge + desktop notifications)
+    # ------------------------------------------------------------------
+    def _render_message_badges(self, row, count: int):
+        """(Re)render the pending-messages badge on a row."""
+        for badge in getattr(row, "message_badges", None) or []:
+            row.badges_box.remove(badge)
+        badges: list[Gtk.Widget] = []
+        if count:
+            badges.append(
+                self._make_badge(
+                    "cc-badge-message",
+                    f"{count} pending message(s)",
+                    text=f"✉ {count}",
+                )
+            )
+        for badge in badges:
+            row.badges_box.append(badge)
+        row.message_badges = badges
+
+    def _msg_seen_path(self) -> Path:
+        return get_config_dir() / "messages-seen.json"
+
+    def _load_msg_seen(self) -> dict:
+        try:
+            return json.loads(self._msg_seen_path().read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+
+    def _save_msg_seen(self):
+        try:
+            atomic_write_text(self._msg_seen_path(), json.dumps(self._msg_seen, indent=2))
+        except OSError:
+            pass
+
+    def _scan_messages(self):
+        """Recompute per-project pending counts and detect new inbound messages.
+
+        Also serves as a recurring GLib timeout, so it always returns True. The
+        canonical-remote resolution (one git call per uncached project) and the
+        message-store read run off the main thread.
+        """
+        rows = dict(getattr(self, "_rows_by_path", {}))
+        if not rows:
+            return True
+        paths = list(rows.keys())
+        cache = self._msg_remote_cache
+
+        def worker():
+            remotes = {}
+            for p in paths:
+                if p in cache:
+                    remotes[p] = cache[p]
+                else:
+                    ident = resolve_project_identity(p)
+                    remotes[p] = ident.canonical_remote if ident else None
+            threads = message_store.list_threads()
+            GLib.idle_add(self._apply_message_scan, remotes, threads)
+
+        threading.Thread(target=worker, daemon=True).start()
+        return True
+
+    def _apply_message_scan(self, remotes: dict, threads: list):
+        """Main thread: render badges and fire notifications for new inbound messages."""
+        self._msg_remote_cache.update(remotes)
+        active = {r for r in remotes.values() if r}
+        pending, inbound = message_store.scan_activity(threads, active)
+
+        for path, row in self._rows_by_path.items():
+            remote = self._msg_remote_cache.get(path)
+            self._render_message_badges(row, pending.get(remote, 0) if remote else 0)
+
+        self._notify_new_messages(inbound)
+        return False
+
+    def _notify_new_messages(self, inbound: dict):
+        """Desktop-notify once per new inbound message; advance the persisted seen store.
+
+        A first run with no seen store bootstraps silently: it records the current
+        newest timestamps without notifying, so existing history isn't announced.
+        """
+        bootstrapping = not self._msg_bootstrapped
+        app = self.get_application()
+        changed = False
+        for remote, ts_list in inbound.items():
+            if not ts_list:
+                continue
+            newest = max(ts_list)
+            last_seen = self._msg_seen.get(remote, "")
+            new = [ts for ts in ts_list if ts > last_seen]
+            if new and newest != last_seen:
+                self._msg_seen[remote] = newest
+                changed = True
+                if not bootstrapping and app is not None:
+                    name = self._name_for_remote(remote)
+                    notification = Gio.Notification.new(f"Messages · {name}")
+                    notification.set_body(f"{len(new)} new message(s)")
+                    app.send_notification(None, notification)
+        if bootstrapping:
+            self._msg_bootstrapped = True
+        if changed:
+            self._save_msg_seen()
+
+    def _name_for_remote(self, remote: str) -> str:
+        """Display name of the registered project that owns ``remote`` (folder fallback)."""
+        for path, cached in self._msg_remote_cache.items():
+            if cached == remote:
+                return self.registry.get_name(path)
+        parts = remote.split("/")
+        return parts[-1] if parts else remote
 
     # ------------------------------------------------------------------
     # Background local scan

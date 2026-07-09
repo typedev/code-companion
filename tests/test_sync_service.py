@@ -304,3 +304,38 @@ def test_session_summary_rides_the_sync(tmp_path):
 
     loaded = session_summary_service.load(str(projB))
     assert loaded is not None and "next: ship it" in loaded["content"]
+
+
+def test_messages_converge_between_machines(tmp_path):
+    """Two machines each open a thread; after syncing both, each holds both threads.
+
+    Event files are immutable + uuid-named, so the additive global merge unions them
+    with no conflict (idea-2 mailbox riding the sync engine).
+    """
+    from src.services import message_store
+
+    bare = make_bare(tmp_path)
+    origin = "https://github.com/test/proj.git"
+    p_self = "github.com/test/proj"
+    p_other = "github.com/test/other"
+
+    # Machine A opens a thread and syncs (seeds the remote).
+    homeA = tmp_path / "mA"
+    projA = make_project(homeA, "proj", origin)
+    svcA = fresh_service(homeA, str(bare))  # HOME=homeA
+    message_store.create_thread(p_self, p_other, "from A", "hi")
+    assert svcA.sync([str(projA)]).error is None
+
+    # Machine B opens its own (disjoint) thread, then syncs.
+    homeB = tmp_path / "mB"
+    projB = make_project(homeB, "proj-elsewhere", origin)
+    svcB = fresh_service(homeB, str(bare))  # HOME=homeB
+    message_store.create_thread(p_other, p_self, "from B", "yo")
+    assert svcB.sync([str(projB)]).error is None
+    # B materialized A's thread alongside its own.
+    assert {t.subject for t in message_store.list_threads()} == {"from A", "from B"}
+
+    # Machine A syncs again and picks up B's thread -> full convergence.
+    svcA = fresh_service(homeA, str(bare))  # HOME=homeA again
+    assert svcA.sync([str(projA)]).error is None
+    assert {t.subject for t in message_store.list_threads()} == {"from A", "from B"}

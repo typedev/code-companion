@@ -23,6 +23,8 @@ from .problems_panel import ProblemsPanel
 from .problems_detail_view import ProblemsDetailView
 from .issues_panel import IssuesPanel
 from .issue_detail_view import IssueDetailView
+from .messages_panel import MessagesPanel
+from .message_thread_view import MessageThreadView
 from .script_toolbar import ScriptToolbar
 from .markdown_preview import MarkdownPreview
 from .image_viewer import ImageViewer
@@ -56,6 +58,8 @@ __all__ = [
     "ProblemsDetailView",
     "IssuesPanel",
     "IssueDetailView",
+    "MessagesPanel",
+    "MessageThreadView",
     "ScriptToolbar",
     "MarkdownPreview",
     "ImageViewer",
