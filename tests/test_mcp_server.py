@@ -973,6 +973,111 @@ def test_resolve_project_passthrough(monkeypatch):
 
 
 # --------------------------------------------------------------------------- #
+# inter-project message tools (send/list/reply/resolve)
+# --------------------------------------------------------------------------- #
+_ME = "github.com/typedev/code-companion"
+
+
+def _msg_window(tmp_path, remote=_ME):
+    win = _FakeWindow()
+    win.project_path = str(tmp_path)
+    win._project_remote = remote
+    return win
+
+
+def _patch_store(tmp_path, monkeypatch):
+    from src.services import message_store
+    monkeypatch.setattr(message_store, "get_config_dir", lambda: tmp_path)
+
+
+def _patch_resolve(monkeypatch, result):
+    from src.services import project_catalog
+    monkeypatch.setattr(project_catalog, "resolve", lambda hint: result)
+
+
+def test_send_message_creates_thread(tmp_path, monkeypatch, sync_idle_add):
+    from src.services import message_store
+    _patch_store(tmp_path, monkeypatch)
+    _patch_resolve(monkeypatch, {
+        "match": {"remote_url": "github.com/typedev/font-rover"},
+        "candidates": [], "ambiguous": False,
+    })
+    srv = McpServer(_msg_window(tmp_path))
+
+    res = srv._do_send_message("font-rover", "Hi", "body text", ["f.py"])
+    assert res["ok"] is True
+    assert res["to"] == "github.com/typedev/font-rover"
+    t = message_store.load_thread(res["thread_id"])
+    assert t.subject == "Hi" and t.from_project == _ME
+    assert t.to_project == "github.com/typedev/font-rover" and t.refs == ["f.py"]
+
+
+def test_send_message_ambiguous(tmp_path, monkeypatch, sync_idle_add):
+    _patch_store(tmp_path, monkeypatch)
+    _patch_resolve(monkeypatch, {
+        "match": None, "candidates": [{"name": "a"}, {"name": "b"}], "ambiguous": True,
+    })
+    srv = McpServer(_msg_window(tmp_path))
+    res = srv._do_send_message("font", "s", "b", None)
+    assert res["ok"] is False and len(res["candidates"]) == 2
+
+
+def test_send_message_canonical_passthrough(tmp_path, monkeypatch, sync_idle_add):
+    from src.services import message_store
+    _patch_store(tmp_path, monkeypatch)
+    _patch_resolve(monkeypatch, {"match": None, "candidates": [], "ambiguous": False})
+    srv = McpServer(_msg_window(tmp_path))
+    res = srv._do_send_message("github.com/other/repo", "s", "b", None)
+    assert res["ok"] is True and res["to"] == "github.com/other/repo"
+    assert message_store.load_thread(res["thread_id"]).to_project == "github.com/other/repo"
+
+
+def test_send_message_unknown_and_local_only(tmp_path, monkeypatch, sync_idle_add):
+    _patch_store(tmp_path, monkeypatch)
+    srv = McpServer(_msg_window(tmp_path))
+
+    _patch_resolve(monkeypatch, {"match": None, "candidates": [], "ambiguous": False})
+    assert srv._do_send_message("nope", "s", "b", None)["ok"] is False
+
+    _patch_resolve(monkeypatch, {"match": {"remote_url": None}, "candidates": [], "ambiguous": False})
+    res = srv._do_send_message("localthing", "s", "b", None)
+    assert res["ok"] is False and "local-only" in res["error"]
+
+
+def test_message_tools_require_remote(tmp_path, monkeypatch, sync_idle_add):
+    _patch_store(tmp_path, monkeypatch)
+    # No remote and a non-git project_path -> _current_remote resolves to None.
+    srv = McpServer(_msg_window(tmp_path, remote=None))
+    assert srv._do_send_message("x", "s", "b", None)["ok"] is False
+    assert srv._do_reply_message("tid", "b")["ok"] is False
+    assert srv._do_list_messages("inbox", None) == {"ok": True, "count": 0, "messages": []}
+
+
+def test_list_reply_resolve_messages(tmp_path, monkeypatch, sync_idle_add):
+    from src.services import message_store
+    _patch_store(tmp_path, monkeypatch)
+    t = message_store.create_thread("github.com/typedev/font-rover", _ME, "Need X", "please")
+    srv = McpServer(_msg_window(tmp_path))
+
+    listed = srv._do_list_messages("inbox", None)
+    assert listed["count"] == 1
+    msg = listed["messages"][0]
+    assert msg["subject"] == "Need X"
+    assert msg["from"] == "github.com/typedev/font-rover" and msg["to"] == _ME
+    assert msg["thread_id"] == t.thread_id and msg["comments"] == []
+
+    assert srv._do_reply_message(t.thread_id, "on it")["ok"] is True
+    assert message_store.load_thread(t.thread_id).comments[0].body == "on it"
+
+    res = srv._do_resolve_message(t.thread_id, "done")
+    assert res["ok"] is True and res["status"] == "done"
+    assert message_store.load_thread(t.thread_id).status == "done"
+
+    assert srv._do_resolve_message(t.thread_id, "bogus")["ok"] is False
+    assert srv._do_reply_message("missing-thread", "x")["ok"] is False
+
+
+# --------------------------------------------------------------------------- #
 # /refresh endpoint
 # --------------------------------------------------------------------------- #
 class _RefreshPanel:

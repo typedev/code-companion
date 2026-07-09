@@ -362,6 +362,42 @@ class McpServer:
             return self._do_resolve_project(hint)
 
         @mcp.tool()
+        def send_message(to: str, subject: str, body: str,
+                         refs: list[str] | None = None) -> dict:
+            """Send an inter-project message to another registered project.
+
+            ``to`` is a project name/hint (resolved via the catalog) or a canonical
+            ``host/owner/repo`` remote. Opens a new thread from *this* project; the
+            recipient's human triages it in their Messages panel. This project must have a
+            git remote. ``refs`` optionally lists relevant file paths. Returns
+            ``{"ok", "thread_id", "to"}`` or ``{"ok": false, "error", "candidates"?}``.
+            """
+            return self._do_send_message(to, subject, body, refs)
+
+        @mcp.tool()
+        def list_messages(box: str = "inbox", status: str | None = None) -> dict:
+            """List inter-project message threads involving this project.
+
+            ``box`` is ``inbox`` (addressed to us), ``sent`` (from us), or ``all``.
+            ``status`` optionally filters to open|in_progress|done|rejected. Returns
+            ``{"ok": true, "count", "messages": [...]}`` with each thread's body and replies.
+            """
+            return self._do_list_messages(box, status)
+
+        @mcp.tool()
+        def reply_message(thread_id: str, body: str) -> dict:
+            """Post a reply to an existing message thread. Returns ``{"ok", "thread_id"}``."""
+            return self._do_reply_message(thread_id, body)
+
+        @mcp.tool()
+        def resolve_message(thread_id: str, status: str = "done") -> dict:
+            """Set a message thread's status (open|in_progress|done|rejected).
+
+            Returns ``{"ok", "thread_id", "status"}``.
+            """
+            return self._do_resolve_message(thread_id, status)
+
+        @mcp.tool()
         def gui_launch(cmd: str, width: int = 1280, height: int = 800) -> dict:
             """Launch a GUI app in an isolated headless compositor for inspection.
 
@@ -709,6 +745,118 @@ class McpServer:
         from . import project_catalog
 
         return project_catalog.resolve(hint)
+
+    # -- inter-project messages (mailbox) ----------------------------------- #
+    def _current_remote(self) -> str | None:
+        """This project's canonical git remote (the messaging address), or None."""
+        remote = getattr(self.window, "_project_remote", None)
+        if remote:
+            return remote
+        from ..utils.project_identity import resolve_project_identity
+
+        ident = resolve_project_identity(self.window.project_path)
+        return ident.canonical_remote if ident else None
+
+    @staticmethod
+    def _thread_dict(thread) -> dict:
+        return {
+            "thread_id": thread.thread_id,
+            "subject": thread.subject,
+            "from": thread.from_project,
+            "to": thread.to_project,
+            "status": thread.status,
+            "created_at": thread.created_at,
+            "last_activity": thread.last_activity,
+            "refs": list(thread.refs),
+            "body": thread.body,
+            "comments": [
+                {"actor": c.actor, "body": c.body, "ts": c.ts} for c in thread.comments
+            ],
+        }
+
+    def _refresh_messages_ui(self):
+        """Best-effort main-thread refresh of the Messages panel + badge after a write."""
+        def _refresh():
+            panel = getattr(self.window, "messages_panel", None)
+            if panel is not None:
+                panel.refresh()
+            if hasattr(self.window, "_update_messages_badge"):
+                self.window._update_messages_badge()
+            return None
+
+        try:
+            self.call_on_main(_refresh)
+        except Exception:  # noqa: BLE001 - refresh is best-effort; the write succeeded
+            pass
+
+    def _do_send_message(self, to: str, subject: str, body: str,
+                         refs: list[str] | None) -> dict:
+        from . import message_store, project_catalog
+
+        me = self._current_remote()
+        if not me:
+            return {"ok": False, "error": "this project has no git remote; messages require a remote"}
+
+        result = project_catalog.resolve(to)
+        if result.get("ambiguous"):
+            return {"ok": False, "error": f"ambiguous recipient: {to}",
+                    "candidates": result.get("candidates", [])}
+        match = result.get("match")
+        if match:
+            recipient = match.get("remote_url")
+            if not recipient:
+                return {"ok": False,
+                        "error": f"'{to}' is a local-only project (no remote to address)"}
+        elif "/" in to:
+            recipient = to  # a canonical remote not registered locally (lives elsewhere)
+        else:
+            return {"ok": False, "error": f"unknown recipient: {to}"}
+
+        try:
+            thread = message_store.create_thread(me, recipient, subject, body, refs)
+        except message_store.MessageStoreError as exc:
+            return {"ok": False, "error": str(exc)}
+        self._refresh_messages_ui()
+        return {"ok": True, "thread_id": thread.thread_id, "to": recipient}
+
+    def _do_list_messages(self, box: str, status: str | None) -> dict:
+        from . import message_store
+
+        me = self._current_remote()
+        if not me:
+            return {"ok": True, "count": 0, "messages": []}
+        threads = message_store.threads_for(me, box=box, status=status)
+        messages = [self._thread_dict(t) for t in threads]
+        return {"ok": True, "count": len(messages), "messages": messages}
+
+    def _do_reply_message(self, thread_id: str, body: str) -> dict:
+        from . import message_store
+
+        me = self._current_remote()
+        if not me:
+            return {"ok": False, "error": "this project has no git remote; messages require a remote"}
+        if message_store.load_thread(thread_id) is None:
+            return {"ok": False, "error": f"thread not found: {thread_id}"}
+        try:
+            message_store.add_comment(thread_id, me, body)
+        except message_store.MessageStoreError as exc:
+            return {"ok": False, "error": str(exc)}
+        self._refresh_messages_ui()
+        return {"ok": True, "thread_id": thread_id}
+
+    def _do_resolve_message(self, thread_id: str, status: str) -> dict:
+        from . import message_store
+
+        me = self._current_remote()
+        if not me:
+            return {"ok": False, "error": "this project has no git remote; messages require a remote"}
+        if status not in message_store.STATUSES:
+            return {"ok": False, "error": f"invalid status: {status}"}
+        if message_store.load_thread(thread_id) is None:
+            return {"ok": False, "error": f"thread not found: {thread_id}"}
+        message_store.set_status(thread_id, me, status)
+        self._refresh_messages_ui()
+        return {"ok": True, "thread_id": thread_id, "status": status}
 
     # -- /refresh endpoint -------------------------------------------------- #
     def _do_refresh(self, target: str) -> list[str]:
