@@ -1219,6 +1219,14 @@ class ProjectWindow(Adw.ApplicationWindow):
                 "-e", f"CC_MCP_PORT={mcp_env['CC_MCP_PORT']}",
                 "-e", f"CC_MCP_TOKEN={mcp_env['CC_MCP_TOKEN']}",
             ]
+        # Pin the desktop session bus explicitly (issue #4): a tmux server
+        # started outside the desktop session would otherwise hand children an
+        # env without DBUS_SESSION_BUS_ADDRESS, and any GLib call in them would
+        # autolaunch a private bus + portal stack that leaks past the session.
+        for var in ("DBUS_SESSION_BUS_ADDRESS", "XDG_RUNTIME_DIR"):
+            value = os.environ.get(var)
+            if value:
+                tmux_argv += ["-e", f"{var}={value}"]
         tmux_argv.append(cli_command)  # session command, run by tmux via `sh -c`
 
         terminal = TerminalView(

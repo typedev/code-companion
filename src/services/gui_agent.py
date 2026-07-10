@@ -351,7 +351,9 @@ class SessionAgent:
         _log("a11y stack started")
 
     def _launch_app(self) -> None:
-        env = dict(os.environ, GDK_BACKEND="wayland")
+        # GTK_USE_PORTAL=0: the harness bus has no activatable services
+        # (see resources/dbus/harness-session.conf), so don't even try portals.
+        env = dict(os.environ, GDK_BACKEND="wayland", GTK_USE_PORTAL="0")
         self.app = subprocess.Popen(shlex.split(self.cmd), env=env)
         _log(f"launched app pid={self.app.pid}: {self.cmd}")
 

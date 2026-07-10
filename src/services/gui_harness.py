@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -21,6 +22,12 @@ import time
 from pathlib import Path
 
 _AGENT_PATH = str(Path(__file__).parent / "gui_agent.py")
+
+# Minimal bus config: no activatable services -> no xdg-desktop-portal stack
+# auto-spawned per harness run (issue #4: leaked portals exhaust inotify).
+_DBUS_CONF = str(
+    Path(__file__).parent.parent / "resources" / "dbus" / "harness-session.conf"
+)
 
 # wlroots headless backend env for cage (validated in the spike).
 _CAGE_ENV = [
@@ -32,6 +39,36 @@ _CAGE_ENV = [
 
 class GuiHarnessError(Exception):
     """Raised for harness launch/command failures."""
+
+
+def _kill_process_group(proc: subprocess.Popen, grace: float = 3) -> None:
+    """Escalating kill of the harness process group (launched with setsid).
+
+    Catches every member — dbus-run-session, its dbus-daemon, cage, the agent,
+    the app — so nothing reparents to systemd and outlives the harness. The
+    root dying is NOT enough (a SIGSTOPped member survives SIGTERM), so the
+    survivor probe checks the whole group before skipping the SIGKILL.
+    """
+    def group_alive() -> bool:
+        try:
+            os.killpg(proc.pid, 0)
+            return True
+        except (ProcessLookupError, PermissionError):
+            return False
+
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+    except (ProcessLookupError, PermissionError):
+        return
+    try:
+        proc.wait(timeout=grace)
+    except subprocess.TimeoutExpired:
+        pass
+    if group_alive():
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
 
 
 class _Harness:
@@ -53,7 +90,10 @@ class _Harness:
         return json.loads(line)
 
     def teardown(self, timeout: float = 5) -> None:
-        # Graceful stop first, then kill the tree root as a backstop.
+        # Graceful stop first, then WAIT for the cascade: agent exits -> cage
+        # exits -> dbus-run-session reaps its dbus-daemon and exits. Signaling
+        # the root early orphans the daemon (it only cleans up on a normal
+        # child exit), which leaked a session bus per run (issue #4).
         try:
             self.command({"cmd": "stop"}, timeout=2)
         except (OSError, GuiHarnessError, ValueError):
@@ -62,12 +102,10 @@ class _Harness:
             self._conn_file.close()
         except OSError:
             pass
-        if self.proc.poll() is None:
-            self.proc.terminate()
-            try:
-                self.proc.wait(timeout=timeout)
-            except subprocess.TimeoutExpired:
-                self.proc.kill()
+        try:
+            self.proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            _kill_process_group(self.proc)
         shutil.rmtree(self.workdir, ignore_errors=True)
 
 
@@ -83,7 +121,7 @@ class GuiHarnessManager:
         self, socket_path: str, cmd: str, width: int, height: int
     ) -> list[str]:
         return [
-            "dbus-run-session", "--",
+            "dbus-run-session", "--config-file", _DBUS_CONF, "--",
             "env", *_CAGE_ENV,
             "cage", "--",
             sys.executable, _AGENT_PATH,
@@ -117,12 +155,14 @@ class GuiHarnessManager:
         socket_path = os.path.join(workdir, "agent.sock")
 
         argv = self._build_launch_argv(socket_path, cmd, width, height)
-        proc = subprocess.Popen(argv)
+        # New session/process group: teardown can killpg the WHOLE tree
+        # (incl. the dbus-daemon and anything it spawned) as a backstop.
+        proc = subprocess.Popen(argv, start_new_session=True)
         try:
             conn_file = self._open_channel(socket_path, timeout)
         except Exception:
             if proc.poll() is None:
-                proc.terminate()
+                _kill_process_group(proc)
             shutil.rmtree(workdir, ignore_errors=True)
             raise
 

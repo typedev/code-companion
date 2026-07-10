@@ -14,10 +14,14 @@ from src.services.gui_harness import GuiHarnessError, GuiHarnessManager
 
 
 class _FakeProc:
-    def __init__(self):
+    def __init__(self, wait_timeouts=0):
+        """wait_timeouts: how many wait() calls raise TimeoutExpired first."""
         self._alive = True
+        self.pid = 4242
         self.terminated = False
         self.killed = False
+        self.wait_calls = 0
+        self._wait_timeouts = wait_timeouts
 
     def poll(self):
         return None if self._alive else 0
@@ -27,6 +31,10 @@ class _FakeProc:
         self._alive = False
 
     def wait(self, timeout=None):
+        self.wait_calls += 1
+        if self.wait_calls <= self._wait_timeouts:
+            raise gui_harness.subprocess.TimeoutExpired("proc", timeout)
+        self._alive = False
         return 0
 
     def kill(self):
@@ -58,7 +66,8 @@ def stub_launch(monkeypatch):
     """Stub Popen + _open_channel so launch() never spawns a real compositor."""
     procs = []
 
-    def fake_popen(argv):
+    def fake_popen(argv, **kwargs):
+        assert kwargs.get("start_new_session") is True  # killpg backstop needs it
         proc = _FakeProc()
         procs.append(proc)
         return proc
@@ -77,6 +86,9 @@ def test_build_launch_argv():
     argv = mgr._build_launch_argv("/tmp/x.sock", "myapp --flag", 800, 600)
 
     assert argv[0] == "dbus-run-session"
+    # minimal bus config: no activatable services -> no portal stack (issue #4)
+    conf = argv[argv.index("--config-file") + 1]
+    assert conf.endswith("resources/dbus/harness-session.conf")
     assert "cage" in argv
     assert sys.executable in argv
     # env vars for the wlroots headless backend
@@ -99,14 +111,19 @@ def test_launch_registers_handle(stub_launch):
     assert mgr.launch("sample2") == "gui-2"
 
 
-def test_stop_tears_down_and_unregisters(stub_launch):
+def test_stop_tears_down_and_unregisters(stub_launch, monkeypatch):
+    killpg_calls = []
+    monkeypatch.setattr(gui_harness.os, "killpg", lambda *a: killpg_calls.append(a))
     mgr = GuiHarnessManager()
     handle = mgr.launch("sample")
     proc = stub_launch[0]
 
     mgr.stop(handle)
     assert handle not in mgr._harnesses
-    assert proc.terminated  # root PID killed -> tree cascades
+    # Graceful path: wait for the cascade (dbus-run-session reaps its daemon),
+    # never signal the tree — that's what leaked session buses (issue #4).
+    assert proc.wait_calls >= 1
+    assert not proc.terminated and killpg_calls == []
 
 
 def test_stop_all_clears_everything(stub_launch):
@@ -117,7 +134,33 @@ def test_stop_all_clears_everything(stub_launch):
 
     mgr.stop_all()
     assert mgr._harnesses == {}
-    assert all(p.terminated for p in stub_launch)
+    assert all(p.wait_calls >= 1 for p in stub_launch)
+
+
+def test_teardown_escalates_to_killpg_on_timeout(monkeypatch):
+    import signal
+
+    killpg_calls = []
+    monkeypatch.setattr(gui_harness.os, "killpg", lambda *a: killpg_calls.append(a))
+    proc = _FakeProc(wait_timeouts=2)  # stop-wait times out, TERM-wait times out
+    harness = gui_harness._Harness("gui-1", proc, "/nonexistent", _FakeConn())
+
+    harness.teardown(timeout=0.01)
+    # TERM -> group-liveness probe (sig 0, group "alive" since the stub killpg
+    # doesn't raise) -> unconditional KILL of the survivors.
+    assert killpg_calls == [
+        (4242, signal.SIGTERM), (4242, 0), (4242, signal.SIGKILL)
+    ]
+
+
+def test_kill_process_group_stops_after_vanished(monkeypatch):
+    def raise_gone(*a):
+        raise ProcessLookupError
+
+    monkeypatch.setattr(gui_harness.os, "killpg", raise_gone)
+    proc = _FakeProc(wait_timeouts=99)
+    gui_harness._kill_process_group(proc)  # must not raise or loop
+    assert proc.wait_calls == 0
 
 
 def test_stop_unknown_handle_raises():
@@ -126,9 +169,13 @@ def test_stop_unknown_handle_raises():
         mgr.stop("nope")
 
 
-def test_launch_failure_kills_proc_and_reraises(monkeypatch):
+def test_launch_failure_kills_group_and_reraises(monkeypatch):
+    import signal
+
     proc = _FakeProc()
-    monkeypatch.setattr(gui_harness.subprocess, "Popen", lambda argv: proc)
+    killpg_calls = []
+    monkeypatch.setattr(gui_harness.os, "killpg", lambda *a: killpg_calls.append(a))
+    monkeypatch.setattr(gui_harness.subprocess, "Popen", lambda argv, **kw: proc)
 
     def boom(self, socket_path, timeout):
         raise GuiHarnessError("socket never ready")
@@ -138,7 +185,7 @@ def test_launch_failure_kills_proc_and_reraises(monkeypatch):
     mgr = GuiHarnessManager()
     with pytest.raises(GuiHarnessError):
         mgr.launch("sample")
-    assert proc.terminated          # partial tree cleaned up
+    assert killpg_calls[0] == (4242, signal.SIGTERM)  # whole tree cleaned up
     assert mgr._harnesses == {}     # nothing registered
 
 
