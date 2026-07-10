@@ -31,6 +31,12 @@ Design constraints agreed with the user:
 | Per-project config slice | whitelisted `~/.claude.json → projects[<abs>]` | `projects/<id>/claude-config.json` |
 | Global plans | `~/.claude/plans/*.md` | `global/plans/` |
 | Global settings | `~/.claude/settings.json` | `global/settings.json` |
+| Session summaries | `<config>/session-summaries/*.md` | `global/session-summaries/` |
+| Messages (mailbox) | `<config>/messages/<thread>/*.json` | `global/messages/` |
+| Snippets | `<config>/snippets/*.md` | `global/snippets/` |
+| Rules | `<config>/rules/*.md` | `global/rules/` |
+
+(`<config>` = `~/.config/code-companion/`, or the legacy `claude-companion` dir.)
 
 **Never synced**: `~/.claude/.credentials.json`, whole `~/.claude.json`, caches,
 `shell-snapshots/`, `session-env/`, `file-history/` (100M), lock files.
@@ -48,6 +54,10 @@ projects/<id>/sessions/*.jsonl
 projects/<id>/claude-config.json  # whitelisted .claude.json slice
 global/settings.json
 global/plans/*.md
+global/session-summaries/*.md
+global/messages/<thread_id>/*.json
+global/snippets/*.md
+global/rules/*.md
 ```
 
 Materialized on each machine into the **local** `~/.claude/projects/<local-encoded>/`

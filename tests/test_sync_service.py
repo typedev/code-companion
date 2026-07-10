@@ -339,3 +339,41 @@ def test_messages_converge_between_machines(tmp_path):
     svcA = fresh_service(homeA, str(bare))  # HOME=homeA again
     assert svcA.sync([str(projA)]).error is None
     assert {t.subject for t in message_store.list_threads()} == {"from A", "from B"}
+
+
+def test_snippets_and_rules_ride_the_sync(tmp_path):
+    bare = make_bare(tmp_path)
+    origin = "https://github.com/test/proj.git"
+
+    # Machine A: user snippets + rules live in the config dir.
+    homeA = tmp_path / "mA"
+    projA = make_project(homeA, "proj", origin)
+    svcA = fresh_service(homeA, str(bare))  # sets HOME=homeA
+    for sub, name, body in (
+        ("snippets", "Commit.md", "commit template\n"),
+        ("rules", "Language Policy.md", "English only\n"),
+    ):
+        d = homeA / ".config" / "code-companion" / sub
+        d.mkdir(parents=True, exist_ok=True)
+        (d / name).write_text(body, encoding="utf-8")
+    assert svcA.sync([str(projA)]).error is None
+
+    # Backed up to the repo's global layer.
+    assert read_repo_file(tmp_path, bare, "global/snippets/Commit.md") == "commit template\n"
+    assert (
+        read_repo_file(tmp_path, bare, "global/rules/Language Policy.md")
+        == "English only\n"
+    )
+
+    # Machine B: a fresh clone materializes both into B's config dir.
+    homeB = tmp_path / "mB"
+    projB = make_project(homeB, "proj-elsewhere", origin)
+    svcB = fresh_service(homeB, str(bare))  # sets HOME=homeB
+    assert svcB.sync([str(projB)]).error is None
+
+    cfgB = homeB / ".config" / "code-companion"
+    assert (cfgB / "snippets" / "Commit.md").read_text(encoding="utf-8") == "commit template\n"
+    assert (
+        (cfgB / "rules" / "Language Policy.md").read_text(encoding="utf-8")
+        == "English only\n"
+    )

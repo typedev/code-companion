@@ -173,7 +173,8 @@ Key patterns:
   (`cc-<sha1(path)>`), so restarting the IDE window re-attaches instead of killing the session;
   stable `(port, token)` recovered from the tmux env; PM shows live/attention dots
 - **Cross-machine sync**: git-backed 3-way merge (`sync_service`/`sync_engine`) of Claude history,
-  memory, plans, session summaries and the message store to a private remote; keyed by
+  memory, plans, session summaries, snippets/rules and the message store to a private remote;
+  keyed by
   `resolve_project_identity` (canonical git remote → stable `project_id`)
 - **Coordination hub**: `project_catalog` (list/resolve sibling projects) + `message_store`
   (event-sourced, synced inter-project mailbox); both exposed as MCP tools and a GUI Messages panel

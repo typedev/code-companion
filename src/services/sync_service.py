@@ -328,7 +328,7 @@ class SyncService:
         (repo_proj / "meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
 
     # ------------------------------------------------------------------ #
-    # global layer (plans + settings)
+    # global layer (plans + settings + snippets/rules)
     # ------------------------------------------------------------------ #
 
     def _sync_global(self, repo: SyncRepo, snap_root: Path) -> list[str]:
@@ -337,6 +337,10 @@ class SyncService:
         settings_local = claude_paths.settings_json()
         summaries_local = session_summary_service.summaries_dir()
         messages_local = message_store.messages_dir()
+        # Snippets/rules are read straight from the config dir (their services
+        # are GTK singletons with file monitors — not for worker threads).
+        snippets_local = get_config_dir() / "snippets"
+        rules_local = get_config_dir() / "rules"
 
         def local_bytes() -> dict[str, bytes]:
             out: dict[str, bytes] = {}
@@ -346,6 +350,12 @@ class SyncService:
             if summaries_local.exists():
                 for p in sorted(summaries_local.glob("*.md")):
                     out["session-summaries/" + p.name] = p.read_bytes()
+            if snippets_local.exists():
+                for p in sorted(snippets_local.glob("*.md")):
+                    out["snippets/" + p.name] = p.read_bytes()
+            if rules_local.exists():
+                for p in sorted(rules_local.glob("*.md")):
+                    out["rules/" + p.name] = p.read_bytes()
             if messages_local.exists():
                 # Nested: messages/<thread_id>/<event_id>.json (append-only, immutable).
                 for p in sorted(messages_local.rglob("*.json")):
@@ -365,6 +375,11 @@ class SyncService:
             if rs.exists():
                 for p in sorted(rs.glob("*.md")):
                     out["session-summaries/" + p.name] = p.read_bytes()
+            for sub in ("snippets", "rules"):
+                rd = global_dir / sub
+                if rd.exists():
+                    for p in sorted(rd.glob("*.md")):
+                        out[sub + "/" + p.name] = p.read_bytes()
             rm = global_dir / "messages"
             if rm.exists():
                 for p in sorted(rm.rglob("*.json")):
@@ -382,6 +397,10 @@ class SyncService:
                 return summaries_local / rel[len("session-summaries/"):]
             if rel.startswith("messages/"):
                 return messages_local / rel[len("messages/"):]
+            if rel.startswith("snippets/"):
+                return snippets_local / rel[len("snippets/"):]
+            if rel.startswith("rules/"):
+                return rules_local / rel[len("rules/"):]
             return settings_local  # settings.json
 
         def repo_target(rel: str) -> Path:
