@@ -96,7 +96,7 @@ install_system_deps() {
         warn "  - python3 development files"
         warn "  - meson and ninja build tools"
         warn "  - ripgrep and fd (recommended, for fast file/content search)"
-        warn "  - cage, grim, wlr-randr, ydotool (optional, for the native GUI test harness)"
+        warn "  - cage, grim, wlr-randr, wtype (optional, for the native GUI test harness)"
         read -p "Continue anyway? [y/N] " -n 1 -r
         echo
         if [[ ! $REPLY =~ ^[Yy]$ ]]; then
@@ -111,15 +111,17 @@ install_system_deps() {
 #     supervisor); without it the session simply ends when the window closes.
 #   - native GUI test harness: a headless Wayland compositor (cage) to run a
 #     project's GUI in isolation, a screenshot tool (grim) for visual inspection,
-#     output sizing (wlr-randr), and input injection (ydotool) as a fallback.
+#     output sizing (wlr-randr), and coordinate/keyboard input injection via the
+#     wlroots virtual-input protocols (a built-in client + wtype; uinput tools like ydotool
+#     cannot reach a headless compositor).
 #   - libsecret + its GI typelib: secure git-credential storage in the desktop
 #     keyring; without it credentials fall back to git's plaintext store helper.
 install_gui_test_deps() {
-    info "Checking optional runtime dependencies (tmux, cage, grim, wlr-randr, ydotool, libsecret)..."
+    info "Checking optional runtime dependencies (tmux, cage, grim, wlr-randr, wtype, libsecret)..."
 
-    # cage/grim/wlr-randr/ydotool/tmux share package names across distros;
+    # cage/grim/wlr-randr/wtype/tmux share package names across distros;
     # libsecret's GI typelib package differs, so it is appended per-manager.
-    local PACKAGES="tmux cage grim wlr-randr ydotool"
+    local PACKAGES="tmux cage grim wlr-randr wtype"
     local MISSING="" installer=""
 
     if command -v dnf &> /dev/null; then
@@ -172,7 +174,7 @@ install() {
     # Install system dependencies (cairo, gtk4, etc.)
     install_system_deps
 
-    # Install optional GUI test harness dependencies (cage, grim, ydotool)
+    # Install optional GUI test harness dependencies (cage, grim, wtype)
     install_gui_test_deps
 
     # Install Python dependencies
@@ -237,7 +239,7 @@ update() {
     # Check/install system dependencies
     install_system_deps
 
-    # Check/install optional GUI test harness dependencies (cage, grim, ydotool)
+    # Check/install optional GUI test harness dependencies (cage, grim, wtype)
     install_gui_test_deps
 
     # Update dependencies

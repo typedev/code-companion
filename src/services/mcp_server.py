@@ -492,21 +492,46 @@ class McpServer:
 
         @mcp.tool()
         def gui_click(handle: str, role: str | None = None,
-                      name: str | None = None) -> dict:
-            """Click a widget in the launched GUI, located by accessibility role/name."""
-            return self._do_gui_action(handle, "click", role, name, None, None)
+                      name: str | None = None, nth: int = 0) -> dict:
+            """Click a widget in the launched GUI, located by accessibility role/name.
+
+            Actionable matches are preferred; ``nth`` picks among multiple matches.
+            """
+            return self._do_gui_action(handle, "click", role, name, None, None, nth)
 
         @mcp.tool()
         def gui_type(handle: str, text: str, role: str | None = None,
-                     name: str | None = None) -> dict:
+                     name: str | None = None, nth: int = 0) -> dict:
             """Set the text of an editable widget, located by role/name."""
-            return self._do_gui_action(handle, "type", role, name, None, text)
+            return self._do_gui_action(handle, "type", role, name, None, text, nth)
 
         @mcp.tool()
         def gui_do_action(handle: str, role: str | None = None,
-                          name: str | None = None, action: str | None = None) -> dict:
+                          name: str | None = None, action: str | None = None,
+                          nth: int = 0) -> dict:
             """Invoke a named accessibility action on a widget (default: first action)."""
-            return self._do_gui_action(handle, "do_action", role, name, action, None)
+            return self._do_gui_action(handle, "do_action", role, name, action, None, nth)
+
+        @mcp.tool()
+        def gui_pointer(handle: str, x: int, y: int, button: str = "left",
+                        action: str = "click", dy: int = 0) -> dict:
+            """Inject a pointer action at screenshot coordinates (x, y).
+
+            ``action``: click | double | move | scroll (scroll uses ``dy`` steps).
+            Use for widgets AT-SPI can't reach (popovers, canvases, list rows).
+            """
+            return self._do_gui_input(
+                handle, {"kind": "pointer", "x": x, "y": y, "button": button,
+                         "action": action, "dy": dy}
+            )
+
+        @mcp.tool()
+        def gui_key(handle: str, combo: str | None = None,
+                    text: str | None = None) -> dict:
+            """Send a key combo (e.g. 'Return', 'ctrl+shift+t') or type ``text``
+            into the focused widget via a virtual keyboard."""
+            return self._do_gui_input(handle, {"kind": "key", "combo": combo,
+                                               "text": text})
 
         return mcp
 
@@ -1077,14 +1102,26 @@ class McpServer:
             return {"ok": False, "error": str(exc)}
         return {"ok": True, "tree": tree}
 
-    def _do_gui_action(self, handle: str, kind: str, role, name, action, text) -> dict:
+    def _do_gui_action(self, handle: str, kind: str, role, name, action, text,
+                       nth: int = 0) -> dict:
         try:
             if kind == "click":
-                self.gui.click(handle, role, name)
+                self.gui.click(handle, role, name, nth=nth)
             elif kind == "type":
-                self.gui.type_text(handle, role, name, text)
+                self.gui.type_text(handle, role, name, text, nth=nth)
             else:
-                self.gui.do_action(handle, role, name, action)
+                self.gui.do_action(handle, role, name, action, nth=nth)
+        except (GuiHarnessError, OSError, ValueError) as exc:
+            return {"ok": False, "error": str(exc)}
+        return {"ok": True}
+
+    def _do_gui_input(self, handle: str, req: dict) -> dict:
+        try:
+            if req["kind"] == "pointer":
+                self.gui.pointer(handle, req["x"], req["y"], req["button"],
+                                 req["action"], req["dy"])
+            else:
+                self.gui.key(handle, combo=req.get("combo"), text=req.get("text"))
         except (GuiHarnessError, OSError, ValueError) as exc:
             return {"ok": False, "error": str(exc)}
         return {"ok": True}

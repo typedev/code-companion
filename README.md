@@ -132,9 +132,10 @@ between Files, Git, AI Sessions, Notes, Problems, Issues, and Messages.
 
 ### GUI Test Harness (optional)
 
-- The assistant can launch, drive (click/type by accessibility role+name), and screenshot **another
-  project's** GTK/Qt GUI in an isolated headless Wayland compositor — like Playwright, but for native
-  desktop apps. Requires `cage`/`grim`/`wlr-randr`/`ydotool` (see [INSTALL.md](INSTALL.md)).
+- The assistant can launch, drive (click/type by accessibility role+name, coordinate clicks and
+  key presses via the wlroots virtual-input protocols), and screenshot **another project's** GTK/Qt
+  GUI in an isolated headless Wayland compositor — like Playwright, but for native desktop apps.
+  Requires `cage`/`grim`/`wlr-randr`/`wtype` (see [INSTALL.md](INSTALL.md)).
 
 
 
@@ -158,12 +159,12 @@ sudo apt install libgtk-4-dev libadwaita-1-dev libgtksourceview-5-dev \
     ripgrep fd-find
 ```
 
-**Optional — native GUI test harness** (`cage`, `grim`, `wlr-randr`, `ydotool`):
-lets the assistant launch, drive and screenshot another project's GTK/Qt GUI in
-an isolated headless Wayland compositor. Not required to run the app. Install via
-`sudo dnf install cage grim wlr-randr ydotool` (Fedora) / `sudo apt install cage
-grim wlr-randr ydotool` (Ubuntu/Debian, from repos not Snap) / `sudo pacman -S
-cage grim wlr-randr ydotool` (Arch). The semantic tree/click layer also uses the
+**Optional — native GUI test harness** (`cage`, `grim`, `wlr-randr`,
+`wtype`): lets the assistant launch, drive and screenshot another project's GTK/Qt
+GUI in an isolated headless Wayland compositor. Not required to run the app. Install via
+`sudo dnf install cage grim wlr-randr wtype` (Fedora) / `sudo apt install cage
+grim wlr-randr wtype` (Ubuntu/Debian, from repos not Snap) / `sudo pacman -S
+cage grim wlr-randr wtype` (Arch). The semantic tree/click layer also uses the
 AT-SPI stack (`at-spi2-core` + the `Atspi` binding), which ships with GTK4. See
 [INSTALL.md](INSTALL.md#optional-native-gui-test-harness).
 

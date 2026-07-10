@@ -143,18 +143,37 @@ class GuiHarnessManager:
             raise GuiHarnessError(reply.get("error", "tree failed"))
         return reply["tree"]
 
-    def click(self, handle: str, role=None, name=None) -> None:
-        self._command_ok(handle, {"cmd": "click", "role": role, "name": name})
-
-    def type_text(self, handle: str, role=None, name=None, text: str = "") -> None:
+    def click(self, handle: str, role=None, name=None, nth: int = 0) -> None:
         self._command_ok(
-            handle, {"cmd": "type", "role": role, "name": name, "text": text}
+            handle, {"cmd": "click", "role": role, "name": name, "nth": nth}
         )
 
-    def do_action(self, handle: str, role=None, name=None, action=None) -> None:
+    def type_text(self, handle: str, role=None, name=None, text: str = "",
+                  nth: int = 0) -> None:
         self._command_ok(
-            handle, {"cmd": "do_action", "role": role, "name": name, "action": action}
+            handle,
+            {"cmd": "type", "role": role, "name": name, "text": text, "nth": nth},
         )
+
+    def do_action(self, handle: str, role=None, name=None, action=None,
+                  nth: int = 0) -> None:
+        self._command_ok(
+            handle,
+            {"cmd": "do_action", "role": role, "name": name, "action": action,
+             "nth": nth},
+        )
+
+    def pointer(self, handle: str, x: int, y: int, button: str = "left",
+                action: str = "click", dy: int = 0) -> None:
+        self._command_ok(
+            handle,
+            {"cmd": "pointer", "x": x, "y": y, "button": button, "action": action,
+             "dy": dy},
+        )
+
+    def key(self, handle: str, combo: str | None = None,
+            text: str | None = None) -> None:
+        self._command_ok(handle, {"cmd": "key", "combo": combo, "text": text})
 
     def _command_ok(self, handle: str, payload: dict) -> None:
         reply = self._get(handle).command(payload)

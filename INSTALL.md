@@ -26,9 +26,9 @@ sudo apt install libgtk-4-dev libadwaita-1-dev libgtksourceview-5-dev \
     ripgrep fd-find
 ```
 
-> **Ubuntu note:** install `cage`/`grim`/`ydotool` from the distro repos, not as
-> Snaps — Snap confinement can block access to `/dev/uinput` and Wayland sockets
-> the harness needs.
+> **Ubuntu note:** install `cage`/`grim`/`wtype` from the distro repos,
+> not as Snaps — Snap confinement can block access to the Wayland sockets the
+> harness needs.
 
 ### Optional: persistent Claude session
 
@@ -56,20 +56,21 @@ Companion itself; the app works fine without them.
 
 ```bash
 # Fedora
-sudo dnf install cage grim wlr-randr ydotool
+sudo dnf install cage grim wlr-randr wtype
 
 # Ubuntu/Debian (from repos, not Snap — see note above)
-sudo apt install cage grim wlr-randr ydotool
+sudo apt install cage grim wlr-randr wtype
 
 # Arch
-sudo pacman -S cage grim wlr-randr ydotool
+sudo pacman -S cage grim wlr-randr wtype
 ```
 
 - `cage` — headless [wlroots](https://gitlab.freedesktop.org/wlroots/wlroots) compositor that hosts the app under test
 - `grim` — captures the compositor's output as PNG for visual inspection
 - `wlr-randr` — sizes the headless output to the desired canvas (`--custom-mode`)
-- `ydotool` — coordinate-level input injection fallback (needs `/dev/uinput`
-  access: add your user to the `input` group + a udev rule, and run `ydotoold`)
+- `wtype` — virtual keyboard; coordinate clicks use a built-in client of the wlroots
+  virtual-pointer protocol (no privileges or daemons needed;
+  uinput tools like `ydotool` cannot reach a headless compositor at all)
 
 The semantic layer (read the widget tree, click/type by role+name) also needs the
 **AT-SPI** stack — `at-spi2-core` (`at-spi-bus-launcher` + `at-spi2-registryd`) and the

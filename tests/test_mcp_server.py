@@ -1239,20 +1239,30 @@ class _FakeGui:
             raise self._tree_error
         return self._tree
 
-    def click(self, handle, role, name):
+    def click(self, handle, role, name, nth=0):
         if self._action_error:
             raise self._action_error
         self.actions.append(("click", role, name))
 
-    def type_text(self, handle, role, name, text):
+    def type_text(self, handle, role, name, text, nth=0):
         if self._action_error:
             raise self._action_error
         self.actions.append(("type", role, name, text))
 
-    def do_action(self, handle, role, name, action):
+    def do_action(self, handle, role, name, action, nth=0):
         if self._action_error:
             raise self._action_error
         self.actions.append(("do_action", role, name, action))
+
+    def pointer(self, handle, x, y, button, action, dy):
+        if self._action_error:
+            raise self._action_error
+        self.actions.append(("pointer", x, y, button, action, dy))
+
+    def key(self, handle, combo=None, text=None):
+        if self._action_error:
+            raise self._action_error
+        self.actions.append(("key", combo, text))
 
 
 def test_gui_launch_ok():
@@ -1359,3 +1369,31 @@ def test_gui_action_error():
     result = srv._do_gui_action("gui-1", "click", "button", "X", None, None)
     assert result["ok"] is False
     assert "no node matching" in result["error"]
+
+
+def test_gui_input_pointer_and_key():
+    srv = McpServer(_FakeWindow())
+    srv.gui = _FakeGui()
+    assert srv._do_gui_input(
+        "gui-1", {"kind": "pointer", "x": 10, "y": 20, "button": "left",
+                  "action": "click", "dy": 0}
+    ) == {"ok": True}
+    assert srv._do_gui_input(
+        "gui-1", {"kind": "key", "combo": "ctrl+Return"}
+    ) == {"ok": True}
+    assert srv.gui.actions == [
+        ("pointer", 10, 20, "left", "click", 0),
+        ("key", "ctrl+Return", None),
+    ]
+
+
+def test_gui_input_error():
+    from src.services.gui_harness import GuiHarnessError
+
+    srv = McpServer(_FakeWindow())
+    srv.gui = _FakeGui(action_error=GuiHarnessError("virtual pointer: boom"))
+    result = srv._do_gui_input(
+        "gui-1", {"kind": "pointer", "x": 1, "y": 2, "button": "left",
+                  "action": "click", "dy": 0}
+    )
+    assert result["ok"] is False and "virtual pointer" in result["error"]

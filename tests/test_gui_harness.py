@@ -177,15 +177,17 @@ def test_screenshot_unknown_handle_raises():
 # AT-SPI tree helpers (fake nodes) — src/services/gui_agent.py
 # --------------------------------------------------------------------------- #
 from src.services.gui_agent import (  # noqa: E402
-    find_node, find_target_app, serialize_tree,
+    _key_argv, _wl_fixed, _wl_msg, _wl_string, _wl_uint, find_node, find_nodes,
+    find_target_app, pick_node, serialize_tree,
 )
 
 
 class _FakeNode:
-    def __init__(self, role, name, children=None):
+    def __init__(self, role, name, children=None, n_actions=0):
         self._role = role
         self._name = name
         self._children = children or []
+        self.n_actions = n_actions
 
     def get_role_name(self):
         return self._role
@@ -247,6 +249,78 @@ def test_find_target_app_none_when_only_infra():
     assert find_target_app(desktop) is None
 
 
+def test_find_nodes_returns_all_matches_dfs_order():
+    inner = _FakeNode("button", "Save", n_actions=1)
+    wrapper = _FakeNode("button", "Save", [inner])  # wrapper first in DFS
+    app = _FakeNode("application", "python3", [wrapper])
+    assert find_nodes(app, role="button", name="Save") == [wrapper, inner]
+
+
+def test_find_nodes_role_alias():
+    app = _sample_app_tree()
+    assert find_nodes(app, role="push button", name="Click Me")  # alias -> button
+
+
+def test_pick_node_prefers_actionable():
+    inner = _FakeNode("button", "Save", n_actions=1)
+    wrapper = _FakeNode("button", "Save", [inner])  # matches first, no actions
+    matches = [wrapper, inner]
+    assert pick_node(matches, require_action=True) is inner
+    assert pick_node(matches) is wrapper  # without the filter, DFS order wins
+
+
+def test_pick_node_nth():
+    a = _FakeNode("button", "Row", n_actions=1)
+    b = _FakeNode("button", "Row", n_actions=1)
+    assert pick_node([a, b], nth=1, require_action=True) is b
+    assert pick_node([a, b], nth=5) is None
+
+
+def test_pick_node_no_actionable_falls_back_to_all():
+    plain = _FakeNode("label", "Save")
+    assert pick_node([plain], require_action=True) is plain
+
+
+# --------------------------------------------------------------------------- #
+# Virtual-input building blocks — src/services/gui_agent.py
+# --------------------------------------------------------------------------- #
+def test_wl_msg_header_packs_size_and_opcode():
+    msg = _wl_msg(6, 4)  # frame: no payload
+    assert msg == b"\x06\x00\x00\x00" + (8 << 16 | 4).to_bytes(4, "little")
+    with_payload = _wl_msg(1, 1, _wl_uint(2))
+    assert len(with_payload) == 12
+    assert int.from_bytes(with_payload[4:8], "little") == (12 << 16) | 1
+
+
+def test_wl_string_nul_terminated_and_padded():
+    packed = _wl_string("wl_seat")
+    # length prefix counts the NUL; total payload padded to 32 bits
+    assert int.from_bytes(packed[:4], "little") == 8
+    assert packed[4:12] == b"wl_seat\0"
+    assert len(packed) % 4 == 0
+
+
+def test_wl_fixed_is_24_8():
+    assert _wl_fixed(1.0) == (256).to_bytes(4, "little", signed=True)
+    assert _wl_fixed(-2.5) == (-640).to_bytes(4, "little", signed=True)
+
+
+def test_key_argv_plain_and_modifiers():
+    assert _key_argv("Return") == ["wtype", "-P", "Return", "-p", "Return"]
+    assert _key_argv("ctrl+shift+t") == [
+        "wtype", "-M", "ctrl", "-M", "shift",
+        "-P", "t", "-p", "t",
+        "-m", "shift", "-m", "ctrl",
+    ]
+
+
+def test_key_argv_rejects_bad_combo():
+    with pytest.raises(ValueError):
+        _key_argv("")
+    with pytest.raises(ValueError):
+        _key_argv("hyper+x")
+
+
 # --------------------------------------------------------------------------- #
 # Manager semantic passthroughs (stubbed connection)
 # --------------------------------------------------------------------------- #
@@ -281,7 +355,9 @@ def test_snapshot_tree_error_raises():
 def test_click_sends_command():
     mgr, harness = _mgr_with({"ok": True})
     mgr.click("gui-1", role="button", name="Click Me")
-    assert harness.sent == [{"cmd": "click", "role": "button", "name": "Click Me"}]
+    assert harness.sent == [
+        {"cmd": "click", "role": "button", "name": "Click Me", "nth": 0}
+    ]
 
 
 def test_click_error_raises():
@@ -294,13 +370,33 @@ def test_type_text_sends_command():
     mgr, harness = _mgr_with({"ok": True})
     mgr.type_text("gui-1", role="text", name="field", text="hello")
     assert harness.sent == [
-        {"cmd": "type", "role": "text", "name": "field", "text": "hello"}
+        {"cmd": "type", "role": "text", "name": "field", "text": "hello", "nth": 0}
     ]
 
 
 def test_do_action_sends_command():
     mgr, harness = _mgr_with({"ok": True})
-    mgr.do_action("gui-1", role="button", name="Save", action="click")
+    mgr.do_action("gui-1", role="button", name="Save", action="click", nth=1)
     assert harness.sent == [
-        {"cmd": "do_action", "role": "button", "name": "Save", "action": "click"}
+        {"cmd": "do_action", "role": "button", "name": "Save", "action": "click",
+         "nth": 1}
+    ]
+
+
+def test_pointer_sends_command():
+    mgr, harness = _mgr_with({"ok": True})
+    mgr.pointer("gui-1", 120, 340, button="right")
+    assert harness.sent == [
+        {"cmd": "pointer", "x": 120, "y": 340, "button": "right",
+         "action": "click", "dy": 0}
+    ]
+
+
+def test_key_sends_command():
+    mgr, harness = _mgr_with({"ok": True})
+    mgr.key("gui-1", combo="ctrl+Return")
+    mgr.key("gui-1", text="hello")
+    assert harness.sent == [
+        {"cmd": "key", "combo": "ctrl+Return", "text": None},
+        {"cmd": "key", "combo": None, "text": "hello"},
     ]

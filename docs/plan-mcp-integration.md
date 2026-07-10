@@ -1,11 +1,20 @@
 # MCP Integration & Native GUI Test Harness — Implementation Plan
 
 **Status**: **Part A COMPLETE** (A1–A5, incl. `mcp.enabled` Preferences toggle) and
-**Part B core COMPLETE** — the GUI test harness now does launch / screenshot /
-snapshot_tree / click / type / do_action / stop against a headless cage compositor
-(18 MCP tools total, 166 tests, verified end-to-end). Remaining: the `ydotool`
-coordinate fallback (deferred, non-fatal) and possibly a PR for the branch.
-(Updated 2026-07-07.)
+**Part B COMPLETE** — the GUI test harness does launch / screenshot / snapshot_tree /
+click / type / do_action / pointer / key / stop against a headless cage compositor.
+Coordinate + keyboard input landed 2026-07-10 via the **wlroots virtual-input
+protocols**: a built-in raw-wire Wayland client in `gui_agent.py` holds ONE
+persistent `zwlr_virtual_pointer_v1` (absolute motion), and `wtype` drives the
+virtual keyboard — NOT the originally planned `ydotool`: uinput injection can never
+reach a `WLR_BACKENDS=headless` compositor because it reads no input devices at all.
+`wlrctl` also doesn't work for the pointer: it creates/destroys the device per
+invocation, the seat capability flaps, and the GTK client never has a bound
+`wl_pointer` at event time — hence the persistent in-agent device.
+cage 0.3.0 exposes `wlr_virtual_pointer_manager_v1` / `wlr_virtual_keyboard_manager_v1`.
+The role/name matcher now collects all matches, prefers actionable nodes (wrapper
+widgets no longer shadow the real target), supports `nth` and role aliases
+("push button" → "button"). (Updated 2026-07-10.)
 **Depends on**: Phase 1 (data safety) ✅ and Phase 2 (async layer) ✅ — both code-complete.
 **Parent roadmap**: `docs/plan-stability-roadmap.md` (Phase 7). This document is the
 detailed, de-risked implementation plan for that phase, **plus** a new capability
