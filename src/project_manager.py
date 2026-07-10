@@ -55,6 +55,12 @@ def _format_tokens(n: int) -> str:
     return str(n)
 
 
+# Context-window size for the live occupancy meter. All current Claude models used
+# here run the 1M window; the JSONL ``model`` field does not distinguish 200k/1M, so
+# this is a fixed default (surface as a setting later if smaller windows return).
+_CONTEXT_WINDOW = 1_000_000
+
+
 # Inline CSS for the larger project cards and their status badges.
 _BADGE_CSS = b"""
 .project-card {
@@ -89,6 +95,9 @@ _BADGE_CSS = b"""
 .cc-badge-message { background: alpha(#3584e4, 0.20); color: #1c71d8; }
 .cc-badge-worktree { background: alpha(#f5a623, 0.22); color: #c46a00; }
 .cc-badge-tokens { background: alpha(#9141ac, 0.18); color: #9141ac; }
+.cc-badge-context      { background: alpha(#2ec27e, 0.18); color: #26a269; }
+.cc-badge-context-warn { background: alpha(#e5a50a, 0.20); color: #c07f00; }
+.cc-badge-context-high { background: alpha(#e01b24, 0.22); color: #c01c28; }
 .cc-badge-missing { background: alpha(#e01b24, 0.20); color: #c01c28; }
 .cc-badge-local  { background: alpha(@theme_fg_color, 0.10); color: alpha(@theme_fg_color, 0.55); }
 .cc-badge-synced   { background: alpha(#33d17a, 0.18); color: #26a269; }
@@ -690,13 +699,48 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
             label = badge.get_last_child()
             if isinstance(label, Gtk.Label):
                 label.set_text(text)
+        self._render_context_badge(row, insight)
+
+    def _render_context_badge(self, row, insight):
+        """Create/update the context-window occupancy pill (◔ N% ctx) next to ⚡."""
+        used = getattr(insight, "last_context_tokens", 0) or 0
+        if used <= 0:
+            self._clear_context_badge(row)
+            return
+        pct = min(used / _CONTEXT_WINDOW, 1.0)
+        # Quarter-fill glyph as a compact visual cue of how full the window is.
+        glyph = "◔◑◕●"[min(int(pct * 4), 3)]
+        text = f"{glyph} {pct * 100:.0f}% ctx"
+        if pct > 0.90:
+            css_class = "cc-badge-context-high"
+        elif pct > 0.70:
+            css_class = "cc-badge-context-warn"
+        else:
+            css_class = "cc-badge-context"
+        tooltip = (
+            "Context window\n"
+            f"{used:,} / {_CONTEXT_WINDOW:,} tokens ({pct * 100:.0f}%)"
+        )
+        # Threshold changes swap the css class, so rebuild rather than mutate.
+        self._clear_context_badge(row)
+        badge = self._make_badge(css_class, tooltip, text=text)
+        row.badges_box.append(badge)
+        row._live_ctx_badge = badge
+
+    def _clear_context_badge(self, row):
+        """Remove the context-window badge if one is currently shown."""
+        badge = getattr(row, "_live_ctx_badge", None)
+        if badge is not None:
+            row.badges_box.remove(badge)
+            row._live_ctx_badge = None
 
     def _clear_live_token_badge(self, row):
-        """Remove the live token badge if one is currently shown."""
+        """Remove the live token + context badges if currently shown."""
         badge = getattr(row, "_live_tok_badge", None)
         if badge is not None:
             row.badges_box.remove(badge)
             row._live_tok_badge = None
+        self._clear_context_badge(row)
 
     def _process_notifications(self, markers: dict, live: set):
         """Raise a desktop notification once per newly-seen marker (live only)."""

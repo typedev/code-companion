@@ -210,6 +210,13 @@ class HistoryService:
                     counted_ids.add(msg_id)
                 model = msg.get("model") or "unknown"
                 insight.usage_by_model.setdefault(model, TokenUsage()).add(tokens)
+                # Input-side occupancy of this turn = how full the context window is.
+                # Runs once per message (dedup above), in file order, so the final
+                # assignment reflects the latest turn. Output is excluded on purpose
+                # (it is generation, not window occupancy).
+                insight.last_context_tokens = (
+                    tokens.input + tokens.cache_read + tokens.cache_creation
+                )
 
         content = msg.get("content", [])
         if not isinstance(content, list):

@@ -27,7 +27,7 @@ from .config_path import get_config_dir
 
 # Bump when the parser's extraction logic changes so stale cache entries (keyed
 # only on file stat) are discarded instead of served with the old semantics.
-_SCHEMA_VERSION = 2
+_SCHEMA_VERSION = 3
 
 
 class SessionInsightService:

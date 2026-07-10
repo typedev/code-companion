@@ -68,6 +68,11 @@ class SessionInsight:
     first_prompt: str = ""
     last_assistant_text: str = ""
     message_count: int = 0
+    # Input-side occupancy of the most recent assistant turn (input + cache read +
+    # cache write). This is "how full is the context window right now", a different
+    # quantity from the cumulative usage sums above (which are dominated by output +
+    # per-turn cache). Used for the live context meter on PM cards.
+    last_context_tokens: int = 0
 
     @property
     def models(self) -> list[str]:
@@ -89,6 +94,7 @@ class SessionInsight:
             "first_prompt": self.first_prompt,
             "last_assistant_text": self.last_assistant_text,
             "message_count": self.message_count,
+            "last_context_tokens": self.last_context_tokens,
         }
 
     @classmethod
@@ -114,6 +120,7 @@ class SessionInsight:
             first_prompt=data.get("first_prompt", ""),
             last_assistant_text=data.get("last_assistant_text", ""),
             message_count=int(data.get("message_count", 0)),
+            last_context_tokens=int(data.get("last_context_tokens", 0)),
         )
 
 
