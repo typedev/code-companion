@@ -2,18 +2,22 @@
 
 ## Requirements
 
-- **OS**: Linux (tested on Fedora 43, Ubuntu 26.04)
+- **OS**: Linux (tested on Fedora 44, Ubuntu 26.04 LTS "Resolute")
 - **Python**: 3.12+
 - **uv**: Python package manager ([install](https://docs.astral.sh/uv/getting-started/installation/))
 
 ### System Dependencies (Fedora)
 
 ```bash
-sudo dnf install gtk4-devel libadwaita-devel gtksourceview5-devel \
-    vte291-gtk4-devel python3-gobject pygobject3-devel \
+sudo dnf install cairo-devel cairo-gobject-devel gobject-introspection-devel \
+    gtk4-devel libadwaita-devel gtksourceview5-devel vte291-gtk4-devel \
     libgit2-devel webkitgtk6.0-devel libspelling-devel \
-    ripgrep fd-find
+    python3-devel meson ninja-build ripgrep fd-find
 ```
+
+> The `cairo-*` / `gobject-introspection-devel` / `meson` packages let `uv sync` build
+> the PyGObject and pycairo bindings against your system libraries. This matches the
+> list `install.sh` installs.
 
 ### System Dependencies (Ubuntu/Debian)
 
@@ -21,10 +25,13 @@ sudo dnf install gtk4-devel libadwaita-devel gtksourceview5-devel \
 sudo apt install libgtk-4-dev libadwaita-1-dev libgtksourceview-5-dev \
     libvte-2.91-gtk4-dev libwebkitgtk-6.0-dev libgit2-dev \
     libspelling-1-dev gir1.2-spelling-1 \
-    libcairo2-dev libgirepository-2.0-dev pkg-config \
-    python3-dev python3-gi python3-gi-cairo gir1.2-gtk-4.0 \
-    ripgrep fd-find
+    libcairo2-dev libgirepository-2.0-dev pkg-config python3-dev \
+    meson ninja-build ripgrep fd-find
 ```
+
+> Verified against current Ubuntu (25.10 "Questing" and 26.04 LTS "Resolute"). Note
+> `libgirepository-2.0-dev` (girepository 2.0) — required by PyGObject ≥ 3.52 and present
+> in these releases; older LTS releases used `libgirepository1.0-dev`.
 
 > **Ubuntu note:** install `cage`/`grim`/`wtype` from the distro repos,
 > not as Snaps — Snap confinement can block access to the Wayland sockets the

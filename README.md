@@ -22,6 +22,9 @@ A native GTK4/libadwaita desktop application for working with AI coding assistan
 - Register and manage multiple projects
 - Single-click to select, double-click to open
 - Lock mechanism prevents opening the same project twice
+- **Prompt Search** — search across every past Claude prompt in all registered projects and jump to the source project
+- **Session summaries** — the last session's handoff summary (résumé + next-session plan) is shown on the card
+- Live **agent observability** badges (token spend, cost, context-window meter) — see below
 
 ### Project Workspace
 
@@ -88,7 +91,11 @@ between Files, Git, AI Sessions, Notes, Problems, Issues, and Messages.
 - **Terminal Tabs** — Embedded VTE terminal with Dracula theme, left padding, auto `.venv` activation
 - **Session View** — Claude session content with Markdown support
 - **Commit Detail View** — Files list + commit message + unified diff
-- **Snippets Bar** — Quick-access text snippets
+- **Image Viewer & SVG Editor** — Zoomable image viewer and an SVG editor; binary files get a read-only info view
+
+### Claude Query Editor
+- **Query Editor** — a persistent Markdown prompt editor for the embedded session, with GtkSourceView highlighting and optional spell check (libspelling, per-language picker via `editor.spellcheck_language`)
+- **Snippets** — quick-access text snippets live in the Query Editor header (first few inline, the rest in a `…` overflow; right-click to delete)
 
 ### Settings & Preferences
 - **Theme:** System/Light/Dark via libadwaita
@@ -130,6 +137,27 @@ between Files, Git, AI Sessions, Notes, Problems, Issues, and Messages.
 - **Secure credentials** — git/GitHub tokens are stored in the desktop keyring (libsecret) when
   available, with a graceful fallback to git's credential helper.
 
+### Git Worktrees & Multi-Agent Orchestration
+
+- **Worktree cards** — spin off a git worktree from a project card's menu ("New Worktree…"); worktree
+  cards nest and indent under their parent project with a branch glyph, and each opens in its own window.
+- **Merge back** — a "Merge back…" action previews the merge first (no working-tree touch), then merges
+  or flags conflicts.
+- **Completion reports** — an agent working in a worktree signals it is done (MCP `report_worktree_complete`);
+  the parent card shows a **⑂ N ready** badge, and you can review/resolve the report.
+- **MCP orchestration** — `create_worktree` / `list_worktrees` / `preview_merge` / `merge_worktree` /
+  `report_worktree_complete` / `list_worktree_reports` let a session drive the whole fan-out/merge flow.
+- **Discovery** — worktrees created with a plain `git worktree add` in a terminal are picked up automatically.
+
+### Agent Observability
+
+- **Live token badge** — projects with a running session show a ⚡ badge with the estimated cost and
+  output tokens; the tooltip breaks down input / output / cache-write / cache-read and the $ estimate.
+- **Context-window meter** — a **◔ N% ctx** pill shows how full the active session's context window is
+  right now, shifting green → amber → red as it fills.
+- **Per-session usage** — the AI Sessions history lists per-session token counts and estimated cost,
+  plus project-wide and "today" totals.
+
 ### GUI Test Harness (optional)
 
 - The assistant can launch, drive (click/type by accessibility role+name, coordinate clicks and
@@ -141,23 +169,48 @@ between Files, Git, AI Sessions, Notes, Problems, Issues, and Messages.
 
 ## Installation
 
-### Requirements
+### Quick install (recommended)
+
+The install script is the easiest path — it detects your package manager
+(`dnf`/`apt`/`pacman`), installs the system **and** Python dependencies, and wires up
+the launcher, icon, and app-menu entry for you:
+
+```bash
+git clone https://github.com/typedev/code-companion.git
+cd code-companion
+./install.sh
+```
+
+Then run `code-companion` from a terminal or launch it from your app menu. Later,
+`./install.sh update` pulls and re-syncs, and `./install.sh uninstall` removes it.
+See [INSTALL.md](INSTALL.md) for the full walkthrough (update/uninstall, config paths,
+troubleshooting).
+
+> Prefer to install by hand — or `install.sh` doesn't recognise your distro? Follow the
+> manual steps below; they install exactly what the script does.
+
+### Requirements (manual setup)
 
 **System dependencies (Fedora):**
 ```bash
-sudo dnf install gtk4-devel libadwaita-devel gtksourceview5-devel \
-    vte291-gtk4-devel python3-gobject libgit2-devel webkitgtk6.0-devel libspelling-devel \
-    ripgrep fd-find
+sudo dnf install cairo-devel cairo-gobject-devel gobject-introspection-devel \
+    gtk4-devel libadwaita-devel gtksourceview5-devel vte291-gtk4-devel \
+    webkitgtk6.0-devel libgit2-devel libspelling-devel \
+    python3-devel meson ninja-build ripgrep fd-find
 ```
+> The `cairo-*`/`gobject-introspection-devel`/`meson` packages are needed so `uv sync`
+> can build the PyGObject/pycairo bindings against your system libraries.
 
 **System dependencies (Ubuntu/Debian):**
 ```bash
 sudo apt install libgtk-4-dev libadwaita-1-dev libgtksourceview-5-dev \
     libvte-2.91-gtk4-dev libwebkitgtk-6.0-dev libgit2-dev \
     libspelling-1-dev gir1.2-spelling-1 \
-    libcairo2-dev libgirepository-2.0-dev pkg-config python3-dev python3-gi \
-    ripgrep fd-find
+    libcairo2-dev libgirepository-2.0-dev pkg-config python3-dev \
+    meson ninja-build ripgrep fd-find
 ```
+> Package names above are for current Ubuntu (25.10 / 26.04 LTS "Resolute"). The
+> `libgirepository-2.0-dev` package (girepository 2.0) is required by PyGObject ≥ 3.52.
 
 **Optional — native GUI test harness** (`cage`, `grim`, `wlr-randr`,
 `wtype`): lets the assistant launch, drive and screenshot another project's GTK/Qt
@@ -254,7 +307,10 @@ src/
 │   ├── problems_detail_view.py  # Problems detail with code preview
 │   ├── script_toolbar.py    # Run button + Outline for scripts
 │   ├── markdown_preview.py  # WebKit markdown preview
-│   ├── snippets_bar.py      # Quick-access snippets
+│   ├── query_editor.py      # Persistent Claude prompt editor (spellcheck + snippets header)
+│   ├── snippets_bar.py      # Quick-access snippets (rendered in the Query Editor header)
+│   ├── prompt_search_window.py  # Cross-project search over past Claude prompts
+│   ├── image_viewer.py / svg_editor.py / binary_file_view.py  # Non-text file views
 │   ├── preferences_dialog.py# Settings dialog
 │   └── ...
 ├── services/                # Business logic
@@ -271,6 +327,9 @@ src/
 │   ├── mcp_server.py        # Per-window MCP control surface (FastMCP)
 │   ├── gui_harness.py / gui_agent.py    # Headless GUI test harness
 │   ├── session_summary_service.py / session_notify.py   # Handoff summaries + notifications
+│   ├── session_insight_service.py / model_pricing.py    # Token usage/context + cost estimate
+│   ├── prompt_search.py     # Cross-project prompt index/search
+│   ├── worktree_reports.py  # Worktree completion reports (multi-agent orchestration)
 │   ├── project_catalog.py / message_store.py    # Coordination hub (catalog + mailbox)
 │   └── sync_*.py            # Cross-machine sync (service/engine/repo/recovery/lock/state)
 ├── utils/                   # paths, project_identity, claude_session (tmux), git_auth, …
@@ -316,8 +375,10 @@ src/
 - [x] Cross-machine sync (git-backed 3-way merge to a private remote)
 - [x] Session supervisor (Claude survives IDE restart via tmux; live dots, reserved port)
 - [x] Coordination hub (cross-project catalog + synced inter-project mailbox, GUI + MCP)
-- [ ] v0.9: Packaging (Flatpak, .desktop file)
-- [ ] v1.0: Multi-agent orchestration with Git worktrees
+- [x] Agent observability (live token spend + cost estimate + context-window meter, per-session usage)
+- [x] Query editor (persistent Markdown prompt editor, spell check, header snippets) + cross-project prompt search
+- [x] v1.0: Multi-agent orchestration with Git worktrees (nested worktree cards, merge-back, completion reports, MCP orchestration)
+- [ ] v0.9: Packaging (Flatpak, `.desktop` file ships; Flatpak manifest pending)
 
 ## Third-Party Credits
 

@@ -290,8 +290,13 @@ Session files are JSONL with event types: `user`, `assistant`, `tool_use`, `tool
 - [x] Phase 4 git features (all except the deferred merge/conflict UI 4.4): commit/branch migrated to
   the git CLI (closes 3.1/3.9); amend + multiline commit; publish/upstream visibility; remote-branch
   checkout; New-Project polish (default branch + initial commit); SSH-key awareness; stash; clone-from-URL
-- [ ] v0.9: Packaging (Flatpak, .desktop file)
-- [ ] v1.0: Multi-agent orchestration with Git worktrees
+- [x] Agent observability: live token spend + cost estimate + context-window meter on PM cards,
+  per-session token usage in the history panel; `session_insight_service`/`model_pricing`
+- [x] v1.0: Multi-agent orchestration with Git worktrees — nested worktree cards in the PM,
+  create/remove, merge-back with conflict preview, completion reports (⑂ N ready badge), and MCP
+  orchestration (`create_worktree`/`merge_worktree`/`report_worktree_complete`); see
+  `docs/plan-worktrees-multiagent.md`
+- [ ] v0.9: Packaging (Flatpak manifest; `.desktop` file already ships in `data/`)
 
 ## GTK4/libadwaita Gotchas
 
