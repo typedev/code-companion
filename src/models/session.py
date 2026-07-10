@@ -16,7 +16,13 @@ class TokenUsage:
 
     @property
     def total(self) -> int:
-        """All tokens that flowed through the model (billable input + output)."""
+        """Sum of all four usage buckets (input + output + cache write + cache read).
+
+        Note: cache-read usually dominates for a long-running session (the whole
+        context is re-read every turn), so this raw total runs far ahead of the
+        real input/output volume. The $ estimate weights the buckets properly;
+        this does not. Prefer the per-bucket breakdown when surfacing to users.
+        """
         return self.input + self.output + self.cache_creation + self.cache_read
 
     def add(self, other: "TokenUsage") -> None:

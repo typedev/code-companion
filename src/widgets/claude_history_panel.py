@@ -109,7 +109,7 @@ class ClaudeHistoryPanel(Gtk.Box):
         self.totals_label.set_margin_start(12)
         self.totals_label.set_margin_end(12)
         self.totals_label.set_margin_bottom(6)
-        self.totals_label.set_ellipsize(3)  # END
+        self.totals_label.set_wrap(True)  # per-bucket breakdown is longer than one line
         self.totals_label.set_visible(False)
         self.append(self.totals_label)
 
@@ -389,9 +389,18 @@ class ClaudeHistoryPanel(Gtk.Box):
             if insight.last_ts is not None and insight.last_ts.astimezone().date() == today:
                 today_tokens += insight.total_tokens
 
-        total_tokens = sum(u.total for u in merged.values())
+        # Show the real per-bucket breakdown rather than one cache-inflated sum.
+        agg = TokenUsage()
+        for usage in merged.values():
+            agg.add(usage)
         cost = model_pricing.format_cost(model_pricing.estimate_cost(merged))
-        text = f"Σ {_format_tokens(total_tokens)} tok · {cost}"
+        text = (
+            f"Σ  in {_format_tokens(agg.input)}"
+            f" · out {_format_tokens(agg.output)}"
+            f" · cache-w {_format_tokens(agg.cache_creation)}"
+            f" · cache-r {_format_tokens(agg.cache_read)}"
+            f" · {cost}"
+        )
         if today_tokens:
             text += f" · today {_format_tokens(today_tokens)}"
         self.totals_label.set_text(text)

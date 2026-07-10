@@ -20,6 +20,11 @@ from .services.project_status_service import (
 from .services.git_service import AuthenticationRequired, GitService
 from .services.issues_service import GitHubError
 from .services.sync_service import SyncService
+from .services.session_insight_service import SessionInsightService
+from .services.adapter_registry import get_adapter
+from .services.settings_service import SettingsService
+from .services import model_pricing
+from .models.session import TokenUsage
 from .services import session_summary_service
 from .services import message_store
 from .services import worktree_reports
@@ -39,6 +44,15 @@ from .utils.markdown_markup import markdown_to_pango
 from .widgets.github_auth import show_github_credentials_dialog
 from .widgets.prompt_search_window import PromptSearchWindow
 from .version import __version__, get_version_info
+
+
+def _format_tokens(n: int) -> str:
+    """Compact token count, e.g. 480_000_000 -> '480M', 48_200 -> '48.2k'."""
+    if n >= 1_000_000:
+        return f"{n / 1_000_000:.1f}M"
+    if n >= 1_000:
+        return f"{n / 1_000:.1f}k"
+    return str(n)
 
 
 # Inline CSS for the larger project cards and their status badges.
@@ -74,6 +88,7 @@ _BADGE_CSS = b"""
 .cc-badge-issue  { background: alpha(@accent_color, 0.20); color: @accent_color; }
 .cc-badge-message { background: alpha(#3584e4, 0.20); color: #1c71d8; }
 .cc-badge-worktree { background: alpha(#f5a623, 0.22); color: #c46a00; }
+.cc-badge-tokens { background: alpha(#9141ac, 0.18); color: #9141ac; }
 .cc-badge-missing { background: alpha(#e01b24, 0.20); color: #c01c28; }
 .cc-badge-local  { background: alpha(@theme_fg_color, 0.10); color: alpha(@theme_fg_color, 0.55); }
 .cc-badge-synced   { background: alpha(#33d17a, 0.18); color: #26a269; }
@@ -121,6 +136,8 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
         self._setup_window()
         self._build_ui()
         self._load_projects()
+        # Pick up worktrees created outside the app (plain `git worktree add`).
+        self._start_worktree_discovery()
 
     def _setup_css(self):
         """Install the badge stylesheet once for the default display."""
@@ -146,13 +163,39 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
         signal.signal(signal.SIGUSR1, on_sigusr1)
 
     def _on_destroy(self, _widget):
-        """Release lock when window is destroyed."""
+        """Release lock when window is destroyed (size is saved in close-request)."""
         self._manager_lock.release()
 
     def _setup_window(self):
-        """Configure window properties."""
+        """Configure window properties, restoring the last saved size/maximized state.
+
+        Uses dedicated ``manager.*`` keys so the manager's geometry never clobbers the
+        project window's ``window.*`` size (they have very different footprints).
+        """
         self.set_title("Code Companion")
-        self.set_default_size(500, 600)
+        settings = SettingsService.get_instance()
+        width = settings.get("manager.width", 500)
+        height = settings.get("manager.height", 600)
+        self.set_default_size(width, height)
+        if settings.get("manager.maximized", False):
+            self.maximize()
+        # Save geometry on close-request: the window is still mapped there, so
+        # get_width()/get_height() report the real current size. In "destroy" it is
+        # already unmapped (returns 0), and get_default_size() does not track user
+        # resizes on wlroots — so neither is reliable for this.
+        self.connect("close-request", self._on_manager_close_request)
+
+    def _on_manager_close_request(self, _window) -> bool:
+        """Persist the window's current size/maximized state, then allow the close."""
+        settings = SettingsService.get_instance()
+        maximized = self.is_maximized()
+        settings.set("manager.maximized", maximized)
+        if not maximized:
+            width, height = self.get_width(), self.get_height()
+            if width > 0 and height > 0:
+                settings.set("manager.width", width)
+                settings.set("manager.height", height)
+        return False  # do not block the close
 
     def _build_ui(self):
         """Build the UI layout."""
@@ -344,6 +387,54 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
         if hasattr(self, "_msg_seen"):  # guard: _load_projects may run before init finishes
             self._scan_messages()
 
+    def _start_worktree_discovery(self):
+        """Register linked worktrees created outside the app (plain ``git worktree add``).
+
+        The PM list is registry-driven, so a worktree spun up in a terminal (e.g. by an
+        agent) is invisible until its path lands in ``projects.json``. Enumerate
+        ``git worktree list`` for every registered *parent* repo off-thread and
+        auto-register any path we don't know yet; rebuild the list once if we found some.
+        """
+        entries = self.registry.get_projects()
+        known = {str(Path(e["path"]).resolve()) for e in entries}
+        parents = [
+            e["path"]
+            for e in entries
+            if Path(e["path"]).exists() and not is_linked_worktree(Path(e["path"]))
+        ]
+
+        def worker():
+            found: list[str] = []
+            seen = set(known)
+            for parent in parents:
+                try:
+                    worktrees = GitService(parent).list_worktrees()
+                except Exception:
+                    continue  # not a repo / git error — skip this parent
+                for wt in worktrees:
+                    wt_path = wt.get("path")
+                    if not wt_path:
+                        continue
+                    resolved = str(Path(wt_path).resolve())
+                    if resolved in seen:
+                        continue  # the parent's own main worktree, or already known
+                    seen.add(resolved)
+                    found.append(wt_path)
+            GLib.idle_add(self._on_worktrees_discovered, found)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_worktrees_discovered(self, found: list[str]):
+        """Main thread: persist newly found worktrees, then rebuild the list once."""
+        added = False
+        for wt_path in found:
+            if Path(wt_path).exists():
+                self.registry.register_project(wt_path)  # idempotent (dedupes by path)
+                added = True
+        if added:
+            self._load_projects()
+        return False
+
     def _recompute_units(self):
         """Aggregate live/attention/MRU per project *unit* (a parent + its worktrees).
 
@@ -439,6 +530,9 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
         rows = getattr(self, "_rows_by_path", None)
         if rows is None:
             return
+        # A worktree may have been created (in a terminal) while we were in the
+        # background — discover + register it so the rebuild below can show it.
+        self._start_worktree_discovery()
         entries = self.registry.get_projects()
         registered = {str(Path(e["path"]).resolve()) for e in entries}
         if registered != set(rows.keys()):
@@ -484,11 +578,17 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
         # Re-group only when the working set/attention actually changed, so a
         # blinking dot never reshuffles rows mid-glance.
         sig = frozenset(working)
-        if sig != getattr(self, "_working_sig", None):
+        working_changed = sig != getattr(self, "_working_sig", None)
+        if working_changed:
             self._working_sig = sig
             self._recompute_units()  # roll live state up to units, then re-group
             self.project_list.invalidate_sort()
             self.project_list.invalidate_headers()
+        # Live token badges: refresh immediately when the working set changes, else
+        # on a slower cadence (this timer fires every 4s → roughly every 12s here).
+        self._live_token_tick = getattr(self, "_live_token_tick", 0) + 1
+        if working_changed or self._live_token_tick % 3 == 0:
+            self._refresh_live_token_badges()
         # Desktop-notify once per fresh marker on a live session (incl. orphans).
         self._process_notifications(markers, live)
         # Drop stale markers whose session is no longer running.
@@ -511,6 +611,92 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
         else:
             indicator.add_css_class("cc-live-dot")
             indicator.set_tooltip_text("Claude session running")
+
+    # -- live-session token badge (observability on the PM cards) ----------
+
+    def _refresh_live_token_badges(self):
+        """Show a tokens+cost badge on cards with a live session; clear the rest."""
+        for row in getattr(self, "_rows_by_path", {}).values():
+            if getattr(row, "is_live", False):
+                self._start_live_token_scan(row)
+            else:
+                self._clear_live_token_badge(row)
+
+    def _start_live_token_scan(self, row):
+        """Parse the project's most recent (active) session off-thread for its usage."""
+        if getattr(row, "_live_tok_inflight", False):
+            return
+        path = row.project_path
+        pid = self._cached_project_id(path)
+        provider = SettingsService.get_instance().get("ai.provider", "claude")
+        row._live_tok_inflight = True
+
+        def worker():
+            insight = None
+            try:
+                adapter = get_adapter(provider)
+                insight = SessionInsightService.get_instance().get_latest_insight(
+                    adapter, path, pid
+                )
+            except Exception:
+                insight = None
+            GLib.idle_add(self._apply_live_token_badge, path, insight)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _apply_live_token_badge(self, project_path: str, insight):
+        """Main thread: paint (or clear) a row's live token badge from the scan."""
+        row = self._rows_by_path.get(str(Path(project_path).resolve()))
+        if row is None:
+            return False
+        row._live_tok_inflight = False
+        # The session may have ended while we were parsing.
+        if (
+            not getattr(row, "is_live", False)
+            or insight is None
+            or insight.total_tokens == 0
+        ):
+            self._clear_live_token_badge(row)
+            return False
+        self._render_live_token_badge(row, insight)
+        return False
+
+    def _render_live_token_badge(self, row, insight):
+        """Create/update the ⚡ badge: cost + real output, full breakdown in the tooltip."""
+        agg = TokenUsage()
+        for usage in insight.usage_by_model.values():
+            agg.add(usage)
+        estimate = model_pricing.estimate_cost(insight.usage_by_model)
+        cost = f"~${estimate.dollars:,.2f}"
+        # Lead with cost + output (the model's real generation) rather than the
+        # cache-inflated grand total; the tooltip carries every bucket.
+        text = f"⚡ {cost} · out {_format_tokens(agg.output)}"
+        tooltip = (
+            "Live session · current totals\n"
+            f"input: {agg.input:,}\n"
+            f"output: {agg.output:,}\n"
+            f"cache write: {agg.cache_creation:,}\n"
+            f"cache read: {agg.cache_read:,}\n"
+            f"total: {insight.total_tokens:,}\n"
+            f"cost: {model_pricing.format_cost(estimate)}"
+        )
+        badge = getattr(row, "_live_tok_badge", None)
+        if badge is None:
+            badge = self._make_badge("cc-badge-tokens", tooltip, text=text)
+            row.badges_box.append(badge)
+            row._live_tok_badge = badge
+        else:
+            badge.set_tooltip_text(tooltip)
+            label = badge.get_last_child()
+            if isinstance(label, Gtk.Label):
+                label.set_text(text)
+
+    def _clear_live_token_badge(self, row):
+        """Remove the live token badge if one is currently shown."""
+        badge = getattr(row, "_live_tok_badge", None)
+        if badge is not None:
+            row.badges_box.remove(badge)
+            row._live_tok_badge = None
 
     def _process_notifications(self, markers: dict, live: set):
         """Raise a desktop notification once per newly-seen marker (live only)."""
@@ -628,10 +814,15 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
 
         header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=14)
 
-        # Folder icon (larger) — a warning glyph when the folder is gone.
-        icon = Gtk.Image.new_from_icon_name(
-            "dialog-warning-symbolic" if row.is_missing else "folder-symbolic"
-        )
+        # Folder icon (larger) — a warning glyph when the folder is gone, a
+        # git-branch glyph for a worktree card, else a plain folder.
+        if row.is_missing:
+            icon_name = "dialog-warning-symbolic"
+        elif row._is_wt:
+            icon_name = "branch-arrow-symbolic"
+        else:
+            icon_name = "folder-symbolic"
+        icon = Gtk.Image.new_from_icon_name(icon_name)
         icon.set_pixel_size(32)
         icon.set_valign(Gtk.Align.CENTER)
         header.append(icon)
