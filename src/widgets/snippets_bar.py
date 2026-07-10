@@ -1,15 +1,15 @@
 """Snippets bar widget for quick text insertion."""
 
-from gi.repository import Gtk, Gdk, GObject, Adw
+from gi.repository import Gtk, Gdk, GObject, Adw, Pango
 
 from ..services import SnippetsService, ToastService
 
 
 class SnippetsBar(Gtk.Box):
-    """Horizontal scrollable bar with snippet buttons.
+    """Vertical list of snippet rows (styled like the Tasks panel).
 
-    Emits 'snippet-clicked' signal with the snippet text when a button is clicked.
-    Right-click on snippet to delete.
+    Emits 'snippet-clicked' signal with the snippet text when a row is clicked.
+    Right-click on a snippet to delete.
     """
 
     __gsignals__ = {
@@ -17,7 +17,7 @@ class SnippetsBar(Gtk.Box):
     }
 
     def __init__(self):
-        super().__init__(orientation=Gtk.Orientation.HORIZONTAL)
+        super().__init__(orientation=Gtk.Orientation.VERTICAL)
 
         self.snippets_service = SnippetsService.get_instance()
 
@@ -28,43 +28,42 @@ class SnippetsBar(Gtk.Box):
         self.snippets_service.connect("changed", self._on_snippets_changed)
 
     def _build_ui(self):
-        """Build the bar UI."""
-        # Set fixed height
-        self.set_size_request(-1, 36)
+        """Build the list UI (a vertical column, styled like the Tasks panel)."""
+        self.set_margin_start(12)
+        self.set_margin_end(12)
+        self.set_margin_bottom(12)
 
-        # Add some padding
-        self.set_margin_start(4)
-        self.set_margin_end(4)
-        self.set_margin_top(4)
-        self.set_margin_bottom(4)
-
-        # Scrolled window for horizontal scrolling
-        self.scrolled = Gtk.ScrolledWindow()
-        self.scrolled.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.NEVER)
-        self.scrolled.set_hexpand(True)
-
-        # Container for buttons
-        self.button_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
-
-        self.scrolled.set_child(self.button_box)
-        self.append(self.scrolled)
+        # One row per snippet, stacked vertically so a long list scales.
+        self.button_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        self.append(self.button_box)
 
     def _load_snippets(self):
-        """Load snippets and create buttons."""
+        """Load snippets and create one full-width row button each."""
         # Clear existing buttons
         while child := self.button_box.get_first_child():
             self.button_box.remove(child)
 
-        # Add buttons for each snippet
+        # Add a row button for each snippet (icon + label, like a task row).
         snippets = self.snippets_service.get_all()
         for snippet in snippets:
-            # Create button with delete suffix on long press / right click
-            btn = Gtk.Button(label=snippet["label"])
+            btn = Gtk.Button()
             btn.add_css_class("flat")
             btn.set_tooltip_text(
                 (snippet["text"][:100] + "..." if len(snippet["text"]) > 100 else snippet["text"])
                 + "\n\n(Right-click to delete)"
             )
+
+            row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+            icon = Gtk.Image.new_from_icon_name("insert-text-symbolic")
+            icon.add_css_class("dim-label")
+            row.append(icon)
+            label = Gtk.Label(label=snippet["label"])
+            label.set_xalign(0)
+            label.set_hexpand(True)
+            label.set_ellipsize(Pango.EllipsizeMode.END)
+            row.append(label)
+            btn.set_child(row)
+
             btn.connect("clicked", self._on_button_clicked, snippet["text"])
 
             # Add right-click gesture for delete

@@ -11,7 +11,7 @@ import gi
 
 gi.require_version("GObject", "2.0")
 
-from gi.repository import GObject, Gio
+from gi.repository import GObject, Gio, GLib
 
 from .config_path import get_config_dir
 
@@ -76,10 +76,20 @@ class SnippetsService(GObject.Object):
                 self._write_snippet(label, text)
 
     def _setup_file_monitor(self):
-        """Setup file monitor to watch for external changes."""
-        gfile = Gio.File.new_for_path(str(self.snippets_dir))
-        self._monitor = gfile.monitor_directory(Gio.FileMonitorFlags.NONE, None)
-        self._monitor.connect("changed", self._on_directory_changed)
+        """Setup file monitor to watch for external changes.
+
+        Best-effort: some environments have no GIO file-monitor backend
+        (``monitor_directory`` raises ``GError``). Degrade gracefully — snippets
+        simply won't auto-refresh on external edits — rather than failing to
+        construct the service (and any widget that uses it).
+        """
+        self._monitor = None
+        try:
+            gfile = Gio.File.new_for_path(str(self.snippets_dir))
+            self._monitor = gfile.monitor_directory(Gio.FileMonitorFlags.NONE, None)
+            self._monitor.connect("changed", self._on_directory_changed)
+        except GLib.GError:
+            self._monitor = None
 
     def _on_directory_changed(self, monitor, file, other_file, event_type):
         """Handle file system changes in snippets directory."""

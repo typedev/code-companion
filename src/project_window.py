@@ -922,6 +922,24 @@ class ProjectWindow(Adw.ApplicationWindow):
         self.tasks_panel.connect("task-run", self._on_task_run)
         box.append(self.tasks_panel)
 
+        # Snippets (below Tasks). Lives in the sidebar rather than the Claude pane so
+        # a short pane can't clip it; clicking a snippet still feeds the Claude terminal.
+        snip_header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+        snip_header.set_margin_start(12)
+        snip_header.set_margin_end(12)
+        snip_header.set_margin_top(6)
+        snip_header.set_margin_bottom(2)
+        snip_label = Gtk.Label(label="Snippets")
+        snip_label.set_xalign(0)
+        snip_label.set_hexpand(True)
+        snip_label.add_css_class("heading")
+        snip_header.append(snip_label)
+        box.append(snip_header)
+
+        self.snippets_bar = SnippetsBar()
+        self.snippets_bar.connect("snippet-clicked", self._on_snippet_clicked)
+        box.append(self.snippets_bar)
+
         return box
 
     def _build_git_page(self) -> Gtk.Box:
@@ -1120,7 +1138,11 @@ class ProjectWindow(Adw.ApplicationWindow):
             self._start_claude_fresh(name)
 
     def _mount_claude_pane(self, terminal: TerminalView):
-        """Mount a Claude terminal + query editor + snippets bar in the pane."""
+        """Mount a Claude terminal + query editor in the pane.
+
+        The snippets bar lives in the Files sidebar (under Tasks), not here — a short
+        Claude pane used to clip it off its bottom edge.
+        """
         self._clear_claude_container()
 
         terminal.set_vexpand(True)
@@ -1130,10 +1152,6 @@ class ProjectWindow(Adw.ApplicationWindow):
         query_editor.connect("send-requested", self._on_query_send)
         query_editor.connect("make-issue-requested", self._on_query_make_issue)
         self.claude_container.append(query_editor)
-
-        snippets_bar = SnippetsBar()
-        snippets_bar.connect("snippet-clicked", self._on_snippet_clicked)
-        self.claude_container.append(snippets_bar)
 
         terminal.connect("child-exited", self._on_claude_exited)
 
