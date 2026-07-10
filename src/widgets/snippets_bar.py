@@ -4,12 +4,17 @@ from gi.repository import Gtk, Gdk, GObject, Adw, Pango
 
 from ..services import SnippetsService, ToastService
 
+# Snippets shown as inline header buttons; the rest go into a "..." popover.
+MAX_INLINE = 6
+
 
 class SnippetsBar(Gtk.Box):
-    """Vertical list of snippet rows (styled like the Tasks panel).
+    """Compact horizontal row of snippet buttons for the Query Editor header.
 
-    Emits 'snippet-clicked' signal with the snippet text when a row is clicked.
-    Right-click on a snippet to delete.
+    The first MAX_INLINE snippets render as flat label-only buttons; any
+    overflow collapses into a "..." popover with one row per snippet.
+    Emits 'snippet-clicked' signal with the snippet text when clicked.
+    Right-click on a snippet (inline or in the popover) to delete.
     """
 
     __gsignals__ = {
@@ -17,65 +22,73 @@ class SnippetsBar(Gtk.Box):
     }
 
     def __init__(self):
-        super().__init__(orientation=Gtk.Orientation.VERTICAL)
+        super().__init__(orientation=Gtk.Orientation.HORIZONTAL, spacing=2)
 
         self.snippets_service = SnippetsService.get_instance()
 
-        self._build_ui()
         self._load_snippets()
 
         # Listen for snippet changes
         self.snippets_service.connect("changed", self._on_snippets_changed)
 
-    def _build_ui(self):
-        """Build the list UI (a vertical column, styled like the Tasks panel)."""
-        self.set_margin_start(12)
-        self.set_margin_end(12)
-        self.set_margin_bottom(12)
-
-        # One row per snippet, stacked vertically so a long list scales.
-        self.button_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
-        self.append(self.button_box)
-
     def _load_snippets(self):
-        """Load snippets and create one full-width row button each."""
-        # Clear existing buttons
-        while child := self.button_box.get_first_child():
-            self.button_box.remove(child)
+        """Rebuild the inline buttons and, if needed, the overflow popover."""
+        while child := self.get_first_child():
+            self.remove(child)
 
-        # Add a row button for each snippet (icon + label, like a task row).
         snippets = self.snippets_service.get_all()
-        for snippet in snippets:
-            btn = Gtk.Button()
-            btn.add_css_class("flat")
-            btn.set_tooltip_text(
-                (snippet["text"][:100] + "..." if len(snippet["text"]) > 100 else snippet["text"])
-                + "\n\n(Right-click to delete)"
-            )
+        for snippet in snippets[:MAX_INLINE]:
+            self.append(self._make_button(snippet))
 
-            row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-            icon = Gtk.Image.new_from_icon_name("insert-text-symbolic")
-            icon.add_css_class("dim-label")
-            row.append(icon)
-            label = Gtk.Label(label=snippet["label"])
+        overflow = snippets[MAX_INLINE:]
+        if overflow:
+            self.append(self._make_overflow_button(overflow))
+
+    def _make_button(self, snippet: dict, popover: Gtk.Popover | None = None) -> Gtk.Button:
+        """A flat snippet button; label-only inline, left-aligned row in the popover."""
+        btn = Gtk.Button()
+        btn.add_css_class("flat")
+        btn.set_tooltip_text(
+            (snippet["text"][:100] + "..." if len(snippet["text"]) > 100 else snippet["text"])
+            + "\n\n(Right-click to delete)"
+        )
+
+        label = Gtk.Label(label=snippet["label"])
+        label.set_ellipsize(Pango.EllipsizeMode.END)
+        label.set_max_width_chars(20)
+        if popover is not None:
             label.set_xalign(0)
-            label.set_hexpand(True)
-            label.set_ellipsize(Pango.EllipsizeMode.END)
-            row.append(label)
-            btn.set_child(row)
+        btn.set_child(label)
 
-            btn.connect("clicked", self._on_button_clicked, snippet["text"])
+        btn.connect("clicked", self._on_button_clicked, snippet["text"], popover)
 
-            # Add right-click gesture for delete
-            gesture = Gtk.GestureClick()
-            gesture.set_button(Gdk.BUTTON_SECONDARY)  # Right click
-            gesture.connect("pressed", self._on_right_click, snippet["label"])
-            btn.add_controller(gesture)
+        # Right-click gesture for delete
+        gesture = Gtk.GestureClick()
+        gesture.set_button(Gdk.BUTTON_SECONDARY)
+        gesture.connect("pressed", self._on_right_click, snippet["label"])
+        btn.add_controller(gesture)
 
-            self.button_box.append(btn)
+        return btn
 
-    def _on_button_clicked(self, button, text: str):
+    def _make_overflow_button(self, snippets: list[dict]) -> Gtk.MenuButton:
+        """A '...' button holding the snippets that did not fit inline."""
+        popover = Gtk.Popover()
+        rows = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        for snippet in snippets:
+            rows.append(self._make_button(snippet, popover))
+        popover.set_child(rows)
+
+        more_btn = Gtk.MenuButton()
+        more_btn.add_css_class("flat")
+        more_btn.set_icon_name("view-more-symbolic")
+        more_btn.set_tooltip_text("More snippets")
+        more_btn.set_popover(popover)
+        return more_btn
+
+    def _on_button_clicked(self, button, text: str, popover: Gtk.Popover | None):
         """Handle button click."""
+        if popover is not None:
+            popover.popdown()
         self.emit("snippet-clicked", text)
 
     def _on_right_click(self, gesture, n_press, x, y, label: str):

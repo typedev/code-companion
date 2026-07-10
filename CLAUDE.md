@@ -67,7 +67,7 @@ src/
 │   ├── tasks_panel.py   # VSCode tasks.json runner
 │   ├── notes_panel.py   # Notes panel (My Notes + Docs + TODOs)
 │   ├── preferences_dialog.py  # Settings dialog (Adw.PreferencesDialog)
-│   ├── snippets_bar.py  # Snippets buttons bar (right-click to delete)
+│   ├── snippets_bar.py  # Snippet buttons in the Query Editor header (right-click to delete)
 │   ├── problems_panel.py  # Problems sidebar (ruff/mypy file list)
 │   ├── problems_detail_view.py  # Problems detail (list + code preview)
 │   ├── script_toolbar.py  # Script toolbar (Run + Outline for .py/.sh/.md files)

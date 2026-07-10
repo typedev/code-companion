@@ -138,3 +138,17 @@ DEFAULT_SNIPPETS = {
 - Edit by opening file in editor (no dialogs)
 - File monitor watches for external changes
 - Fixed focus bug: grab_focus() after snippet click
+
+### v3 Placement (Query Editor header)
+
+The sidebar placement (Files tab, under Tasks — 27279db) proved inconvenient:
+reaching a snippet required switching to the Files tab. Final placement:
+
+- Snippets are flat label-only buttons on the LEFT of the Query Editor header:
+  `[snippets…] [spacer] [▸ Query Editor] [language]`. The header stays visible
+  even when the editor is collapsed, so snippets are always one click away.
+- Contextual click: editor expanded -> insert at cursor (focus editor);
+  collapsed -> `snippet-to-terminal` signal feeds the Claude terminal.
+- Overflow: the first `MAX_INLINE` (6) snippets render inline; the rest go
+  into a `view-more-symbolic` ("...") popover with one row per snippet.
+- Tooltip preview + right-click delete kept in both inline and popover rows.

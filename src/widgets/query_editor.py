@@ -19,6 +19,7 @@ except (ImportError, ValueError):
     HAS_SPELLING = False
 
 from ..services import SettingsService
+from .snippets_bar import SnippetsBar
 
 
 # Preferred canonical locale per base language for the simplified selector.
@@ -83,6 +84,9 @@ class QueryEditor(Gtk.Box):
         # Ask Claude to formulate + create a GitHub issue from the editor text
         # (or, if empty, from the ongoing discussion). Carries the editor text.
         "make-issue-requested": (GObject.SignalFlags.RUN_FIRST, None, (str,)),
+        # A header snippet was clicked while the editor is collapsed — the text
+        # goes to the Claude terminal instead of the (hidden) buffer.
+        "snippet-to-terminal": (GObject.SignalFlags.RUN_FIRST, None, (str,)),
     }
 
     def __init__(self):
@@ -136,17 +140,23 @@ class QueryEditor(Gtk.Box):
         header.set_margin_top(4)
         header.set_margin_bottom(4)
 
-        # Toggle button with arrow
-        self.toggle_btn = Gtk.Button()
-        self.toggle_btn.add_css_class("flat")
-        self._update_toggle_button()
-        self.toggle_btn.connect("clicked", self._on_toggle_clicked)
-        header.append(self.toggle_btn)
+        # Snippet buttons on the left (always reachable — the header stays
+        # visible while the revealer hides the editor itself).
+        self.snippets_bar = SnippetsBar()
+        self.snippets_bar.connect("snippet-clicked", self._on_snippet_clicked)
+        header.append(self.snippets_bar)
 
         # Spacer
         spacer = Gtk.Box()
         spacer.set_hexpand(True)
         header.append(spacer)
+
+        # Toggle button with arrow, next to the language selector
+        self.toggle_btn = Gtk.Button()
+        self.toggle_btn.add_css_class("flat")
+        self._update_toggle_button()
+        self.toggle_btn.connect("clicked", self._on_toggle_clicked)
+        header.append(self.toggle_btn)
 
         # Language selector button
         self._build_language_selector(header)
@@ -340,6 +350,14 @@ class QueryEditor(Gtk.Box):
 
         if self._expanded:
             self.source_view.grab_focus()
+
+    def _on_snippet_clicked(self, snippets_bar, text: str):
+        """Contextual snippet insert: expanded -> at cursor, collapsed -> terminal."""
+        if self._expanded:
+            self.buffer.insert_at_cursor(text)
+            self.source_view.grab_focus()
+        else:
+            self.emit("snippet-to-terminal", text)
 
     def _on_language_changed(self, dropdown, pspec):
         """Handle language selection change."""

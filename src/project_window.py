@@ -17,7 +17,7 @@ from .services import session_notify, message_store
 from .utils import git_auth, claude_session
 from .utils.project_identity import resolve_project_identity
 from .utils.git_worktree import is_linked_worktree, worktree_parent_root
-from .widgets import SessionView, TerminalView, FileTree, FileEditor, TasksPanel, GitChangesPanel, GitHistoryPanel, DiffView, CommitDetailView, ClaudeHistoryPanel, FileSearchDialog, UnifiedSearch, NotesPanel, PreferencesDialog, SnippetsBar, QueryEditor, ProblemsPanel, ProblemsDetailView, IssuesPanel, IssueDetailView, MessagesPanel, MessageThreadView, ImageViewer, SvgEditor, BinaryFileView
+from .widgets import SessionView, TerminalView, FileTree, FileEditor, TasksPanel, GitChangesPanel, GitHistoryPanel, DiffView, CommitDetailView, ClaudeHistoryPanel, FileSearchDialog, UnifiedSearch, NotesPanel, PreferencesDialog, QueryEditor, ProblemsPanel, ProblemsDetailView, IssuesPanel, IssueDetailView, MessagesPanel, MessageThreadView, ImageViewer, SvgEditor, BinaryFileView
 from .utils.text_files import is_binary
 
 # Managed tmux config for the persistent Claude pane (see the session supervisor
@@ -922,24 +922,6 @@ class ProjectWindow(Adw.ApplicationWindow):
         self.tasks_panel.connect("task-run", self._on_task_run)
         box.append(self.tasks_panel)
 
-        # Snippets (below Tasks). Lives in the sidebar rather than the Claude pane so
-        # a short pane can't clip it; clicking a snippet still feeds the Claude terminal.
-        snip_header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
-        snip_header.set_margin_start(12)
-        snip_header.set_margin_end(12)
-        snip_header.set_margin_top(6)
-        snip_header.set_margin_bottom(2)
-        snip_label = Gtk.Label(label="Snippets")
-        snip_label.set_xalign(0)
-        snip_label.set_hexpand(True)
-        snip_label.add_css_class("heading")
-        snip_header.append(snip_label)
-        box.append(snip_header)
-
-        self.snippets_bar = SnippetsBar()
-        self.snippets_bar.connect("snippet-clicked", self._on_snippet_clicked)
-        box.append(self.snippets_bar)
-
         return box
 
     def _build_git_page(self) -> Gtk.Box:
@@ -1140,8 +1122,9 @@ class ProjectWindow(Adw.ApplicationWindow):
     def _mount_claude_pane(self, terminal: TerminalView):
         """Mount a Claude terminal + query editor in the pane.
 
-        The snippets bar lives in the Files sidebar (under Tasks), not here — a short
-        Claude pane used to clip it off its bottom edge.
+        Snippets live in the query editor's always-visible header; a click lands
+        in the editor when it is expanded, otherwise 'snippet-to-terminal' routes
+        it to the terminal here.
         """
         self._clear_claude_container()
 
@@ -1151,6 +1134,7 @@ class ProjectWindow(Adw.ApplicationWindow):
         query_editor = QueryEditor()
         query_editor.connect("send-requested", self._on_query_send)
         query_editor.connect("make-issue-requested", self._on_query_make_issue)
+        query_editor.connect("snippet-to-terminal", self._on_snippet_clicked)
         self.claude_container.append(query_editor)
 
         terminal.connect("child-exited", self._on_claude_exited)
@@ -1490,8 +1474,8 @@ class ProjectWindow(Adw.ApplicationWindow):
         """Header button: start the Claude session, or focus it if already running."""
         self._start_claude_session()
 
-    def _on_snippet_clicked(self, snippets_bar, text: str):
-        """Handle snippet button click - insert text into Claude terminal."""
+    def _on_snippet_clicked(self, sender, text: str):
+        """Feed snippet text into the Claude terminal (collapsed-editor path)."""
         if self.claude_terminal:
             self.claude_terminal.terminal.feed_child(text.encode("utf-8"))
             self.claude_terminal.terminal.grab_focus()
