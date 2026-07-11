@@ -169,21 +169,18 @@ class PreferencesDialog(Adw.PreferencesDialog):
         linters_group.set_title("Enabled Linters")
         linters_group.set_description("Choose which linters to run in the Problems panel")
 
-        # Ruff toggle
-        ruff_row = Adw.SwitchRow()
-        ruff_row.set_title("Ruff")
-        ruff_row.set_subtitle("Fast Python linter (style, imports, etc.)")
-        ruff_row.set_active(self.settings.get("linters.ruff_enabled", True))
-        ruff_row.connect("notify::active", self._on_ruff_enabled_changed)
-        linters_group.add(ruff_row)
+        # One toggle per registered linter (data-driven, not hardcoded).
+        from ..services.linter_registry import get_linters
 
-        # Mypy toggle
-        mypy_row = Adw.SwitchRow()
-        mypy_row.set_title("Mypy")
-        mypy_row.set_subtitle("Static type checker for Python")
-        mypy_row.set_active(self.settings.get("linters.mypy_enabled", True))
-        mypy_row.connect("notify::active", self._on_mypy_enabled_changed)
-        linters_group.add(mypy_row)
+        for linter in get_linters():
+            row = Adw.SwitchRow()
+            row.set_title(linter.name)
+            row.set_subtitle(linter.subtitle)
+            row.set_active(
+                self.settings.get(f"linters.{linter.id}_enabled", linter.default_enabled)
+            )
+            row.connect("notify::active", self._on_linter_enabled_changed, linter.id)
+            linters_group.add(row)
 
         page.add(linters_group)
 
@@ -204,8 +201,9 @@ class PreferencesDialog(Adw.PreferencesDialog):
         help_label = Gtk.Label()
         help_label.set_markup(
             '<span size="small" alpha="60%">'
-            'Examples: import-untyped, E402, F401\n'
-            'Use ruff codes (E*, F*, W*) and mypy codes (import-untyped, arg-type, etc.)'
+            'Examples: E402, import-untyped, SC2086, MD041\n'
+            'A bare code is ignored for every linter; prefix with a linter id to scope it '
+            '(e.g. shellcheck:SC2086, ruff:E501).'
             '</span>'
         )
         help_label.set_xalign(0)
@@ -326,13 +324,9 @@ class PreferencesDialog(Adw.PreferencesDialog):
         """Handle MCP server enabled toggle."""
         self.settings.set("mcp.enabled", row.get_active())
 
-    def _on_ruff_enabled_changed(self, row, pspec):
-        """Handle ruff enabled toggle."""
-        self.settings.set("linters.ruff_enabled", row.get_active())
-
-    def _on_mypy_enabled_changed(self, row, pspec):
-        """Handle mypy enabled toggle."""
-        self.settings.set("linters.mypy_enabled", row.get_active())
+    def _on_linter_enabled_changed(self, row, pspec, linter_id):
+        """Handle a linter enabled toggle (one handler for all registry linters)."""
+        self.settings.set(f"linters.{linter_id}_enabled", row.get_active())
 
     def _on_ignored_codes_changed(self, row):
         """Handle ignored codes change."""

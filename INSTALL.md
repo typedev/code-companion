@@ -86,6 +86,20 @@ already pulled in by the app's base dependencies; no separate install is require
 
 The `install.sh` script installs these automatically (non-fatally) when available.
 
+### Optional: extra linters
+
+The Problems panel is multi-language. Beyond the Python linters (ruff/mypy, installed per
+project into its venv), it can run yamllint (YAML), PyMarkdown (Markdown), ShellCheck (shell)
+and ESLint (JS/TS). Install the distro-packaged ones in bulk:
+
+```bash
+./install.sh linters      # installs shellcheck + yamllint via dnf/apt/pacman
+```
+
+Python linters install per-project — from the Problems panel's Install button, or
+`uv add --dev ruff mypy yamllint pymarkdownlnt`. ESLint installs in your JS project via
+`npm install --save-dev eslint`. Each linter can also be toggled in Settings → Linters.
+
 ---
 
 ## Quick Install

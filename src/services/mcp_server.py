@@ -245,7 +245,7 @@ class McpServer:
 
         @mcp.tool()
         def get_problems(path: str | None = None) -> dict:
-            """Return the current ruff/mypy findings shown in the Problems panel.
+            """Return the current linter findings shown in the Problems panel.
 
             Read-only snapshot of the panel's cached results; it does not re-run the
             linters. ``has_run`` is false until the linters have completed at least
@@ -253,6 +253,29 @@ class McpServer:
             a single file.
             """
             return self.call_on_main(lambda: self._do_get_problems(path))
+
+        @mcp.tool()
+        def list_linters() -> dict:
+            """List the linters this app knows about and their status for this project.
+
+            Each entry: id, name, enabled (in settings), status (available /
+            not_installed), the file extensions it handles, whether the project has
+            such files, and an install_hint command. Use ``run_linter`` to run one.
+            """
+            return self.call_on_main(self._do_list_linters)
+
+        @mcp.tool()
+        def run_linter(linter_id: str, paths: list[str] | None = None) -> dict:
+            """Run a single linter now and return its structured findings.
+
+            Runs the linter even if disabled in settings (on-demand). ``paths`` limits
+            it to specific files (else it runs project-wide / over matching files). The
+            Problems panel is refreshed so the human sees the current state too. Returns
+            {problems, counts, status, install_hint}.
+            """
+            # Runs on the FastMCP worker thread; the linter subprocess stays here (it
+            # may exceed call_on_main's 5s budget). Only the GUI refresh is marshalled.
+            return self._do_run_linter(linter_id, paths)
 
         @mcp.tool()
         def list_tasks() -> dict:
@@ -667,6 +690,62 @@ class McpServer:
                 "total": len(problems),
             },
             "has_run": bool(getattr(panel, "_has_run", False)),
+        }
+
+    def _do_list_linters(self) -> dict:
+        from .linter_registry import get_linters
+        from .settings_service import SettingsService
+
+        panel = getattr(self.window, "problems_panel", None)
+        service = panel.service if panel is not None else None
+        settings = SettingsService.get_instance()
+
+        linters = []
+        for linter in get_linters():
+            entry = {
+                "id": linter.id,
+                "name": linter.name,
+                "enabled": settings.get(f"linters.{linter.id}_enabled", linter.default_enabled),
+                "extensions": list(linter.extensions),
+                "install_kind": linter.install.kind,
+            }
+            if service is not None:
+                entry["status"] = service.status(linter.id)
+                entry["has_files"] = service.project_has_files(linter)
+                entry["install_hint"] = service.terminal_install_command(linter)
+            linters.append(entry)
+        return {"linters": linters}
+
+    def _do_run_linter(self, linter_id: str, paths: list[str] | None) -> dict:
+        from .linter_registry import get_linter
+
+        panel = getattr(self.window, "problems_panel", None)
+        if panel is None:
+            return {"error": "Problems panel not available"}
+        linter = get_linter(linter_id)
+        if linter is None:
+            return {"error": f"Unknown linter: {linter_id}"}
+
+        service = panel.service
+        problems = service.run_linter(linter, paths)  # blocking; on the worker thread
+        result = [
+            {"file": p.file, "line": p.line, "column": p.column, "code": p.code,
+             "message": p.message, "severity": p.severity, "source": p.source}
+            for p in problems
+        ]
+        errors = sum(1 for p in result if p["severity"] == "error")
+        warnings = sum(1 for p in result if p["severity"] == "warning")
+        # Refresh the panel on the main thread so the human sees the current state.
+        try:
+            self.call_on_main(lambda: (panel.refresh(), None)[1])
+        except Exception:
+            pass
+        return {
+            "linter": linter_id,
+            "status": service.status(linter_id),
+            "install_hint": service.terminal_install_command(linter),
+            "problems": result,
+            "counts": {"error": errors, "warning": warnings, "total": len(result)},
         }
 
     def _do_list_tasks(self) -> dict:

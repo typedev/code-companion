@@ -67,7 +67,15 @@ between Files, Git, AI Sessions, Notes, Problems, Issues, and Messages.
 - **TODOs** — Auto-extracted from code (`TODO:`, `FIXME:`, `HACK:`, `XXX:`, `NOTE:`)
 
 #### Problems Tab (P)
-- **Linter Integration** — Run ruff and mypy on project files
+- **Multi-language linters** — a registry-driven Problems panel runs the right tool per file
+  type: ruff + mypy (Python), yamllint (YAML), PyMarkdown (Markdown), ShellCheck (shell),
+  ESLint (JS/TS). Toggle each in Settings → Linters; a linter runs only when the project has
+  its file types and the tool is available.
+- **Quick install** — missing linters show an Install button: Python tools install into the
+  project venv (`uv add --dev`); system tools (ShellCheck) run their install command in a
+  terminal. `./install.sh linters` bulk-installs the system ones.
+- **Agent-callable** — MCP `list_linters` / `run_linter` let the embedded session lint a file
+  on demand and see the results land in the same panel.
 - **File Grouping** — Problems grouped by file with error counts
 - **Code Preview** — View problem location with syntax highlighting
 - **Copy to Clipboard** — Copy single problem or all problems

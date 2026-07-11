@@ -154,6 +154,43 @@ install_gui_test_deps() {
     fi
 }
 
+# Distro-packaged linters used by the multi-language Problems panel. The Python
+# linters (ruff/mypy/yamllint/pymarkdown) live in each project's venv and are
+# installed per-project from the app (or `uv add --dev`), so they are only hinted
+# here. This installs the system tools that are awkward to get otherwise.
+install_linters() {
+    info "Installing system linters (shellcheck, yamllint)..."
+
+    local MISSING="" installer=""
+    if command -v dnf &> /dev/null; then
+        installer="sudo dnf install -y"
+        # Fedora spells the package "ShellCheck"; the binary is still shellcheck.
+        for pkg in ShellCheck yamllint; do rpm -q "$pkg" &> /dev/null || MISSING="$MISSING $pkg"; done
+    elif command -v apt-get &> /dev/null; then
+        installer="sudo apt-get install -y"
+        for pkg in shellcheck yamllint; do dpkg -s "$pkg" &> /dev/null 2>&1 || MISSING="$MISSING $pkg"; done
+    elif command -v pacman &> /dev/null; then
+        installer="sudo pacman -S --noconfirm"
+        for pkg in shellcheck yamllint; do pacman -Q "$pkg" &> /dev/null 2>&1 || MISSING="$MISSING $pkg"; done
+    else
+        warn "Unknown package manager; install shellcheck and yamllint manually."
+        return 0
+    fi
+
+    if [ -n "$MISSING" ]; then
+        info "Installing:$MISSING"
+        if ! $installer $MISSING; then
+            warn "Could not install some linters ($MISSING). The app works without them."
+        fi
+    else
+        info "System linters already installed"
+    fi
+
+    info "Python linters (ruff, mypy, yamllint, pymarkdown) install per-project:"
+    info "  from the Problems panel's Install button, or: uv add --dev ruff mypy yamllint pymarkdownlnt"
+    info "ESLint (JS/TS) installs via npm in your JS project: npm install --save-dev eslint"
+}
+
 install() {
     info "Installing Code Companion..."
 
@@ -325,13 +362,17 @@ case "${1:-install}" in
     uninstall|remove)
         uninstall
         ;;
+    linters)
+        install_linters
+        ;;
     *)
-        echo "Usage: $0 [install|update|uninstall]"
+        echo "Usage: $0 [install|update|uninstall|linters]"
         echo ""
         echo "Commands:"
         echo "  install    Install Code Companion (default)"
         echo "  update     Update to latest version"
         echo "  uninstall  Remove from system"
+        echo "  linters    Install system linters (shellcheck, yamllint)"
         exit 1
         ;;
 esac

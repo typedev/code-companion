@@ -92,7 +92,9 @@ src/
 │   ├── snippets_service.py  # Text snippets (~/.config/code-companion/snippets/)
 │   ├── rules_service.py # CLAUDE.md rules management
 │   ├── file_monitor_service.py  # Centralized file monitoring (git, tree, notes, tasks)
-│   ├── problems_service.py  # Linter runner (ruff, mypy) with JSON parsing
+│   ├── linter_registry.py   # Multi-language linter descriptors + parsers (registry)
+│   ├── problems_model.py     # Problem/FileProblems/LinterStatus data model
+│   ├── problems_service.py  # Linter runner (registry-driven: ruff/mypy/yamllint/pymarkdown/shellcheck/eslint)
 │   ├── async_runner.py  # run_async: off-thread worker + generation token + liveness guard
 │   ├── icon_cache.py    # Material Design icons cache (O(1) lookup)
 │   ├── python_outline.py / markdown_outline.py  # Outline parsers
@@ -398,9 +400,8 @@ def on_setting_changed(settings, key, value):
 | `window.sidebar_width` | `370` | Sidebar pane width |
 | `window.workspace_split_position` | `260` | Height of the tabs area above the Claude pane |
 | `window.workspace_collapsed` | `false` | Tabs area collapsed to the tab bar |
-| `linters.ruff_enabled` | `true` | Enable ruff linter |
-| `linters.mypy_enabled` | `true` | Enable mypy type checker |
-| `linters.ignored_codes` | `""` | Comma-separated codes to ignore (e.g. "import-untyped, E402") |
+| `linters.<id>_enabled` | `true` | Enable a linter by registry id: `ruff`, `mypy`, `yamllint`, `pymarkdown`, `shellcheck`, `eslint` |
+| `linters.ignored_codes` | `""` | Comma-separated codes to ignore; bare = all linters, `linter:code` = scoped (e.g. "E402, shellcheck:SC2086") |
 | `mcp.enabled` | `true` | Per-window MCP control surface for the embedded session |
 | `sessions.notifications` | `true` | Desktop notifications from Claude Notification hooks |
 | `sync.enabled` | `false` | Cross-machine sync of history/memory/plans/summaries/messages |

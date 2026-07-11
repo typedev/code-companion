@@ -14,6 +14,8 @@ class ProblemsPanel(Gtk.Box):
     __gsignals__ = {
         # Emitted when a file is selected: (file_path, FileProblems)
         "file-selected": (GObject.SignalFlags.RUN_FIRST, None, (str, object)),
+        # Emitted to run a shell command (e.g. a system linter install) in a terminal tab
+        "terminal-command-requested": (GObject.SignalFlags.RUN_FIRST, None, (str,)),
     }
 
     def __init__(self, project_path: str):
@@ -269,84 +271,86 @@ class ProblemsPanel(Gtk.Box):
             self.file_list.append(row)
 
     def _update_linter_status(self):
-        """Update linter status display."""
+        """Show enabled-but-missing linters (with an Install affordance)."""
+        from ..services.linter_registry import get_linters
+
         # Clear existing status
         while child := self.linter_status_box.get_first_child():
             self.linter_status_box.remove(child)
 
         settings = SettingsService.get_instance()
-        missing_linters = []
+        missing = []
+        for linter in get_linters():
+            if not settings.get(f"linters.{linter.id}_enabled", linter.default_enabled):
+                continue
+            if self.service.status(linter.id) != LinterStatus.NOT_INSTALLED:
+                continue
+            # Only nag when the project actually contains files this linter handles.
+            if not self.service.project_has_files(linter):
+                continue
+            missing.append(linter)
 
-        # Only show missing if linter is enabled in settings
-        if settings.get("linters.ruff_enabled", True):
-            if self.service.ruff_status == LinterStatus.NOT_INSTALLED:
-                missing_linters.append("ruff")
-
-        if settings.get("linters.mypy_enabled", True):
-            if self.service.mypy_status == LinterStatus.NOT_INSTALLED:
-                missing_linters.append("mypy")
-
-        if not missing_linters:
+        if not missing:
             self.linter_status_box.set_visible(False)
             return
 
         self.linter_status_box.set_visible(True)
 
-        # Show missing linters with install buttons
-        for linter in missing_linters:
+        for linter in missing:
             row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
 
-            # Warning icon
             icon = Gtk.Image.new_from_icon_name("dialog-warning-symbolic")
             icon.add_css_class("warning")
             row.append(icon)
 
-            # Label
-            label = Gtk.Label(label=f"{linter} not installed")
+            label = Gtk.Label(label=f"{linter.name} not installed")
             label.set_xalign(0)
             label.set_hexpand(True)
             row.append(label)
 
-            # Install button
             install_btn = Gtk.Button(label="Install")
             install_btn.add_css_class("suggested-action")
             install_btn.add_css_class("pill")
+            # For non-Python linters, surface the exact command via the tooltip.
+            cmd = self.service.terminal_install_command(linter)
+            if linter.install.kind != "python" and cmd:
+                install_btn.set_tooltip_text(cmd)
             install_btn.connect("clicked", self._on_install_linter_clicked, linter)
             row.append(install_btn)
 
             self.linter_status_box.append(row)
 
-        # Show which package manager will be used
-        pkg_manager = "uv" if self.service.uses_uv() else "pip"
-        hint = Gtk.Label(label=f"Will use {pkg_manager} to install")
-        hint.add_css_class("dim-label")
-        hint.add_css_class("caption")
-        hint.set_xalign(0)
-        self.linter_status_box.append(hint)
+    def _on_install_linter_clicked(self, button, linter):
+        """Install a linter: Python via uv/pip silently, others in the terminal."""
+        if linter.install.kind == "python":
+            button.set_sensitive(False)
+            button.set_label("Installing...")
+            import threading
 
-    def _on_install_linter_clicked(self, button, linter: str):
-        """Handle install linter button click."""
-        button.set_sensitive(False)
-        button.set_label("Installing...")
+            def install():
+                success, message = self.service.install_linter(linter)
+                GLib.idle_add(self._on_install_complete, linter, success, message, button)
 
-        # Run installation in background
-        import threading
+            threading.Thread(target=install, daemon=True).start()
+            return
 
-        def install():
-            success, message = self.service.install_linter(linter)
-            GLib.idle_add(self._on_install_complete, linter, success, message, button)
+        # System/npm linters: run the install command in a terminal tab.
+        cmd = self.service.terminal_install_command(linter)
+        if cmd:
+            self.emit("terminal-command-requested", cmd)
+            ToastService.show(f"Installing {linter.name} in the terminal…")
+        else:
+            ToastService.show_error(
+                f"Don't know how to install {linter.name} automatically"
+            )
 
-        thread = threading.Thread(target=install, daemon=True)
-        thread.start()
-
-    def _on_install_complete(self, linter: str, success: bool, message: str, button: Gtk.Button):
-        """Handle installation completion."""
+    def _on_install_complete(self, linter, success: bool, message: str, button: Gtk.Button):
+        """Handle Python-linter installation completion."""
         if success:
             ToastService.show(message)
-            # Refresh to rerun linters
-            self.refresh()
+            self.refresh()  # rerun linters
         else:
-            ToastService.show_error(f"Failed to install {linter}: {message}")
+            ToastService.show_error(f"Failed to install {linter.name}: {message}")
             button.set_sensitive(True)
             button.set_label("Install")
 

@@ -337,7 +337,7 @@ class ProjectWindow(Adw.ApplicationWindow):
         self._tab_buttons["notes"] = notes_btn
 
         # Problems button
-        problems_btn = self._create_toolbar_button("problems", "Problems (ruff/mypy)", "problems")
+        problems_btn = self._create_toolbar_button("problems", "Problems (linters)", "problems")
         group.append(problems_btn)
         self._tab_buttons["problems"] = problems_btn
 
@@ -642,6 +642,9 @@ class ProjectWindow(Adw.ApplicationWindow):
 
         self.problems_panel = ProblemsPanel(str(self.project_path))
         self.problems_panel.connect("file-selected", self._on_problems_file_selected)
+        self.problems_panel.connect(
+            "terminal-command-requested", lambda _p, cmd: self.run_in_terminal(cmd, "Install")
+        )
         box.append(self.problems_panel)
 
         return box
@@ -2095,6 +2098,19 @@ class ProjectWindow(Adw.ApplicationWindow):
         self.tab_view.set_selected_page(page)
 
         # Run command after terminal is ready
+        GLib.timeout_add(100, lambda: terminal.run_command(command) or False)
+
+    def run_in_terminal(self, command: str, title: str = "Terminal"):
+        """Open a terminal tab in the project root and run ``command`` in it.
+
+        Used for installs that can't run silently (system linters via sudo, npm, …)
+        so the user sees output and can enter a sudo password.
+        """
+        terminal = TerminalView(working_directory=str(self.project_path))
+        page = self.tab_view.append(terminal)
+        page.set_title(title)
+        page.set_icon(Gio.ThemedIcon.new("utilities-terminal-symbolic"))
+        self.tab_view.set_selected_page(page)
         GLib.timeout_add(100, lambda: terminal.run_command(command) or False)
 
     def _on_page_detached(self, tab_view, page, position):

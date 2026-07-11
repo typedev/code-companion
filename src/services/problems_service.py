@@ -1,180 +1,241 @@
-"""Service for running linters (ruff, mypy) and collecting problems."""
+"""Service for running linters from the registry and collecting problems.
 
-import json
+Linters are described declaratively in ``linter_registry``; this service resolves
+each one's command, runs it (project-wide or over matching files), parses the
+output, and groups the results per file. The ``Problem``/``FileProblems``/
+``LinterStatus`` types live in ``problems_model`` and are re-exported here for
+backward compatibility.
+"""
+
+import os
+import shutil
 import subprocess
-from dataclasses import dataclass, field
 from pathlib import Path
 
+import pathspec
+
+from .problems_model import Problem, FileProblems, LinterStatus  # re-exported
+from .linter_registry import Linter, get_linter, get_linters
 from .settings_service import SettingsService
 
+__all__ = ["Problem", "FileProblems", "LinterStatus", "ProblemsService"]
 
-@dataclass
-class Problem:
-    """Represents a single linter problem."""
-    file: str
-    line: int
-    column: int
-    code: str  # F401, E501, error, etc.
-    message: str
-    severity: str  # error, warning, info
-    source: str  # ruff, mypy
+# Directories never descended into when discovering files to lint.
+_SKIP_DIRS = {
+    ".git", ".venv", "venv", "env", "node_modules", "__pycache__",
+    ".mypy_cache", ".ruff_cache", ".pytest_cache", "dist", "build",
+    ".tox", ".idea", ".vscode", "site-packages",
+}
+# Safety cap on how many files a file-scope linter is handed at once.
+_MAX_FILES = 2000
 
-    @property
-    def location(self) -> str:
-        """Return formatted location string."""
-        return f"{self.line}:{self.column}"
-
-    def format_short(self) -> str:
-        """Format as short string for display."""
-        return f":{self.line} {self.code} {self.message}"
-
-    def format_full(self) -> str:
-        """Format as full string with file path."""
-        return f"{self.file}:{self.line}:{self.column}: {self.code} {self.message}"
-
-
-@dataclass
-class FileProblems:
-    """Problems grouped by file."""
-    file: str
-    problems: list[Problem] = field(default_factory=list)
-
-    @property
-    def error_count(self) -> int:
-        """Count errors in this file."""
-        return sum(1 for p in self.problems if p.severity == "error")
-
-    @property
-    def warning_count(self) -> int:
-        """Count warnings in this file."""
-        return sum(1 for p in self.problems if p.severity == "warning")
-
-    @property
-    def total_count(self) -> int:
-        """Total problem count."""
-        return len(self.problems)
-
-
-class LinterStatus:
-    """Status of linter availability."""
-    AVAILABLE = "available"
-    NOT_INSTALLED = "not_installed"
-    ERROR = "error"
+_PKG_INSTALLERS = {
+    "dnf": "sudo dnf install -y",
+    "apt": "sudo apt install -y",
+    "pacman": "sudo pacman -S",
+}
 
 
 class ProblemsService:
-    """Service for running linters and collecting problems."""
+    """Runs the registered linters and collects their problems."""
 
     def __init__(self, project_path: Path | str):
         self.project_path = Path(project_path).resolve()
-        # Initially unknown, will be set when linter runs
-        self._ruff_status = LinterStatus.NOT_INSTALLED
-        self._mypy_status = LinterStatus.NOT_INSTALLED
+        self._status: dict[str, str] = {}  # linter id -> LinterStatus
+        self._ignore_spec: pathspec.PathSpec | None = None
+        self._ignore_loaded = False
+
+    # -- status ------------------------------------------------------------
+    def status(self, linter_id: str) -> str:
+        """Availability status of a linter after its last run."""
+        return self._status.get(linter_id, LinterStatus.NOT_INSTALLED)
 
     @property
-    def ruff_status(self) -> str:
-        return self._ruff_status
+    def ruff_status(self) -> str:  # back-compat shim
+        return self.status("ruff")
 
     @property
-    def mypy_status(self) -> str:
-        return self._mypy_status
+    def mypy_status(self) -> str:  # back-compat shim
+        return self.status("mypy")
 
-    def check_linter_available(self, linter: str) -> bool:
-        """Check if a linter is available in the project's .venv."""
-        # Check if linter exists in project's .venv
-        venv_bin = self.project_path / ".venv" / "bin" / linter
-        if venv_bin.exists():
-            return True
-
-        # Check if it's in project dependencies (uv.lock or pyproject.toml)
-        if self.uses_uv():
-            uv_lock = self.project_path / "uv.lock"
-            if uv_lock.exists():
-                try:
-                    content = uv_lock.read_text()
-                    if f'name = "{linter}"' in content:
-                        return True
-                except Exception:
-                    pass
-
-        return False
-
+    # -- uv / project detection -------------------------------------------
     def uses_uv(self) -> bool:
         """Check if project uses uv."""
-        # Check for uv.lock (created after uv add)
-        uv_lock = self.project_path / "uv.lock"
-        if uv_lock.exists():
+        if (self.project_path / "uv.lock").exists():
             return True
-
-        # Check for .python-version (created by uv init)
-        python_version = self.project_path / ".python-version"
-        pyproject = self.project_path / "pyproject.toml"
-        if python_version.exists() and pyproject.exists():
-            return True
-
-        return False
+        return (self.project_path / ".python-version").exists() and (
+            self.project_path / "pyproject.toml"
+        ).exists()
 
     def _is_in_uv_dependencies(self, package: str) -> bool:
-        """Check if package is in project's uv dependencies."""
-        # Check uv.lock first (most reliable)
+        """Check if a package is a project dependency (uv.lock / pyproject.toml)."""
         uv_lock = self.project_path / "uv.lock"
         if uv_lock.exists():
             try:
-                content = uv_lock.read_text()
-                if f'name = "{package}"' in content:
+                if f'name = "{package}"' in uv_lock.read_text():
                     return True
             except Exception:
                 pass
-
-        # Check pyproject.toml dependencies and dev-dependencies
         pyproject = self.project_path / "pyproject.toml"
         if pyproject.exists():
             try:
                 content = pyproject.read_text()
-                # Simple check - look for package in dependencies sections
-                if f'"{package}"' in content or f"'{package}'" in content or f"{package}>=" in content or f"{package}=" in content:
+                if (f'"{package}"' in content or f"'{package}'" in content
+                        or f"{package}>=" in content or f"{package}=" in content):
                     return True
             except Exception:
                 pass
-
         return False
 
-    def install_linter(self, linter: str) -> tuple[bool, str]:
-        """Install a linter into project's .venv.
+    @staticmethod
+    def _detect_pkg_manager() -> str | None:
+        for mgr in ("dnf", "apt", "pacman"):
+            if shutil.which(mgr):
+                return mgr
+        return None
 
-        Returns (success, message).
+    # -- file discovery ----------------------------------------------------
+    def _load_ignore_spec(self) -> pathspec.PathSpec | None:
+        """Load .gitignore patterns once (best-effort)."""
+        if self._ignore_loaded:
+            return self._ignore_spec
+        self._ignore_loaded = True
+        gitignore = self.project_path / ".gitignore"
+        if gitignore.exists():
+            try:
+                lines = gitignore.read_text(encoding="utf-8").splitlines()
+                self._ignore_spec = pathspec.PathSpec.from_lines(
+                    pathspec.patterns.GitWildMatchPattern, lines
+                )
+            except Exception:
+                self._ignore_spec = None
+        return self._ignore_spec
+
+    def _iter_files(self, extensions: tuple[str, ...]) -> list[str]:
+        """Project-relative files matching ``extensions``, honoring .gitignore."""
+        spec = self._load_ignore_spec()
+        out: list[str] = []
+        for root, dirs, files in os.walk(self.project_path):
+            dirs[:] = [d for d in dirs if d not in _SKIP_DIRS]
+            for name in files:
+                if not name.endswith(extensions):
+                    continue
+                rel = str((Path(root) / name).relative_to(self.project_path))
+                if spec and spec.match_file(rel):
+                    continue
+                out.append(rel)
+                if len(out) >= _MAX_FILES:
+                    return out
+        return out
+
+    def project_has_files(self, linter: Linter) -> bool:
+        """True if the project has files this linter applies to (or it self-discovers)."""
+        if not linter.extensions:
+            return True
+        return self._has_any_file(linter.extensions)
+
+    def _has_any_file(self, extensions: tuple[str, ...]) -> bool:
+        """True if at least one project file matches ``extensions`` (early exit)."""
+        spec = self._load_ignore_spec()
+        for root, dirs, files in os.walk(self.project_path):
+            dirs[:] = [d for d in dirs if d not in _SKIP_DIRS]
+            for name in files:
+                if name.endswith(extensions):
+                    rel = str((Path(root) / name).relative_to(self.project_path))
+                    if not (spec and spec.match_file(rel)):
+                        return True
+        return False
+
+    # -- command resolution + running -------------------------------------
+    def _resolve_cmd(self, linter: Linter) -> list[str] | None:
+        """Resolve the runnable command for a linter, or None if unavailable."""
+        kind = linter.install.kind
+        if kind == "python":
+            venv_bin = self.project_path / ".venv" / "bin" / linter.binary
+            if venv_bin.exists():
+                return [str(venv_bin)]
+            if self.uses_uv() and self._is_in_uv_dependencies(linter.install.package):
+                return ["uv", "run", linter.binary]
+            return None
+        if kind == "npm":
+            local = self.project_path / "node_modules" / ".bin" / linter.binary
+            if local.exists():
+                return [str(local)]
+        found = shutil.which(linter.binary)
+        return [found] if found else None
+
+    @staticmethod
+    def _timeout(linter: Linter) -> int:
+        return 120 if linter.id in ("mypy", "eslint") else 60
+
+    def run_linter(self, linter: Linter, paths: list[str] | None = None) -> list[Problem]:
+        """Run one linter and return its problems. ``paths`` overrides the targets."""
+        cmd = self._resolve_cmd(linter)
+        if cmd is None:
+            self._status[linter.id] = LinterStatus.NOT_INSTALLED
+            return []
+
+        if linter.scope == "files":
+            files = paths if paths is not None else self._iter_files(linter.extensions)
+            if not files:
+                self._status[linter.id] = LinterStatus.AVAILABLE
+                return []
+            full_cmd = cmd + linter.args + list(files)
+        else:  # project
+            targets = paths if paths is not None else linter.project_target(self.project_path)
+            full_cmd = cmd + linter.args + list(targets)
+
+        try:
+            result = subprocess.run(
+                full_cmd, cwd=self.project_path, capture_output=True,
+                text=True, timeout=self._timeout(linter),
+            )
+        except FileNotFoundError:
+            self._status[linter.id] = LinterStatus.NOT_INSTALLED
+            return []
+        except subprocess.TimeoutExpired:
+            self._status[linter.id] = LinterStatus.ERROR
+            return []
+        except Exception:
+            self._status[linter.id] = LinterStatus.ERROR
+            return []
+
+        self._status[linter.id] = LinterStatus.AVAILABLE
+        output = result.stdout if result.stdout.strip() else result.stderr
+        if not output.strip():
+            return []
+        try:
+            return linter.parse(output, self.project_path)
+        except Exception:
+            self._status[linter.id] = LinterStatus.ERROR
+            return []
+
+    # -- installation ------------------------------------------------------
+    def install_linter(self, linter) -> tuple[bool, str]:
+        """Install a *Python* linter into the project venv. Returns (success, message).
+
+        Non-Python linters are installed via the terminal (see
+        ``terminal_install_command``), not silently here.
         """
+        obj = get_linter(linter) if isinstance(linter, str) else linter
+        if obj is None:
+            return False, f"Unknown linter: {linter}"
+        if obj.install.kind != "python":
+            return False, f"{obj.name} is not a pip/uv package — install it via the terminal."
+
+        package = obj.install.package
         try:
             if self.uses_uv():
-                # Use uv add --dev
-                result = subprocess.run(
-                    ["uv", "add", "--dev", linter],
-                    cwd=self.project_path,
-                    capture_output=True,
-                    text=True,
-                    timeout=120
-                )
+                cmd = ["uv", "add", "--dev", package]
             else:
-                # Use pip install
                 venv_pip = self.project_path / ".venv" / "bin" / "pip"
-                if venv_pip.exists():
-                    pip_cmd = str(venv_pip)
-                else:
-                    pip_cmd = "pip"
-
-                result = subprocess.run(
-                    [pip_cmd, "install", linter],
-                    cwd=self.project_path,
-                    capture_output=True,
-                    text=True,
-                    timeout=120
-                )
-
+                cmd = [str(venv_pip) if venv_pip.exists() else "pip", "install", package]
+            result = subprocess.run(
+                cmd, cwd=self.project_path, capture_output=True, text=True, timeout=120
+            )
             if result.returncode == 0:
-                return True, f"{linter} installed successfully"
-            else:
-                return False, result.stderr or result.stdout or "Installation failed"
-
+                return True, f"{obj.name} installed successfully"
+            return False, result.stderr or result.stdout or "Installation failed"
         except FileNotFoundError as e:
             return False, f"Package manager not found: {e}"
         except subprocess.TimeoutExpired:
@@ -182,204 +243,63 @@ class ProblemsService:
         except Exception as e:
             return False, str(e)
 
-    def run_ruff(self) -> list[Problem]:
-        """Run ruff and return list of problems."""
-        # Check if ruff is in project's .venv
-        venv_ruff = self.project_path / ".venv" / "bin" / "ruff"
+    def terminal_install_command(self, linter: Linter) -> str | None:
+        """A shell command that installs the linter, to run in the embedded terminal."""
+        spec = linter.install
+        if spec.kind == "python":
+            return f"uv add --dev {spec.package}" if self.uses_uv() else None
+        if spec.kind == "npm":
+            return f"npm install --save-dev {spec.package}"
+        if spec.kind == "system":
+            mgr = self._detect_pkg_manager()
+            if not mgr:
+                return None
+            return f"{_PKG_INSTALLERS[mgr]} {spec.package_for(mgr)}"
+        return None
 
-        if venv_ruff.exists():
-            ruff_cmd = [str(venv_ruff)]
-        elif self.uses_uv() and self._is_in_uv_dependencies("ruff"):
-            # Use uv run only if ruff is in project dependencies
-            ruff_cmd = ["uv", "run", "ruff"]
-        else:
-            # Not in project dependencies
-            self._ruff_status = LinterStatus.NOT_INSTALLED
-            return []
+    # -- aggregation -------------------------------------------------------
+    @staticmethod
+    def _parse_ignored(raw: str) -> tuple[set[str], set[tuple[str, str]]]:
+        """Split the ignored-codes setting into global codes and (linter, code) pairs.
 
-        try:
-            result = subprocess.run(
-                ruff_cmd + ["check", "--output-format=json", "."],
-                cwd=self.project_path,
-                capture_output=True,
-                text=True,
-                timeout=60
-            )
-            self._ruff_status = LinterStatus.AVAILABLE
-            # ruff returns non-zero exit code when there are errors
-            output = result.stdout or result.stderr
-            if not output.strip():
-                return []
-
-            return self._parse_ruff_output(output)
-
-        except FileNotFoundError:
-            # ruff not installed
-            self._ruff_status = LinterStatus.NOT_INSTALLED
-            return []
-        except subprocess.TimeoutExpired:
-            self._ruff_status = LinterStatus.ERROR
-            return []
-        except Exception:
-            self._ruff_status = LinterStatus.ERROR
-            return []
-
-    def _parse_ruff_output(self, output: str) -> list[Problem]:
-        """Parse ruff JSON output into Problem objects."""
-        problems = []
-        try:
-            data = json.loads(output)
-            for item in data:
-                # Make path relative to project
-                file_path = item.get("filename", "")
-                try:
-                    file_path = str(Path(file_path).relative_to(self.project_path))
-                except ValueError:
-                    pass  # Keep absolute if not relative to project
-
-                location = item.get("location", {})
-                problem = Problem(
-                    file=file_path,
-                    line=location.get("row", 1),
-                    column=location.get("column", 1),
-                    code=item.get("code", ""),
-                    message=item.get("message", ""),
-                    severity="warning" if item.get("code", "").startswith("W") else "error",
-                    source="ruff"
-                )
-                problems.append(problem)
-        except json.JSONDecodeError:
-            pass
-
-        return problems
-
-    def run_mypy(self) -> list[Problem]:
-        """Run mypy and return list of problems."""
-        # Find src/ directory or use current
-        src_dir = self.project_path / "src"
-        target = "src" if src_dir.is_dir() else "."
-
-        # Check if mypy is in project's .venv
-        venv_mypy = self.project_path / ".venv" / "bin" / "mypy"
-
-        if venv_mypy.exists():
-            mypy_cmd = [str(venv_mypy)]
-        elif self.uses_uv() and self._is_in_uv_dependencies("mypy"):
-            # Use uv run only if mypy is in project dependencies
-            mypy_cmd = ["uv", "run", "mypy"]
-        else:
-            # Not in project dependencies
-            self._mypy_status = LinterStatus.NOT_INSTALLED
-            return []
-
-        try:
-            result = subprocess.run(
-                mypy_cmd + ["--output=json", target],
-                cwd=self.project_path,
-                capture_output=True,
-                text=True,
-                timeout=120  # mypy can be slow
-            )
-            # mypy returns non-zero even for type errors, check if it ran
-            if "No module named" in result.stderr and "mypy" in result.stderr:
-                self._mypy_status = LinterStatus.NOT_INSTALLED
-                return []
-
-            self._mypy_status = LinterStatus.AVAILABLE
-            output = result.stdout
-            if not output.strip():
-                return []
-
-            return self._parse_mypy_output(output)
-
-        except FileNotFoundError:
-            self._mypy_status = LinterStatus.NOT_INSTALLED
-            return []
-        except subprocess.TimeoutExpired:
-            self._mypy_status = LinterStatus.ERROR
-            return []
-        except Exception:
-            self._mypy_status = LinterStatus.ERROR
-            return []
-
-    def _parse_mypy_output(self, output: str) -> list[Problem]:
-        """Parse mypy JSON output into Problem objects."""
-        problems = []
-
-        # mypy --output=json produces one JSON object per line
-        for line in output.strip().split("\n"):
-            if not line.strip():
+        Entries are comma-separated. A bare ``E402`` ignores that code for every linter;
+        a qualified ``shellcheck:SC2086`` ignores it only for that linter.
+        """
+        global_codes: set[str] = set()
+        scoped: set[tuple[str, str]] = set()
+        for entry in raw.split(","):
+            entry = entry.strip()
+            if not entry:
                 continue
-            try:
-                item = json.loads(line)
-
-                # Make path relative to project
-                file_path = item.get("file", "")
-                try:
-                    file_path = str(Path(file_path).relative_to(self.project_path))
-                except ValueError:
-                    pass
-
-                severity = item.get("severity", "error")
-                if severity == "note":
-                    severity = "info"
-
-                problem = Problem(
-                    file=file_path,
-                    line=item.get("line", 1),
-                    column=item.get("column", 1),
-                    code=item.get("code", "mypy"),
-                    message=item.get("message", ""),
-                    severity=severity,
-                    source="mypy"
-                )
-                problems.append(problem)
-            except json.JSONDecodeError:
-                continue
-
-        return problems
+            if ":" in entry:
+                source, code = entry.split(":", 1)
+                scoped.add((source.strip(), code.strip()))
+            else:
+                global_codes.add(entry)
+        return global_codes, scoped
 
     def get_all_problems(self) -> dict[str, FileProblems]:
-        """Run all linters and return problems grouped by file."""
+        """Run all enabled+applicable linters and return problems grouped by file."""
         settings = SettingsService.get_instance()
-
-        # Get settings
-        ruff_enabled = settings.get("linters.ruff_enabled", True)
-        mypy_enabled = settings.get("linters.mypy_enabled", True)
-        ignored_codes_str = settings.get("linters.ignored_codes", "")
-
-        # Parse ignored codes
-        ignored_codes = set()
-        if ignored_codes_str:
-            for code in ignored_codes_str.split(","):
-                code = code.strip()
-                if code:
-                    ignored_codes.add(code)
+        global_codes, scoped_codes = self._parse_ignored(settings.get("linters.ignored_codes", ""))
 
         all_problems: dict[str, FileProblems] = {}
-
-        # Run ruff
-        if ruff_enabled:
-            for problem in self.run_ruff():
-                if problem.code in ignored_codes:
+        for linter in get_linters():
+            if not settings.get(f"linters.{linter.id}_enabled", linter.default_enabled):
+                continue
+            # Skip linters whose file types are absent (don't run eslint on a Python
+            # project, or ruff on a JS-only one).
+            if linter.extensions and not self._has_any_file(linter.extensions):
+                continue
+            for problem in self.run_linter(linter):
+                if problem.code in global_codes:
                     continue
-                if problem.file not in all_problems:
-                    all_problems[problem.file] = FileProblems(file=problem.file)
-                all_problems[problem.file].problems.append(problem)
-
-        # Run mypy
-        if mypy_enabled:
-            for problem in self.run_mypy():
-                if problem.code in ignored_codes:
+                if (problem.source, problem.code) in scoped_codes:
                     continue
-                if problem.file not in all_problems:
-                    all_problems[problem.file] = FileProblems(file=problem.file)
-                all_problems[problem.file].problems.append(problem)
+                all_problems.setdefault(problem.file, FileProblems(file=problem.file)).problems.append(problem)
 
-        # Sort problems within each file by line number
         for fp in all_problems.values():
             fp.problems.sort(key=lambda p: (p.line, p.column))
-
         return all_problems
 
     def get_summary(self) -> tuple[int, int, int]:
