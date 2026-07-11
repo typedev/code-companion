@@ -2072,22 +2072,15 @@ class ProjectWindow(Adw.ApplicationWindow):
 
     def _on_run_requested(self, editor, file_path: str, args: str):
         """Handle run script request from editor toolbar."""
+        from .services.run_registry import runner_for, build_command
+
         ext = Path(file_path).suffix.lower()
         filename = Path(file_path).name
 
-        # Build command based on file type
-        if ext == ".py":
-            if args:
-                command = f"uv run python {file_path} {args}"
-            else:
-                command = f"uv run python {file_path}"
-        elif ext == ".sh":
-            if args:
-                command = f"bash {file_path} {args}"
-            else:
-                command = f"bash {file_path}"
-        else:
+        runner = runner_for(ext)
+        if runner is None:
             return
+        command = build_command(runner, file_path, args)
 
         # Create terminal tab for running the script
         terminal = TerminalView(working_directory=str(self.project_path))

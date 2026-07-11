@@ -92,6 +92,8 @@ src/
 │   ├── snippets_service.py  # Text snippets (~/.config/code-companion/snippets/)
 │   ├── rules_service.py # CLAUDE.md rules management
 │   ├── file_monitor_service.py  # Centralized file monitoring (git, tree, notes, tasks)
+│   ├── run_registry.py      # Single-file runners (ext → run command; polyglot Run)
+│   ├── env_registry.py      # Terminal env activators (venv/direnv/mise)
 │   ├── linter_registry.py   # Multi-language linter descriptors + parsers (registry)
 │   ├── problems_model.py     # Problem/FileProblems/LinterStatus data model
 │   ├── problems_service.py  # Linter runner (registry-driven: ruff/mypy/yamllint/pymarkdown/shellcheck/eslint)
@@ -395,6 +397,7 @@ def on_setting_changed(settings, key, value):
 | `editor.insert_spaces` | `true` | Use spaces for indentation |
 | `editor.word_wrap` | `true` | Wrap long lines at word boundaries |
 | `editor.spellcheck_language` | `"auto"` | libspelling language for the query editor |
+| `terminal.auto_activate_env` | `true` | Auto-activate the project env on terminal spawn (venv/direnv/mise) |
 | `window.width/height` | `1200/800` | Window size |
 | `window.maximized` | `false` | Maximized state |
 | `window.sidebar_width` | `370` | Sidebar pane width |

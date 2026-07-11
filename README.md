@@ -94,9 +94,11 @@ between Files, Git, AI Sessions, Notes, Problems, Issues, and Messages.
 
 ### Main Area
 - **File Editor** — Syntax highlighting via GtkSourceView 5, autosave on focus loss, go-to-line
-- **Script Toolbar** — Run button with arguments dialog, code outline for .py/.sh/.md files
+- **Script Toolbar** — polyglot Run button with arguments dialog (Python, shell, Node.js, Deno/TS,
+  Go, Ruby — shown when the tool is installed), code outline for .py/.md files
 - **Markdown Preview** — WebKit-based preview with syntax highlighting (highlight.js)
-- **Terminal Tabs** — Embedded VTE terminal with Dracula theme, left padding, auto `.venv` activation
+- **Terminal Tabs** — Embedded VTE terminal with Dracula theme, left padding, and auto environment
+  activation (Python venv, direnv, mise; toggle via `terminal.auto_activate_env`)
 - **Session View** — Claude session content with Markdown support
 - **Commit Detail View** — Files list + commit message + unified diff
 - **Image Viewer & SVG Editor** — Zoomable image viewer and an SVG editor; binary files get a read-only info view

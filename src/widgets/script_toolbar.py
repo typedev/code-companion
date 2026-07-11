@@ -6,6 +6,7 @@ from gi.repository import Adw, Gtk, Gio, GObject, GLib
 
 from ..services.python_outline import parse_python_outline, OutlineItem
 from ..services.markdown_outline import parse_markdown_outline, MarkdownHeading
+from ..services.run_registry import runner_for, runner_available
 
 
 # CSS for outline color coding using Adwaita semantic colors
@@ -129,8 +130,10 @@ class ScriptToolbar(Gtk.Box):
         self.filename_label.add_css_class("dim-label")
         self.append(self.filename_label)
 
-        # Run button (only for scripts, not markdown) - RIGHT side
-        if self._file_ext in (".py", ".sh"):
+        # Run button — shown when a runner handles this extension and its tool is
+        # available (e.g. .ts only if deno is installed).
+        _runner = runner_for(self._file_ext)
+        if _runner is not None and runner_available(_runner):
             run_menu = Gio.Menu()
             run_menu.append("Run with arguments...", "toolbar.run-with-args")
 

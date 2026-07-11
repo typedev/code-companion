@@ -334,25 +334,33 @@ class TerminalView(Gtk.Box):
             ToastService.show_error(f"Terminal spawn error: {error}")
         else:
             self.child_pid = pid
-            # Auto-activate .venv if exists (shell mode only — a direct argv
+            # Auto-activate the project environment (shell mode only — a direct argv
             # child, e.g. a tmux client, isn't a shell reading stdin).
             if self._argv is None:
-                self._activate_venv_if_exists()
+                self._activate_env()
 
-    def _activate_venv_if_exists(self):
-        """Activate .venv if it exists in the working directory."""
+    def _activate_env(self):
+        """Feed environment-activation commands for the working directory.
+
+        Registry-driven (venv / direnv / mise, …) and gated by the
+        ``terminal.auto_activate_env`` setting.
+        """
         if not self.current_directory:
             return
+        if not SettingsService.get_instance().get("terminal.auto_activate_env", True):
+            return
 
-        venv_activate = os.path.join(self.current_directory, ".venv", "bin", "activate")
-        if os.path.isfile(venv_activate):
-            # Small delay to let shell initialize
-            GLib.timeout_add(100, lambda: self._source_venv(venv_activate) or False)
+        from ..services.env_registry import activation_commands
 
-    def _source_venv(self, activate_path: str):
-        """Source the venv activate script."""
-        # Use source command (works in bash, zsh, etc.)
-        self.terminal.feed_child(f"source {GLib.shell_quote(activate_path)}\n".encode())
+        commands = activation_commands(self.current_directory)
+        if commands:
+            # Small delay to let the shell initialize before feeding commands.
+            GLib.timeout_add(100, lambda: self._feed_activation(commands) or False)
+
+    def _feed_activation(self, commands: list[str]):
+        """Feed each activation line to the shell (bash/zsh compatible)."""
+        for cmd in commands:
+            self.terminal.feed_child(f"{cmd}\n".encode())
 
     def _on_child_exited(self, terminal, status):
         """Handle shell exit."""
