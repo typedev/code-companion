@@ -124,7 +124,7 @@ between Files, Git, AI Sessions, Notes, Problems, Issues, and Messages.
   (bearer-token, `127.0.0.1`) so the embedded Claude session can act on *this* window: read the
   workspace state and selection, open files, show diffs/commits, read problems, run linters,
   create and run tasks (`.vscode/tasks.json`), add notes, and create GitHub issues. Toggle with
-  the `mcp.enabled` preference.
+  the `mcp.enabled` preference. Full tool catalogue: [docs/mcp.md](docs/mcp.md).
 - **Cross-project tools** — from any session, `list_projects` / `resolve_project` discover sibling
   projects and `send_message` / `list_messages` / `reply_message` / `resolve_message` drive the
   inter-project mailbox.
