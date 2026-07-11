@@ -5,6 +5,8 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+from ..utils.atomic_write import atomic_write_text
+
 
 @dataclass
 class TaskInput:
@@ -129,6 +131,65 @@ class TasksService:
                 default=input_data.get("default", ""),
             )
             self._inputs[input_id] = task_input
+
+    def add_task(
+        self,
+        label: str,
+        command: str,
+        task_type: str = "shell",
+        group: str | None = None,
+        args: list[str] | None = None,
+    ) -> str:
+        """Add or update a task in .vscode/tasks.json. Returns "created" or "updated".
+
+        Update-in-place by ``label`` (idempotent). Creates the file if missing.
+        NOTE (v1): JSONC comments in an existing file are not preserved — the file is
+        parsed and rewritten as plain JSON (other keys like ``version``/``inputs`` are kept).
+        """
+        label = (label or "").strip()
+        command = (command or "").strip()
+        if not label:
+            raise ValueError("Task label must not be empty")
+        if not command:
+            raise ValueError("Task command must not be empty")
+
+        # Load existing document (tolerant of comments / a missing or broken file).
+        data: dict = {"version": "2.0.0", "tasks": []}
+        if self.tasks_file.exists():
+            try:
+                content = self._strip_jsonc_comments(self.tasks_file.read_text(encoding="utf-8"))
+                loaded = json.loads(content)
+                if isinstance(loaded, dict):
+                    data = loaded
+            except (json.JSONDecodeError, OSError):
+                pass  # start fresh from the default document
+        data.setdefault("version", "2.0.0")
+        tasks = data.get("tasks")
+        if not isinstance(tasks, list):
+            tasks = []
+            data["tasks"] = tasks
+
+        # Build the task entry (only the fields we support).
+        entry: dict = {"label": label, "type": task_type, "command": command}
+        if args:
+            entry["args"] = list(args)
+        if group:
+            entry["group"] = group
+
+        # Update-in-place by label, else append.
+        result = "created"
+        for i, existing in enumerate(tasks):
+            if isinstance(existing, dict) and existing.get("label") == label:
+                tasks[i] = entry
+                result = "updated"
+                break
+        else:
+            tasks.append(entry)
+
+        self.tasks_file.parent.mkdir(parents=True, exist_ok=True)
+        atomic_write_text(self.tasks_file, json.dumps(data, indent=2) + "\n")
+        self.load()  # refresh our own cache
+        return result
 
     def get_tasks(self) -> list[Task]:
         """Get list of tasks."""

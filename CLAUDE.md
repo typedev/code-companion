@@ -280,7 +280,7 @@ Session files are JSONL with event types: `user`, `assistant`, `tool_use`, `tool
 - [x] Persistent Claude pane: bottom Claude pane + header activity bar (F/G/C/N/P/Issues/Messages);
   see `docs/plan-ui-persistent-claude-pane.md`
 - [x] MCP integration (Part A): per-window FastMCP server + read/act tools (workspace state,
-  selection, open file, diff, commit, problems, tasks, notes, issues, session summary) + `/refresh`
+  selection, open file, diff, commit, problems, list/run/create tasks, notes, issues, session summary) + `/refresh`
   hook; Preference `mcp.enabled`. GUI test harness (Part B). See `docs/plan-mcp-integration.md`
 - [x] Cross-machine sync: git-backed 3-way merge of history/memory/plans/summaries to a private
   remote (`sync.*` settings, selected/backup modes); see `docs/plan-sync-across-machines.md`

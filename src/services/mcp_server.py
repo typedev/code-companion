@@ -332,6 +332,27 @@ class McpServer:
             return self.call_on_main(lambda: self._do_run_task(name))
 
         @mcp.tool()
+        def create_task(
+            label: str,
+            command: str,
+            type: str = "shell",
+            group: str | None = None,
+            args: list[str] | None = None,
+        ) -> dict:
+            """Add or update a task in the project's .vscode/tasks.json (VSCode format).
+
+            Use this when asked to "make a task" / "add a task": it writes a canonical
+            tasks.json entry that then appears in the Tasks panel and can be run with
+            ``run_task``. If a task with the same ``label`` exists it is updated in place.
+            The file is created if missing. ``group`` is e.g. "build"/"test"; ``args`` is
+            an optional argument list. Returns ``{"ok": bool, "result"?, "label"?, "error"?}``.
+            Note: JSONC comments in an existing tasks.json are not preserved.
+            """
+            return self.call_on_main(
+                lambda: self._do_create_task(label, command, type, group, args)
+            )
+
+        @mcp.tool()
         def add_note(name: str, content: str) -> dict:
             """Create or append to a markdown note under ``notes/<name>.md``.
 
@@ -863,6 +884,25 @@ class McpServer:
         command = service.substitute_variables(task.command)
         self.window._on_task_run(None, task.label, command)
         return {"ok": True, "label": task.label}
+
+    def _do_create_task(
+        self, label: str, command: str, task_type: str,
+        group: str | None, args: list[str] | None,
+    ) -> dict:
+        panel = getattr(self.window, "tasks_panel", None)
+        if panel is None:
+            return {"ok": False, "error": "tasks unavailable"}
+        try:
+            result = panel.service.add_task(label, command, task_type, group, args)
+        except ValueError as e:
+            return {"ok": False, "error": str(e)}
+        panel.refresh()  # reflect the new task in the GUI (also auto-refreshes via monitor)
+        return {
+            "ok": True,
+            "result": result,  # "created" | "updated"
+            "label": label.strip(),
+            "tasks_file": str(panel.service.tasks_file),
+        }
 
     def _do_add_note(self, name: str, content: str) -> dict:
         from ..utils.atomic_write import atomic_write_text
