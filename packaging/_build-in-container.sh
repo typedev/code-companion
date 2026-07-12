@@ -30,6 +30,12 @@ stage() {
 
     cp -r "$vendor" "$app/vendor"
 
+    # Normalize perms: the source repo may carry 600-mode files, and cp preserves them.
+    # Installed as root, such files are unreadable by the running user (PermissionError),
+    # so force world-readable dirs/files across the whole app tree.
+    find "$app" -type d -exec chmod 755 {} +
+    find "$app" -type f -exec chmod 644 {} +
+
     install -m 0755 /src/packaging/launcher.sh "$root/usr/bin/code-companion"
     install -m 0644 /src/data/dev.typedev.CodeCompanion.desktop \
         "$root/usr/share/applications/dev.typedev.CodeCompanion.desktop"
