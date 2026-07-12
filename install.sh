@@ -191,6 +191,17 @@ install_linters() {
     info "ESLint (JS/TS) installs via npm in your JS project: npm install --save-dev eslint"
 }
 
+normalize_perms() {
+    # The repo checkout may carry 600-mode files (owner-only). That works when the
+    # owning user runs the app, but breaks the moment another user or the desktop
+    # session reads them (PermissionError). Force world-readable dirs/files across
+    # the app tree so the install behaves like the packaged (.rpm/.deb) build.
+    info "Normalizing file permissions..."
+    find "$APP_DIR/src" -type d -exec chmod 755 {} +
+    find "$APP_DIR/src" -type f -exec chmod 644 {} +
+    chmod 644 "$APP_DIR/main.py"
+}
+
 install() {
     info "Installing Code Companion..."
 
@@ -218,6 +229,9 @@ install() {
     info "Installing Python dependencies..."
     cd "$APP_DIR"
     uv sync
+
+    # Normalize source-tree permissions (world-readable)
+    normalize_perms
 
     # Make launcher executable
     chmod +x "$APP_DIR/bin/$APP_NAME"
@@ -282,6 +296,9 @@ update() {
     # Update dependencies
     info "Updating Python dependencies..."
     uv sync
+
+    # Normalize source-tree permissions (world-readable)
+    normalize_perms
 
     # Update symlink (handles rename from claude-companion to code-companion)
     chmod +x "$APP_DIR/bin/$APP_NAME"
