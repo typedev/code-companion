@@ -67,7 +67,7 @@ class Application(Adw.Application):
 
 def main():
     """Application entry point."""
-    parser = argparse.ArgumentParser(description="Code Companion")
+    parser = argparse.ArgumentParser(prog="code-companion", description="Code Companion")
     parser.add_argument(
         "--project", "-p",
         type=str,
