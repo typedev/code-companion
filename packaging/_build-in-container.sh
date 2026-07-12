@@ -67,6 +67,9 @@ fpm "${COMMON[@]}" -t rpm -p /out -C /tmp/stage-rpm \
     -d python3-gobject \
     -d python3-cairo \
     -d python3-pygit2 \
+    -d python3-pydantic \
+    -d python3-jsonschema \
+    -d python3-cryptography \
     -d gtk4 \
     -d libadwaita \
     -d gtksourceview5 \
@@ -91,6 +94,9 @@ fpm "${COMMON[@]}" -t deb -p /out -C /tmp/stage-deb \
     -d python3-gi \
     -d python3-gi-cairo \
     -d python3-pygit2 \
+    -d python3-pydantic \
+    -d python3-jsonschema \
+    -d python3-cryptography \
     -d gir1.2-gtk-4.0 \
     -d gir1.2-adw-1 \
     -d gir1.2-gtksource-5 \
