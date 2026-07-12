@@ -298,12 +298,16 @@ class MessagesPanel(Gtk.Box):
     # New message (recipient picked from the project catalog)
     # ------------------------------------------------------------------
     def _recipients(self) -> list[tuple[str, str]]:
-        """(label, canonical_remote) for every cataloged project with a remote != me."""
+        """(label, message_address) for every cataloged project addressable != me.
+
+        Uses the mailbox address, so a worktree (host/owner/repo#wt:<branch>) is a
+        distinct recipient from its parent rather than being collapsed onto it.
+        """
         out = []
         for entry in project_catalog.list_catalog():
-            if entry.remote_url and entry.remote_url != self._me:
-                out.append((f"{entry.name}  ({short_project(entry.remote_url)})",
-                            entry.remote_url))
+            addr = entry.message_address
+            if addr and addr != self._me:
+                out.append((f"{entry.name}  ({short_project(addr)})", addr))
         out.sort(key=lambda x: x[0].lower())
         return out
 

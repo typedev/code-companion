@@ -447,10 +447,12 @@ class McpServer:
 
             Only valid in a worktree window. Writes a local completion report that the
             parent surfaces ("N ready") and its agent reads to integrate your branch.
-            Call this AFTER you have verified the feature works, run /code-review, and
-            **committed** (the merge preview only sees committed state). Put a short
-            summary in ``summary``, the reviewer's findings in ``review``, and the test
-            status in ``tests``. Returns ``{"ok", "branch"}``.
+            Call this AFTER you have verified the feature works, run /code-review,
+            **committed** (the merge preview only sees committed state), AND the human
+            in this window has confirmed the task is done — the "N ready" signal must
+            mean human-confirmed, not agent-assumed. Put a short summary in ``summary``,
+            the reviewer's findings in ``review``, and the test status in ``tests``.
+            Returns ``{"ok", "branch"}``.
             """
             return self._do_report_worktree_complete(summary, tests, review)
 
@@ -959,10 +961,9 @@ class McpServer:
         remote = getattr(self.window, "_project_remote", None)
         if remote:
             return remote
-        from ..utils.project_identity import resolve_project_identity
+        from ..utils.project_identity import resolve_message_address
 
-        ident = resolve_project_identity(self.window.project_path)
-        return ident.canonical_remote if ident else None
+        return resolve_message_address(self.window.project_path)
 
     @staticmethod
     def _thread_dict(thread) -> dict:
@@ -1010,7 +1011,8 @@ class McpServer:
                     "candidates": result.get("candidates", [])}
         match = result.get("match")
         if match:
-            recipient = match.get("remote_url")
+            # A worktree entry addresses to its sub-address; fall back to the bare remote.
+            recipient = match.get("message_address") or match.get("remote_url")
             if not recipient:
                 return {"ok": False,
                         "error": f"'{to}' is a local-only project (no remote to address)"}

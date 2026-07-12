@@ -34,7 +34,7 @@ from .services.toast_service import ToastService
 from .services.config_path import get_config_dir
 from .services.icon_cache import IconCache
 from .utils.atomic_write import atomic_write_text
-from .utils.project_identity import resolve_project_identity
+from .utils.project_identity import resolve_message_address
 from .models.sync import ProjectSyncStatus, SyncState
 from .services import session_notify
 from .utils import claude_session
@@ -1279,8 +1279,9 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
                 if p in cache:
                     remotes[p] = cache[p]
                 else:
-                    ident = resolve_project_identity(p)
-                    remotes[p] = ident.canonical_remote if ident else None
+                    # Mailbox address (worktree-qualified) so a worktree row gets its own
+                    # pending badge and parent<->worktree replies (from != to) still notify.
+                    remotes[p] = resolve_message_address(p)
             threads = message_store.list_threads()
             GLib.idle_add(self._apply_message_scan, remotes, threads)
 

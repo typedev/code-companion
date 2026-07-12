@@ -15,7 +15,7 @@ from .models import Session
 from .services import get_adapter, ProjectLock, ProjectRegistry, GitService, IconCache, ToastService, SettingsService, FileMonitorService, IssuesService, McpServer, run_async
 from .services import session_notify, message_store
 from .utils import git_auth, claude_session
-from .utils.project_identity import resolve_project_identity
+from .utils.project_identity import resolve_message_address
 from .utils.git_worktree import is_linked_worktree, worktree_parent_root
 from .widgets import SessionView, TerminalView, FileTree, FileEditor, TasksPanel, GitChangesPanel, GitHistoryPanel, DiffView, CommitDetailView, ClaudeHistoryPanel, FileSearchDialog, UnifiedSearch, NotesPanel, PreferencesDialog, QueryEditor, ProblemsPanel, ProblemsDetailView, IssuesPanel, IssueDetailView, MessagesPanel, MessageThreadView, ImageViewer, SvgEditor, BinaryFileView
 from .utils.text_files import is_binary
@@ -485,10 +485,11 @@ class ProjectWindow(Adw.ApplicationWindow):
         # Issues service (GitHub Issues); harmless for non-GitHub repos
         self.issues_service = IssuesService(self.project_path)
 
-        # Canonical git remote — the address this project uses to send/receive messages.
-        # None for a local-only project (which cannot participate in the mailbox).
-        identity = resolve_project_identity(self.project_path)
-        self._project_remote = identity.canonical_remote if identity else None
+        # The address this project uses to send/receive messages. A linked worktree
+        # gets a distinct sub-address (host/owner/repo#wt:<branch>) so it has its own
+        # inbox; a normal project uses the bare canonical remote. None for a local-only
+        # project (which cannot participate in the mailbox).
+        self._project_remote = resolve_message_address(self.project_path)
 
         # Show/hide Git button based on git repo status
         if hasattr(self, "_git_toolbar_btn"):
@@ -1162,10 +1163,13 @@ class ProjectWindow(Adw.ApplicationWindow):
         return cli_command
 
     def _worktree_system_prompt(self) -> str | None:
-        """The completion protocol appended for a worktree session (Stage 5).
+        """The delegation protocol appended for a worktree session (Stage 5).
 
-        Tells the agent to self-verify, review, commit, and report to the parent
-        via MCP — and never to merge from the worktree. None for a normal project.
+        Two human-gates bracket the autonomous work: an INTAKE gate (find the
+        delegated brief and get the human's go-ahead before starting) and a
+        DELIVERY gate (get the human's confirmation before reporting completion
+        to the parent). The agent never merges from the worktree. None for a
+        normal project.
         """
         if not getattr(self, "_is_worktree", False):
             return None
@@ -1174,12 +1178,24 @@ class ProjectWindow(Adw.ApplicationWindow):
         branch = self.git_service.get_branch_name() if self._is_git_repo else "this branch"
         return (
             f"You are working in a git worktree of “{parent_name}” on branch "
-            f"“{branch}”. When the task is complete: (1) run the feature and "
-            f"confirm it actually works; (2) run /code-review on your branch; "
-            f"(3) commit your work (the merge preview only sees committed state); "
-            f"(4) call the report_worktree_complete MCP tool with a short summary, the "
-            f"review findings, and the test status. Do NOT merge or switch branches "
-            f"from this worktree — the parent project integrates your branch."
+            f"“{branch}”. The parent project likely delegated a task to this "
+            f"worktree. Follow this protocol.\n"
+            f"INTAKE — before doing any work: call the list_messages MCP tool "
+            f"(inbox) and find the delegation brief for this branch (also read any "
+            f"docs/plan-*.md on this branch for the full detail). Summarize the task "
+            f"for the human in this window and ask “Take this into development?” — do "
+            f"NOT start until the human confirms. On confirmation, mark the brief "
+            f"thread in_progress via the resolve_message MCP tool. If the brief is "
+            f"unclear, ask the parent for clarification with the reply_message MCP "
+            f"tool (agent-to-agent) — never ask the human to re-explain the task.\n"
+            f"DELIVERY — when the task is complete: (1) run the feature and confirm "
+            f"it actually works; (2) run /code-review on your branch; (3) commit your "
+            f"work (the merge preview only sees committed state); (4) present the "
+            f"result to the human and ask them to confirm completion — only AFTER the "
+            f"human confirms, call the report_worktree_complete MCP tool with a short "
+            f"summary, the review findings, and the test status. Do NOT merge or "
+            f"switch branches from this worktree — the parent project integrates your "
+            f"branch."
         )
 
     def _write_notify_settings(self) -> str | None:

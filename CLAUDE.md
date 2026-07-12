@@ -301,6 +301,12 @@ Session files are JSONL with event types: `user`, `assistant`, `tool_use`, `tool
   create/remove, merge-back with conflict preview, completion reports (⑂ N ready badge), and MCP
   orchestration (`create_worktree`/`merge_worktree`/`report_worktree_complete`); see
   `docs/plan-worktrees-multiagent.md`
+- [x] Worktree delegation (v1, manual): main delegates a task to the worktree agent via a
+  brief (`send_message` + optional `docs/plan-<branch>.md`); two human-gates (intake
+  "Take this into development?" + delivery confirmation before `report_worktree_complete`),
+  encoded in the worktree session's appended system prompt; see
+  `docs/plan-worktree-delegation.md`. When delegating from a main window, follow that
+  protocol: write a detailed brief (subject naming the target branch) and stay autonomous.
 - [ ] v0.9: Packaging (Flatpak manifest; `.desktop` file already ships in `data/`)
 
 ## GTK4/libadwaita Gotchas

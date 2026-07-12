@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .git_auth import normalize_remote_url
+from .git_worktree import is_linked_worktree
 
 # Never let git prompt on a terminal inside a worker thread.
 _GIT_ENV = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
@@ -102,3 +103,34 @@ def resolve_project_identity(project_path: str | Path) -> ProjectIdentity | None
 
     # 4. not syncable (e.g. empty repo with no commits and no id file).
     return None
+
+
+def worktree_message_address(canonical_remote: str, branch: str) -> str:
+    """The mailbox sub-address for a worktree: ``host/owner/repo#wt:<branch>``.
+
+    Defined in one place so senders and receivers agree on the format. ``#wt:``
+    cannot collide with a canonical remote (which never contains ``#``).
+    """
+    return f"{canonical_remote}#wt:{branch}"
+
+
+def resolve_message_address(project_path: str | Path) -> str | None:
+    """The address this project uses to send/receive inter-project messages.
+
+    Splits the mailbox address from the sync identity: sync keys on the bare
+    ``canonical_remote`` (via :func:`resolve_project_identity`), but a linked
+    worktree — which shares its parent's ``origin`` — gets a distinct sub-address
+    ``host/owner/repo#wt:<branch>`` so briefs are point-addressed and parent↔worktree
+    replies are not self-addressed. Returns None for a local-only / non-syncable
+    project (which cannot participate in the mailbox), matching ``canonical_remote``.
+    """
+    identity = resolve_project_identity(project_path)
+    if not identity or not identity.canonical_remote:
+        return None
+    remote = identity.canonical_remote
+    if not is_linked_worktree(project_path):
+        return remote
+    branch = _run_git(["rev-parse", "--abbrev-ref", "HEAD"], Path(project_path))
+    if not branch or branch == "HEAD":  # detached HEAD — cannot qualify
+        return remote
+    return worktree_message_address(remote, branch)

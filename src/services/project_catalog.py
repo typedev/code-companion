@@ -18,7 +18,8 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-from ..utils.project_identity import origin_url, resolve_project_identity
+from ..utils.git_worktree import is_linked_worktree
+from ..utils.project_identity import origin_url, resolve_message_address, resolve_project_identity
 from .project_registry import ProjectRegistry
 
 
@@ -32,6 +33,7 @@ class CatalogEntry:
     remote_url: str | None  # canonical host/owner/repo; None for local-only / non-git
     clone_url: str | None  # raw origin URL (cloneable); None when there is no remote
     exists: bool  # local_path still present on disk
+    message_address: str | None = None  # mailbox address (worktree-qualified); None if unmessageable
 
     def as_dict(self) -> dict:
         return {
@@ -41,6 +43,7 @@ class CatalogEntry:
             "remote_url": self.remote_url,
             "clone_url": self.clone_url,
             "exists": self.exists,
+            "message_address": self.message_address,
         }
 
 
@@ -58,6 +61,7 @@ def list_catalog(
     resolve_identity=resolve_project_identity,
     clone_url=origin_url,
     path_exists=os.path.isdir,
+    message_address=resolve_message_address,
 ) -> list[CatalogEntry]:
     """Return every registered project with its live git identity.
 
@@ -86,8 +90,17 @@ def list_catalog(
         project_id = identity.project_id if identity else None
         remote_url = identity.canonical_remote if identity else None
         raw_clone = clone_url(local_path) if remote_url else None
+        # Mailbox address: a linked worktree is qualified (host/owner/repo#wt:<branch>);
+        # a normal project reuses the bare remote (no extra git call).
+        if not remote_url:
+            msg_addr = None
+        elif is_linked_worktree(local_path):
+            msg_addr = message_address(local_path)
+        else:
+            msg_addr = remote_url
         entries.append(
-            CatalogEntry(name, local_path, project_id, remote_url, raw_clone, exists=True)
+            CatalogEntry(name, local_path, project_id, remote_url, raw_clone,
+                         exists=True, message_address=msg_addr)
         )
 
     return entries
