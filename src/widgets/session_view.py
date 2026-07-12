@@ -186,8 +186,18 @@ class SessionView(Gtk.Box):
             commits_exp.set_child(cbox)
             section.append(commits_exp)
 
-        section.append(Gtk.Separator())
-        self.changes_container.append(section)
+        # Cap the changes section so a session that touched many files / commits can't
+        # push the message history off-screen: it grows to its natural height, then
+        # scrolls internally past ~240px. propagate-natural-height keeps small sessions
+        # compact (no empty scroll gap).
+        changes_scroller = Gtk.ScrolledWindow()
+        changes_scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        changes_scroller.set_propagate_natural_height(True)
+        changes_scroller.set_max_content_height(240)
+        changes_scroller.set_child(section)
+
+        self.changes_container.append(changes_scroller)
+        self.changes_container.append(Gtk.Separator())
         self.changes_container.set_visible(True)
 
     def _commit_button(self, commit) -> Gtk.Button:

@@ -153,7 +153,7 @@ Key patterns:
 - **Multi-process**: Each project runs in separate process (`Gio.ApplicationFlags.NON_UNIQUE`)
 - **Lock files**: `/tmp/code-companion-locks/` prevents opening same project twice
 - **Project registry**: `~/.config/code-companion/projects.json` stores user's projects
-- **Resizable pane**: `Gtk.Paned` for sidebar/content split (min 370px sidebar)
+- **Resizable pane**: `Gtk.Paned` for sidebar/content split (min 260px sidebar, 370px default)
 - **Vertical toolbar**: Left sidebar with F/G/C/N/P toggle buttons for tab switching
 - **Unified search**: Single search box for both filenames and content (ripgrep/grep)
 - **Single tab reuse**: Commit details and session details reuse single tab (no duplicates)
@@ -410,6 +410,7 @@ def on_setting_changed(settings, key, value):
 | `window.sidebar_width` | `370` | Sidebar pane width |
 | `window.workspace_split_position` | `260` | Height of the tabs area above the Claude pane |
 | `window.workspace_collapsed` | `false` | Tabs area collapsed to the tab bar |
+| `window.claude_collapsed` | `false` | Claude pane fully hidden (reclaims its 220px minimum) |
 | `linters.<id>_enabled` | `true` | Enable a linter by registry id: `ruff`, `mypy`, `yamllint`, `pymarkdown`, `shellcheck`, `eslint` |
 | `linters.ignored_codes` | `""` | Comma-separated codes to ignore; bare = all linters, `linter:code` = scoped (e.g. "E402, shellcheck:SC2086") |
 | `mcp.enabled` | `true` | Per-window MCP control surface for the embedded session |

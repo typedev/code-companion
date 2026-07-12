@@ -51,6 +51,7 @@ class ProjectWindow(Adw.ApplicationWindow):
         self._notify_settings_path: str | None = None
         self._workspace_collapsed = False
         self._workspace_split_position = 260
+        self._claude_collapsed = False
         self.commit_detail_page: Adw.TabPage | None = None
         self.commit_detail_view: CommitDetailView | None = None
         self.session_detail_page: Adw.TabPage | None = None
@@ -177,8 +178,10 @@ class ProjectWindow(Adw.ApplicationWindow):
     def _on_paned_position_changed(self, paned, pspec):
         """Handle sidebar pane position changes - save to settings."""
         position = paned.get_position()
-        # Only save if sidebar is visible and position is reasonable
-        if position >= 300:
+        # Only save real, visible widths. The floor is below the 260px sidebar minimum
+        # so narrow drags persist (a higher threshold silently discarded them); the
+        # visibility check avoids saving the transient position while the sidebar is hidden.
+        if self.sidebar.get_visible() and position >= 150:
             self.settings.set("window.sidebar_width", position)
 
     def _build_ui(self):
@@ -467,7 +470,10 @@ class ProjectWindow(Adw.ApplicationWindow):
         """Build the sidebar with Files/Git/Claude tabs."""
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         box.set_hexpand(False)
-        box.set_size_request(370, -1)  # Minimum width
+        # Minimum width. Kept low so the sidebar can be dragged genuinely narrow on
+        # small screens (the previous 370px floor made panels like Messages impossible
+        # to shrink); 370 remains the default first-run width via window.sidebar_width.
+        box.set_size_request(260, -1)
 
         # Check if this is a git repo
         self.git_service = GitService(self.project_path)
@@ -711,6 +717,10 @@ class ProjectWindow(Adw.ApplicationWindow):
 
     def _feed_prompt_to_claude(self, prompt: str):
         """Feed a prepared prompt into the singleton Claude terminal (starting it if needed)."""
+        # Reveal the pane if hidden, so the prompt + reply aren't fed into an invisible
+        # container (the already-running path skips _start_claude_session's own guard).
+        if self._claude_collapsed:
+            self.expand_claude_pane()
         started_now = self.claude_terminal is None
         if started_now:
             self._on_claude_clicked(None)
@@ -986,13 +996,28 @@ class ProjectWindow(Adw.ApplicationWindow):
         self.tab_bar.set_autohide(False)
         box.append(self.tab_bar)
 
-        # Collapse chevron in the tab bar (folds the tabs area down to just this bar)
+        # Tab-bar action widgets (right side): hide-Claude-pane toggle next to the
+        # collapse-tabs chevron, since both control the tabs/Claude vertical split.
+        tab_actions = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=2)
+
+        # Claude-pane toggle: fully hide/show the bottom Claude pane (reclaims its
+        # 220px minimum on small screens).
+        self.claude_toggle_btn = Gtk.ToggleButton()
+        self.claude_toggle_btn.set_icon_name("go-bottom-symbolic")
+        self.claude_toggle_btn.set_tooltip_text("Hide Claude pane")
+        self.claude_toggle_btn.add_css_class("flat")
+        self.claude_toggle_btn.connect("toggled", self._on_claude_toggle)
+        tab_actions.append(self.claude_toggle_btn)
+
+        # Collapse chevron (folds the tabs area down to just this bar)
         self.workspace_toggle_btn = Gtk.ToggleButton()
         self.workspace_toggle_btn.set_icon_name("go-down-symbolic")
         self.workspace_toggle_btn.set_tooltip_text("Collapse tabs area")
         self.workspace_toggle_btn.add_css_class("flat")
         self.workspace_toggle_btn.connect("toggled", self._on_workspace_toggle)
-        self.tab_bar.set_end_action_widget(self.workspace_toggle_btn)
+        tab_actions.append(self.workspace_toggle_btn)
+
+        self.tab_bar.set_end_action_widget(tab_actions)
 
         # Tab view
         self.tab_view = Adw.TabView()
@@ -1018,7 +1043,13 @@ class ProjectWindow(Adw.ApplicationWindow):
         self._workspace_split_position = self.settings.get("window.workspace_split_position", 260)
         self.content_vpaned.set_position(self._workspace_split_position)
         self.content_vpaned.connect("notify::position", self._on_workspace_split_changed)
-        if self.settings.get("window.workspace_collapsed", False):
+        # The two collapse states are mutually exclusive (both hidden = blank content),
+        # so restore at most one. A hidden Claude pane wins over a collapsed tabs area;
+        # applying both would make collapse_claude_pane re-expand and clobber the saved
+        # workspace_collapsed flag.
+        if self.settings.get("window.claude_collapsed", False):
+            self.collapse_claude_pane()
+        elif self.settings.get("window.workspace_collapsed", False):
             self.collapse_workspace()
 
         return box
@@ -1105,6 +1136,11 @@ class ProjectWindow(Adw.ApplicationWindow):
         window re-attaches. Without tmux we fall back to a plain, non-persistent
         session (the pre-supervisor behavior).
         """
+        # Interacting with Claude while the pane is hidden would swallow the session
+        # into an invisible container — reveal it first.
+        if self._claude_collapsed:
+            self.expand_claude_pane()
+
         if self.claude_terminal is not None:
             self.claude_terminal.terminal.grab_focus()
             return
@@ -1395,17 +1431,26 @@ class ProjectWindow(Adw.ApplicationWindow):
         btn.set_tooltip_text("Expand tabs area" if self._workspace_collapsed else "Collapse tabs area")
         btn.handler_unblock_by_func(self._on_workspace_toggle)
 
-    def collapse_workspace(self):
-        """Collapse the tabs area down to just the tab bar; Claude fills the height."""
+    def collapse_workspace(self, persist: bool = True):
+        """Collapse the tabs area down to just the tab bar; Claude fills the height.
+
+        ``persist=False`` collapses transiently (e.g. when the last tab closes)
+        without recording it as the user's saved layout.
+        """
         if self._workspace_collapsed:
             return
+        # Collapsing the tabs area while the Claude pane is hidden would leave the
+        # whole content region blank — reveal the pane so it can take the height.
+        if self._claude_collapsed:
+            self.expand_claude_pane()
         position = self.content_vpaned.get_position()
         if position > 60:
             self._workspace_split_position = position
         self._workspace_collapsed = True
         self.tab_view.set_visible(False)
         self._sync_workspace_toggle()
-        self.settings.set("window.workspace_collapsed", True)
+        if persist:
+            self.settings.set("window.workspace_collapsed", True)
 
     def expand_workspace(self):
         """Restore the tabs area to its saved split position."""
@@ -1437,6 +1482,49 @@ class ProjectWindow(Adw.ApplicationWindow):
         if position > 60:
             self._workspace_split_position = position
             self.settings.set("window.workspace_split_position", position)
+
+    # --- Claude pane hide/show (fully reclaim its height on small screens) ---
+
+    def _on_claude_toggle(self, button):
+        """Toggle button: hide or show the bottom Claude pane."""
+        if button.get_active():
+            self.collapse_claude_pane()
+        else:
+            self.expand_claude_pane()
+
+    def _sync_claude_toggle(self):
+        """Reflect the hidden state into the toggle without re-triggering it."""
+        btn = self.claude_toggle_btn
+        btn.handler_block_by_func(self._on_claude_toggle)
+        btn.set_active(self._claude_collapsed)
+        btn.set_icon_name("go-top-symbolic" if self._claude_collapsed else "go-bottom-symbolic")
+        btn.set_tooltip_text("Show Claude pane" if self._claude_collapsed else "Hide Claude pane")
+        btn.handler_unblock_by_func(self._on_claude_toggle)
+
+    def collapse_claude_pane(self):
+        """Fully hide the Claude pane so the tabs area takes the whole height."""
+        if self._claude_collapsed:
+            return
+        self._claude_collapsed = True
+        # Drop the 220px minimum so the pane truly occupies zero height when hidden.
+        self.claude_container.set_size_request(-1, -1)
+        self.claude_container.set_visible(False)
+        # Never leave an empty content area: if the tabs area was collapsed (e.g. the
+        # last tab was closed), bring it back now that the Claude pane is gone.
+        if self._workspace_collapsed:
+            self.expand_workspace()
+        self._sync_claude_toggle()
+        self.settings.set("window.claude_collapsed", True)
+
+    def expand_claude_pane(self):
+        """Reveal the Claude pane and restore its minimum height."""
+        if not self._claude_collapsed:
+            return
+        self._claude_collapsed = False
+        self.claude_container.set_size_request(-1, 220)
+        self.claude_container.set_visible(True)
+        self._sync_claude_toggle()
+        self.settings.set("window.claude_collapsed", False)
 
     def _load_project(self):
         """Load project data and create initial tabs."""
@@ -2128,6 +2216,14 @@ class ProjectWindow(Adw.ApplicationWindow):
         disk_sync = getattr(child, "_disk_sync", None)
         if disk_sync is not None:
             disk_sync.dispose()
+
+        # Last tab closed: hand the freed height to the Claude pane by collapsing the
+        # tabs area (symmetric with _on_selected_page_changed, which auto-expands on
+        # open). Skip when the Claude pane is fully hidden — collapsing then would
+        # leave an empty content area. persist=False: this is a transient no-tabs
+        # state, not a saved layout choice. Fires after removal, so get_n_pages() is exact.
+        if tab_view.get_n_pages() == 0 and not self._claude_collapsed:
+            self.collapse_workspace(persist=False)
 
     def open_text_diff(self, file_path: str, old_text: str, new_text: str, title: str):
         """Open a read-only diff of two in-memory texts in a reusable tab.
