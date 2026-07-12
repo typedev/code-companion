@@ -263,6 +263,11 @@ class MessagesPanel(Gtk.Box):
             meta_text = f"{meta_text}   💬 {len(thread.comments)}"
         meta = Gtk.Label(label=meta_text)
         meta.set_xalign(0)
+        # Ellipsize: the route ("owner/repo → owner/repo#wt:branch") can be long, and
+        # without this the row's natural width becomes the sidebar's minimum width,
+        # making the whole sidebar impossible to narrow. Full text stays in the tooltip.
+        meta.set_ellipsize(3)  # PANGO_ELLIPSIZE_END
+        meta.set_tooltip_text(meta_text)
         meta.add_css_class("msg-meta")
         meta.add_css_class("dim-label")
         meta.set_margin_start(18)
