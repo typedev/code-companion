@@ -278,8 +278,24 @@ class PreferencesDialog(Adw.PreferencesDialog):
         mcp_row.set_active(self.settings.get("mcp.enabled", True))
         mcp_row.connect("notify::active", self._on_mcp_enabled_changed)
         mcp_group.add(mcp_row)
-
         page.add(mcp_group)
+
+        # Local dispatch (attach to this machine's sessions from another device)
+        dispatch_group = Adw.PreferencesGroup()
+        dispatch_group.set_title("Local Dispatch")
+        dispatch_group.set_description(
+            "Let another machine on your local network attach to this machine's "
+            "live Claude sessions. The first connection from a device asks you to "
+            "allow it."
+        )
+        dispatch_row = Adw.SwitchRow()
+        dispatch_row.set_title("Enable local dispatch")
+        dispatch_row.set_subtitle("Advertise on the LAN and accept paired devices")
+        dispatch_row.set_active(self.settings.get("dispatch.enabled", False))
+        dispatch_row.connect("notify::active", self._on_dispatch_enabled_changed)
+        dispatch_group.add(dispatch_row)
+        page.add(dispatch_group)
+
         self.add(page)
 
     # Signal handlers
@@ -323,6 +339,10 @@ class PreferencesDialog(Adw.PreferencesDialog):
     def _on_mcp_enabled_changed(self, row, pspec):
         """Handle MCP server enabled toggle."""
         self.settings.set("mcp.enabled", row.get_active())
+
+    def _on_dispatch_enabled_changed(self, row, pspec):
+        """Handle local dispatch enabled toggle."""
+        self.settings.set("dispatch.enabled", row.get_active())
 
     def _on_linter_enabled_changed(self, row, pspec, linter_id):
         """Handle a linter enabled toggle (one handler for all registry linters)."""

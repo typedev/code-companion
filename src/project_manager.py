@@ -33,6 +33,7 @@ from .services.credential_service import CredentialService
 from .services.toast_service import ToastService
 from .services.config_path import get_config_dir
 from .services.icon_cache import IconCache
+from .widgets.dispatch_panel import DispatchPanel
 from .utils.atomic_write import atomic_write_text
 from .utils.project_identity import resolve_message_address
 from .models.sync import ProjectSyncStatus, SyncState
@@ -132,7 +133,9 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
         self.status_service = ProjectStatusService.get_instance()
         self.sync_service = SyncService.get_instance()
         self._manager_lock = ManagerLock()
-        self._manager_lock.acquire()
+        # Only the lock owner is the machine's single coordinator — the dispatch
+        # broker (one per machine) must gate on this.
+        self._manager_owner = self._manager_lock.acquire()
 
         # Maps resolved project path -> its ListBoxRow, for async status updates.
         self._rows_by_path: dict[str, Adw.ActionRow] = {}
@@ -173,6 +176,8 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
 
     def _on_destroy(self, _widget):
         """Release lock when window is destroyed (size is saved in close-request)."""
+        if hasattr(self, "dispatch_panel"):
+            self.dispatch_panel.stop()
         self._manager_lock.release()
 
     def _setup_window(self):
@@ -309,6 +314,11 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
 
         scrolled.set_child(self.project_list)
         content_box.append(scrolled)
+
+        # Local dispatch: machines on the LAN whose live sessions you can attach.
+        # Hidden unless dispatch is enabled (and shows peers when discovered).
+        self.dispatch_panel = DispatchPanel(is_manager_owner=self._manager_owner)
+        content_box.append(self.dispatch_panel)
 
         # Double-click gesture for opening projects
         click_gesture = Gtk.GestureClick()

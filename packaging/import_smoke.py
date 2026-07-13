@@ -37,5 +37,6 @@ import mcp  # noqa: E402,F401
 import mistune  # noqa: E402,F401
 import pathspec  # noqa: E402,F401
 import pygit2  # noqa: E402,F401
+import zeroconf  # noqa: E402,F401  # local dispatch (distro python3-zeroconf)
 
 print("import-graph-ok")

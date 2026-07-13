@@ -18,12 +18,17 @@ from .project_window import ProjectWindow
 class Application(Adw.Application):
     """Main application class."""
 
-    def __init__(self, project_path: str | None = None):
+    def __init__(
+        self,
+        project_path: str | None = None,
+        remote: dict | None = None,
+    ):
         super().__init__(
             application_id="dev.typedev.CodeCompanion",
             flags=Gio.ApplicationFlags.NON_UNIQUE,
         )
         self.project_path = project_path
+        self.remote = remote
 
     def do_startup(self):
         """Set up application-wide actions and accelerators."""
@@ -56,7 +61,12 @@ class Application(Adw.Application):
 
     def do_activate(self):
         """Called when the application is activated."""
-        if self.project_path:
+        if self.remote:
+            # Attach to a session running on another machine (local dispatch)
+            from .remote_session_window import RemoteSessionWindow
+
+            win = RemoteSessionWindow(application=self, **self.remote)
+        elif self.project_path:
             # Open specific project
             win = ProjectWindow(application=self, project_path=self.project_path)
         else:
@@ -73,9 +83,38 @@ def main():
         type=str,
         help="Path to project directory to open"
     )
+    parser.add_argument(
+        "--remote",
+        type=str,
+        help="Attach to a remote session: host:port:token:session (local dispatch)",
+    )
+    parser.add_argument(
+        "--remote-title",
+        type=str,
+        default="",
+        help="Display name for the remote session window",
+    )
 
     # Parse known args to allow GTK to handle its own args
     args, remaining = parser.parse_known_args()
+
+    # Remote dispatch takes precedence over --project
+    remote = None
+    if args.remote:
+        # token is url-safe (no ':') and session is 'cc-<hex>', so a 3-way split
+        # on ':' is unambiguous: host:port:token:session.
+        parts = args.remote.split(":", 3)
+        if len(parts) != 4 or not parts[1].isdigit():
+            print(f"Error: bad --remote spec: {args.remote}", file=sys.stderr)
+            return 1
+        host, port, token, session = parts
+        remote = {
+            "host": host,
+            "port": int(port),
+            "token": token,
+            "session": session,
+            "title": args.remote_title,
+        }
 
     # Validate project path if provided
     project_path = None
@@ -87,7 +126,7 @@ def main():
             print(f"Error: Project path does not exist: {args.project}", file=sys.stderr)
             return 1
 
-    app = Application(project_path=project_path)
+    app = Application(project_path=project_path, remote=remote)
     # Pass remaining args to GTK
     return app.run([sys.argv[0]] + remaining)
 

@@ -57,6 +57,14 @@ DEFAULT_SETTINGS = {
         # Default branch name for `git init` on New Project (git init -b <name>).
         "default_branch": "main",
     },
+    "dispatch": {
+        # Local dispatch: let another machine on the LAN attach to this machine's
+        # live Claude sessions. When off, the broker never starts and nothing is
+        # advertised. Only the PM that holds the ManagerLock runs the broker.
+        "enabled": False,
+        "port": 47100,  # broker TCP port (control API + PTY bridge + MCP proxy)
+        "advertise": True,  # publish presence via zeroconf while enabled
+    },
 }
 
 

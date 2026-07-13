@@ -9,9 +9,19 @@ logic lives here in one place.
 import hashlib
 import os
 import subprocess
+from pathlib import Path
 from typing import Callable
 
 _PREFIX = "cc-"
+
+
+def managed_tmux_conf() -> str:
+    """Absolute path to the managed tmux config (loaded via ``tmux -f``).
+
+    Shared by the ProjectWindow supervisor and the dispatch PTY bridge so a
+    remote attach uses the exact same tmux config as a local one.
+    """
+    return str(Path(__file__).resolve().parent.parent / "resources" / "tmux" / "tmux-managed.conf")
 
 # MCP endpoint port range for managed sessions. Chosen below both the Linux
 # (32768–60999) and macOS (49152–65535) default ephemeral ranges, so the OS
@@ -94,6 +104,27 @@ def session_env(name: str, var: str) -> str | None:
     if line.startswith(prefix):
         return line[len(prefix):]
     return None
+
+
+def session_clients(name: str) -> int:
+    """Number of tmux clients currently attached to a session (0 if none/error).
+
+    A live session with zero clients is "free" (window closed, still running in
+    tmux) and may be attached from another machine; a non-zero count means it is
+    held — attached locally or already dispatched to a remote client.
+    """
+    try:
+        result = subprocess.run(
+            ["tmux", "list-clients", "-t", f"={name}", "-F", "#{client_name}"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return 0
+    if result.returncode != 0:
+        return 0
+    return sum(1 for line in result.stdout.splitlines() if line.strip())
 
 
 def reserved_ports(exclude: str | None = None) -> set[int]:
