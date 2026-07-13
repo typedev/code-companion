@@ -4,7 +4,7 @@ import subprocess
 from pathlib import Path
 
 # Base version (update manually at milestones)
-__version_base__ = "0.9.0-beta"
+__version_base__ = "0.9.1"
 
 
 def get_version() -> str:
