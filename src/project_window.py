@@ -908,12 +908,16 @@ class ProjectWindow(Adw.ApplicationWindow):
         header_box.append(self.show_ignored_btn)
 
         # Sync files with a paired LAN device (mirror the .shared/shared/ set)
-        sync_files_btn = Gtk.Button()
-        sync_files_btn.set_icon_name("folder-remote-symbolic")
-        sync_files_btn.add_css_class("flat")
-        sync_files_btn.set_tooltip_text("Sync files with a device on the network")
-        sync_files_btn.connect("clicked", self._on_sync_files_clicked)
-        header_box.append(sync_files_btn)
+        self.sync_files_btn = Gtk.Button()
+        self.sync_files_btn.set_icon_name("folder-remote-symbolic")
+        self.sync_files_btn.add_css_class("flat")
+        self.sync_files_btn.set_tooltip_text("Sync files with a device on the network")
+        self.sync_files_btn.connect("clicked", self._on_sync_files_clicked)
+        self.sync_files_btn.set_visible(
+            SettingsService.get_instance().get("file_sync.enabled", True)
+        )
+        header_box.append(self.sync_files_btn)
+        SettingsService.get_instance().connect("changed", self._on_file_sync_setting_changed)
 
         # Refresh button
         refresh_btn = Gtk.Button()
@@ -1713,6 +1717,11 @@ class ProjectWindow(Adw.ApplicationWindow):
         FileSyncDialog(
             self, self.project_path, on_synced=self.file_tree.refresh
         ).present()
+
+    def _on_file_sync_setting_changed(self, settings, key, value):
+        """Show/hide the Sync-files button live when its setting toggles."""
+        if key == "file_sync.enabled" and hasattr(self, "sync_files_btn"):
+            self.sync_files_btn.set_visible(bool(value))
 
     def _on_show_ignored_toggled(self, button):
         """Toggle showing ignored files in file tree."""

@@ -295,6 +295,16 @@ class PreferencesDialog(Adw.PreferencesDialog):
         dispatch_row.connect("notify::active", self._on_dispatch_enabled_changed)
         dispatch_group.add(dispatch_row)
 
+        file_sync_row = Adw.SwitchRow()
+        file_sync_row.set_title("Show 'Sync files' button")
+        file_sync_row.set_subtitle("Mirror a project's .shared/shared/ files from a paired device")
+        file_sync_row.set_active(self.settings.get("file_sync.enabled", True))
+        file_sync_row.connect(
+            "notify::active",
+            lambda row, _p: self.settings.set("file_sync.enabled", row.get_active()),
+        )
+        dispatch_group.add(file_sync_row)
+
         # Paired devices allowed to attach here (revoke to cut them off) + remote
         # machines this device has paired with (forget). Listed at open time.
         from ..services.paired_devices import PairedDevices

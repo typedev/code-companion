@@ -69,18 +69,6 @@ def plan_get(d: MirrorDiff, local: dict[str, str]) -> GetPlan:
     return GetPlan(fetch=fetch, remove=set(d.only_local), overwrite=overwrite)
 
 
-def plan_give(d: MirrorDiff, remote: dict[str, str]) -> GetPlan:
-    """The plan the *peer* would execute for a Give (local -> peer).
-
-    Symmetric to :func:`plan_get` with the roles swapped — used to preview counts
-    for the Give direction (``fetch`` = files we send; ``remove`` = files removed
-    on the peer).
-    """
-    fetch = set(d.only_local) | set(d.changed)
-    overwrite = {rel for rel in fetch if rel in remote}
-    return GetPlan(fetch=fetch, remove=set(d.only_remote), overwrite=overwrite)
-
-
 def _trash_path(root: Path, stamp: str, rel: str) -> Path:
     return root / DELETED_DIR / stamp / rel
 

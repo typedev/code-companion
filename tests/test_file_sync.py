@@ -172,6 +172,17 @@ def test_ensure_deleted_gitignored(tmp_path):
     assert "node_modules/" in lines and ".deleted/" in lines
 
 
+def test_trash_count_and_empty(tmp_path):
+    (tmp_path / ".deleted" / "20260101" / "shared").mkdir(parents=True)
+    (tmp_path / ".deleted" / "20260101" / "shared" / "a.txt").write_text("x")
+    (tmp_path / ".deleted" / "20260101" / "b.txt").write_text("y")
+    assert svc.count_trash(str(tmp_path)) == 2
+    assert svc.empty_trash(str(tmp_path)) == 2
+    assert not (tmp_path / ".deleted").exists()
+    assert svc.count_trash(str(tmp_path)) == 0
+    assert svc.empty_trash(str(tmp_path)) == 0  # no trash -> no-op
+
+
 def test_apply_get_new_file_needs_no_backup(tmp_path):
     root = tmp_path
     local = {}

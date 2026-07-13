@@ -103,48 +103,64 @@ class FileSyncDialog:
         if dialog is None:
             return
 
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        box.set_margin_top(4)
+
         if self._project_id is None:
             dialog.set_body(
                 "This project has no sync identity (needs a git remote or a commit)."
             )
-            dialog.set_extra_child(None)
-            return
-        if not self._peer_dicts:
+        elif not self._peer_dicts:
             dialog.set_body(
                 "No device found on this network.\n"
                 "Open Code Companion on the other machine with dispatch enabled."
             )
-            dialog.set_extra_child(None)
+        else:
+            dialog.set_body("Choose a device to get files from. A preview is shown below.")
+
+            labels = [
+                f"{p.get('name', p['device_id'])}  ({p['host']})"
+                + ("" if self._tokens.token_for(p["device_id"]) else "  — not paired")
+                for p in self._peer_dicts
+            ]
+            self._dropdown = Gtk.DropDown.new_from_strings(labels)
+            self._dropdown.connect("notify::selected", lambda *_: self._refresh_preview())
+            box.append(self._dropdown)
+
+            self._counts_label = Gtk.Label(xalign=0)
+            self._counts_label.set_wrap(True)
+            box.append(self._counts_label)
+
+            self._warn_label = Gtk.Label(xalign=0)
+            self._warn_label.set_wrap(True)
+            self._warn_label.add_css_class("error")
+            box.append(self._warn_label)
+
+            dialog.add_response("get", "Get files")
+            dialog.set_response_appearance("get", Adw.ResponseAppearance.SUGGESTED)
+            self._set_actions_enabled(False)
+
+        self._append_trash_button(box)  # available even without a peer
+        dialog.set_extra_child(box if box.get_first_child() is not None else None)
+
+        if self._project_id is not None and self._peer_dicts:
+            self._refresh_preview()
+
+    def _append_trash_button(self, box: Gtk.Box) -> None:
+        n = svc.count_trash(str(self._project_path))
+        if n <= 0:
             return
+        btn = Gtk.Button(label=f"Empty .deleted/  ({n} file{'s' if n != 1 else ''})")
+        btn.add_css_class("flat")
+        btn.set_halign(Gtk.Align.START)
+        btn.connect("clicked", self._on_empty_trash)
+        box.append(btn)
 
-        dialog.set_body("Choose a device to get files from. A preview is shown below.")
-
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
-        box.set_margin_top(4)
-
-        labels = [
-            f"{p.get('name', p['device_id'])}  ({p['host']})"
-            + ("" if self._tokens.token_for(p["device_id"]) else "  — not paired")
-            for p in self._peer_dicts
-        ]
-        self._dropdown = Gtk.DropDown.new_from_strings(labels)
-        self._dropdown.connect("notify::selected", lambda *_: self._refresh_preview())
-        box.append(self._dropdown)
-
-        self._counts_label = Gtk.Label(xalign=0)
-        self._counts_label.set_wrap(True)
-        box.append(self._counts_label)
-
-        self._warn_label = Gtk.Label(xalign=0)
-        self._warn_label.set_wrap(True)
-        self._warn_label.add_css_class("error")
-        box.append(self._warn_label)
-
-        dialog.set_extra_child(box)
-        dialog.add_response("get", "Get files")
-        dialog.set_response_appearance("get", Adw.ResponseAppearance.SUGGESTED)
-        self._set_actions_enabled(False)
-        self._refresh_preview()
+    def _on_empty_trash(self, button) -> None:
+        n = svc.empty_trash(str(self._project_path))
+        button.set_label("Emptied .deleted/")
+        button.set_sensitive(False)
+        ToastService.show(f"Emptied .deleted/  ({n} file{'s' if n != 1 else ''})")
 
     def _set_actions_enabled(self, enabled: bool) -> None:
         if self._dialog is not None:

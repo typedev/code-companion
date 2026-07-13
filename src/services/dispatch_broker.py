@@ -217,43 +217,6 @@ class DispatchBroker:
 
         return StreamingResponse(stream(), media_type="application/octet-stream")
 
-    async def _route_filesync_pull_request(self, request: Request) -> JSONResponse:
-        """Give trigger: a paired requester asks us to Get this project from them.
-
-        We connect back to the requester's broker (their host = the request's
-        source address; port + device id from the body) using the token we hold
-        for them, and run a Get in the background. Requires mutual pairing.
-        """
-        path, body = await self._filesync_project_path(request)
-        if path is None:
-            return JSONResponse({"error": body["error"]}, status_code=body["_status"])
-        source_id = str(body.get("source_device_id", "")).strip()
-        try:
-            source_port = int(body.get("source_port", 0))
-        except (TypeError, ValueError):
-            source_port = 0
-        token = self._remote_tokens.token_for(source_id) if source_id else None
-        source_host = request.client.host if request.client else None
-        if not token or not source_host or not source_port:
-            return JSONResponse({"error": "not paired with requester"}, status_code=403)
-
-        project_id = str(body.get("project_id", "")).strip()
-        peer_host, peer_port, peer_token = source_host, source_port, token
-
-        async def _pull_back() -> None:
-            # file_sync_service uses blocking urllib — keep it off the event loop.
-            from . import file_sync_service
-            peer = file_sync_service.Peer(source_id, "", peer_host, peer_port, peer_token)
-            try:
-                await asyncio.to_thread(
-                    file_sync_service.run_get, path, project_id, peer
-                )
-            except Exception:
-                pass
-
-        asyncio.get_running_loop().create_task(_pull_back())
-        return JSONResponse({"status": "started"})
-
     def _build_app(self) -> Starlette:
         return Starlette(
             routes=[
@@ -262,7 +225,6 @@ class DispatchBroker:
                 Route("/{session}/panel/{tool}", self._route_panel, methods=["GET"]),
                 Route("/filesync/manifest", self._route_filesync_manifest, methods=["POST"]),
                 Route("/filesync/fetch", self._route_filesync_fetch, methods=["POST"]),
-                Route("/filesync/pull-request", self._route_filesync_pull_request, methods=["POST"]),
             ]
         )
 

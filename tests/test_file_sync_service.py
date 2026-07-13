@@ -1,9 +1,7 @@
-"""Phase 3 tests: file-sync orchestration (Get mirror, preview, Give trigger)."""
+"""Phase 3 tests: file-sync orchestration (Get mirror, preview, mutual pairing)."""
 
 import socket
 import time
-
-import pytest
 
 from src.services import dispatch_api, file_sync_service as svc
 from src.services.dispatch_broker import DispatchBroker
@@ -102,24 +100,6 @@ def test_build_preview_counts(tmp_path, monkeypatch):
         assert p.diff.changed == {"shared/a.txt"}
         assert p.diff.only_local == {"shared/only.txt"}
         assert p.get.destructive_count == 2  # a.txt overwritten + only.txt removed
-        # Give (local -> peer): would send a.txt + only.txt, remove new.txt on peer
-        assert p.give.fetch == {"shared/a.txt", "shared/only.txt"}
-        assert p.give.remove == {"shared/new.txt"}
-    finally:
-        broker.stop()
-
-
-def test_pull_request_rejects_unpaired_requester(tmp_path, monkeypatch):
-    dest = tmp_path / "B"
-    (dest / "shared").mkdir(parents=True)
-    # broker with an EMPTY remote-token store -> can't pull back
-    broker, port, token = _serve(
-        tmp_path, dest, monkeypatch,
-        remote_tokens=RemoteTokens(path=tmp_path / "empty-tokens.json"),
-    )
-    try:
-        with pytest.raises(dispatch_api.DispatchError):
-            dispatch_api.request_pull("127.0.0.1", port, token, "PID", "requester-id", 40000)
     finally:
         broker.stop()
 
@@ -152,19 +132,5 @@ def test_mutual_pairing_stores_callback_token(tmp_path, monkeypatch):
         assert token  # peer issued us a token to call it
         # ...and it stored our callback token so it can call us back (mutual)
         assert rt.token_for("laptop-id") == "CB-TOKEN"
-    finally:
-        broker.stop()
-
-
-def test_pull_request_accepts_when_paired(tmp_path, monkeypatch):
-    dest = tmp_path / "B"
-    (dest / "shared").mkdir(parents=True)
-    rt = RemoteTokens(path=tmp_path / "tokens.json")
-    rt.set("requester-id", "the-requester", "tok-abc")  # we hold a token for them
-    broker, port, token = _serve(tmp_path, dest, monkeypatch, remote_tokens=rt)
-    try:
-        # Accepted (background pull-back to a dead port fails harmlessly).
-        resp = dispatch_api.request_pull("127.0.0.1", port, token, "PID", "requester-id", 40000)
-        assert resp.get("status") == "started"
     finally:
         broker.stop()

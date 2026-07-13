@@ -9,6 +9,7 @@ so this module is loopback-testable and free of zeroconf/GTK.
 
 from __future__ import annotations
 
+import shutil
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
@@ -22,7 +23,6 @@ from .file_sync.file_sync_engine import (
     MirrorDiff,
     diff_manifests,
     plan_get,
-    plan_give,
     prepare_trash,
     write_file,
 )
@@ -43,13 +43,12 @@ class Peer:
 
 @dataclass
 class SyncPreview:
-    """What a sync would do, both directions, for the UI to show before applying."""
+    """What a Get would do, for the UI to show before applying."""
 
     diff: MirrorDiff
     local: dict[str, str]
     remote: dict[str, str]
     get: GetPlan   # local-side plan for Get (⭠ peer→local)
-    give: GetPlan  # peer-side plan for Give (⭒ local→peer), for its counts
 
 
 @dataclass
@@ -92,12 +91,33 @@ def ensure_deleted_gitignored(project_path: str) -> None:
         pass
 
 
+def count_trash(project_path: str) -> int:
+    """Number of files currently in the project's ``.deleted/`` trash."""
+    d = Path(project_path) / ".deleted"
+    if not d.is_dir():
+        return 0
+    return sum(1 for p in d.rglob("*") if p.is_file())
+
+
+def empty_trash(project_path: str) -> int:
+    """Delete the project's ``.deleted/`` trash. Returns how many files were removed."""
+    d = Path(project_path) / ".deleted"
+    if not d.is_dir():
+        return 0
+    n = count_trash(project_path)
+    try:
+        shutil.rmtree(d)
+    except OSError:
+        return 0
+    return n
+
+
 def build_preview(local_path: str, project_id: str, peer: Peer) -> SyncPreview:
     """Fetch the peer manifest, build the local one, and diff — no changes made."""
     remote = dispatch_api.fetch_manifest(peer.host, peer.port, peer.token, project_id)
     local = file_index.build_manifest(local_path)
     d = diff_manifests(local, remote)
-    return SyncPreview(d, local, remote, plan_get(d, local), plan_give(d, remote))
+    return SyncPreview(d, local, remote, plan_get(d, local))
 
 
 def run_get(
@@ -133,15 +153,3 @@ def run_get(
             progress(done, total, rel)
 
     return SyncResult(fetched=done, removed=len(plan.remove), overwritten=len(plan.overwrite))
-
-
-def request_give(
-    project_id: str, peer: Peer, *, my_device_id: str, my_broker_port: int
-) -> None:
-    """Ask the peer to Get from us (⭒ Give). The peer connects back and pulls.
-
-    Requires mutual pairing (the peer must hold a token for us to pull back).
-    """
-    dispatch_api.request_pull(
-        peer.host, peer.port, peer.token, project_id, my_device_id, my_broker_port
-    )
