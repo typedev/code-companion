@@ -66,3 +66,41 @@ def pair(host: str, port: int, device_id: str, device_name: str) -> str:
 def list_sessions(host: str, port: int, token: str) -> dict:
     """Return ``{"pty_port": int, "sessions": [...]}`` for a paired broker."""
     return _get(f"http://{host}:{port}/sessions", token=token)
+
+
+# --- read-only panel data (proxied MCP tools of a session) ------------------
+# ``port`` here is the broker's HTTP port (not the PTY port).
+
+def _mcp(host: str, port: int, token: str, session: str, tool: str, **params) -> dict:
+    import urllib.parse
+    qs = f"?{urllib.parse.urlencode(params)}" if params else ""
+    return _get(f"http://{host}:{port}/{session}/mcp/{tool}{qs}", token=token)
+
+
+def get_changes(host, port, token, session) -> dict:
+    return _mcp(host, port, token, session, "list_changes")
+
+
+def get_file_diff(host, port, token, session, path: str, staged: bool = False) -> dict:
+    return _mcp(host, port, token, session, "get_file_diff",
+                path=path, staged=str(staged).lower())
+
+
+def list_files(host, port, token, session) -> dict:
+    return _mcp(host, port, token, session, "list_files")
+
+
+def read_file(host, port, token, session, path: str, max_bytes: int = 1_000_000) -> dict:
+    return _mcp(host, port, token, session, "read_file", path=path, max_bytes=max_bytes)
+
+
+def get_workspace(host, port, token, session) -> dict:
+    return _mcp(host, port, token, session, "get_workspace_state")
+
+
+def get_problems(host, port, token, session) -> dict:
+    return _mcp(host, port, token, session, "get_problems")
+
+
+def get_summary(host, port, token, session) -> dict:
+    return _mcp(host, port, token, session, "get_session_summary")

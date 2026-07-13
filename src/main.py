@@ -86,7 +86,7 @@ def main():
     parser.add_argument(
         "--remote",
         type=str,
-        help="Attach to a remote session: host:port:token:session (local dispatch)",
+        help="Attach to a remote session: host:http_port:pty_port:token:session",
     )
     parser.add_argument(
         "--remote-title",
@@ -101,16 +101,17 @@ def main():
     # Remote dispatch takes precedence over --project
     remote = None
     if args.remote:
-        # token is url-safe (no ':') and session is 'cc-<hex>', so a 3-way split
-        # on ':' is unambiguous: host:port:token:session.
-        parts = args.remote.split(":", 3)
-        if len(parts) != 4 or not parts[1].isdigit():
+        # token is url-safe (no ':') and session is 'cc-<hex>', so a 4-way split
+        # on ':' is unambiguous: host:http_port:pty_port:token:session.
+        parts = args.remote.split(":", 4)
+        if len(parts) != 5 or not parts[1].isdigit() or not parts[2].isdigit():
             print(f"Error: bad --remote spec: {args.remote}", file=sys.stderr)
             return 1
-        host, port, token, session = parts
+        host, http_port, pty_port, token, session = parts
         remote = {
             "host": host,
-            "port": int(port),
+            "http_port": int(http_port),
+            "port": int(pty_port),
             "token": token,
             "session": session,
             "title": args.remote_title,

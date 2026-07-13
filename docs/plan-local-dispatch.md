@@ -52,11 +52,21 @@ proxy run on the already-vendored uvicorn/starlette. Two ports: `dispatch.port`
   `session_clients()`. *Verified headless: 401 without token, pairing +
   idempotent re-pair, held-state flip on attach, PTY attach through the broker,
   wrong-token reject, `0600` perms, graceful shutdown.*
-- [ ] **Phase 3 — MCP reverse-proxy + `mcp_client`.** Broker `/{name}/mcp` reaches
-  the session's loopback MCP (`CC_MCP_PORT`/`CC_MCP_TOKEN` via
-  `claude_session.session_env`); `src/services/mcp_client.py` for the read-only
-  tools. *Open design choice: transparent SSE proxy vs broker-as-MCP-client
-  exposing simple JSON.*
+- [x] **Phase 3 — read-only live panels (variant B: broker as MCP client → JSON).**
+  4 new read-only MCP tools (`mcp_server.py`): `list_changes`, `get_file_diff`,
+  `list_files`, `read_file` (path-guarded). Broker `_mcp_call` uses the `mcp` SDK
+  `ClientSession` to the session's loopback MCP + a bearer-gated, whitelist-only
+  `GET /{session}/mcp/{tool}` route. Laptop client helpers in `dispatch_api.py`.
+  `RemoteSessionWindow` gains an `Adw.OverlaySplitView` sidebar
+  (`widgets/remote_panels.py`): **Changes** (→`DiffView`), **Files** (quick-open
+  →read-only GtkSource view), **Problems**. `--remote` spec now
+  `host:http_port:pty_port:token:session`. *Verified headless: tools on the real
+  repo; broker bridge with a fake MCP server (401/403/502 paths); all panel
+  render paths + full window construct. History/memory/messages/issues stay in the
+  laptop's normal app via sync/cloud.*
+- [x] **Polish.** Preferences → Local Dispatch lists paired devices (Revoke) +
+  remote peers (Forget); PM dedups a second window for an already-open
+  `(host, session)`.
 - [~] **Phase 4 — zeroconf + laptop discovery.** *Service layer done & proven
   headless:* `src/services/dispatch_discovery.py` (`DispatchAdvertiser` /
   `DispatchBrowser`, `_codecompanion._tcp`) — two instances discover each other

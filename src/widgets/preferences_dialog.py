@@ -294,6 +294,41 @@ class PreferencesDialog(Adw.PreferencesDialog):
         dispatch_row.set_active(self.settings.get("dispatch.enabled", False))
         dispatch_row.connect("notify::active", self._on_dispatch_enabled_changed)
         dispatch_group.add(dispatch_row)
+
+        # Paired devices allowed to attach here (revoke to cut them off) + remote
+        # machines this device has paired with (forget). Listed at open time.
+        from ..services.paired_devices import PairedDevices
+        from ..services.remote_tokens import RemoteTokens
+
+        for d in PairedDevices().list():
+            row = Adw.ActionRow()
+            row.set_title(d["name"] or d["device_id"][:8])
+            row.set_subtitle("Allowed to attach to this machine")
+            btn = Gtk.Button(label="Revoke")
+            btn.add_css_class("flat")
+            btn.add_css_class("destructive-action")
+            btn.set_valign(Gtk.Align.CENTER)
+            btn.connect(
+                "clicked",
+                lambda _b, did=d["device_id"], r=row: (PairedDevices().revoke(did), dispatch_group.remove(r)),
+            )
+            row.add_suffix(btn)
+            dispatch_group.add(row)
+
+        for d in RemoteTokens().list():
+            row = Adw.ActionRow()
+            row.set_title(d["name"] or d["device_id"][:8])
+            row.set_subtitle("Remote machine you've paired with")
+            btn = Gtk.Button(label="Forget")
+            btn.add_css_class("flat")
+            btn.set_valign(Gtk.Align.CENTER)
+            btn.connect(
+                "clicked",
+                lambda _b, did=d["device_id"], r=row: (RemoteTokens().forget(did), dispatch_group.remove(r)),
+            )
+            row.add_suffix(btn)
+            dispatch_group.add(row)
+
         page.add(dispatch_group)
 
         self.add(page)

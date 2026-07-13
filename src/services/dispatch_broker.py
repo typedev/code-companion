@@ -17,10 +17,13 @@ share one background thread + asyncio loop, mirroring ``McpServer``. Binding is
 from __future__ import annotations
 
 import asyncio
+import json
 import threading
 from typing import Awaitable, Callable
 
 import uvicorn
+from mcp import ClientSession
+from mcp.client.streamable_http import streamablehttp_client
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import JSONResponse
@@ -29,6 +32,18 @@ from starlette.routing import Route
 from ..dispatch.pty_bridge import handle_connection
 from ..utils import claude_session
 from .paired_devices import PairedDevices
+
+# Read-only tools the laptop may pull through the broker. Anything not listed is
+# refused, so a paired device can never invoke an action/mutation tool remotely.
+_READ_TOOLS = frozenset({
+    "list_changes",
+    "get_file_diff",
+    "list_files",
+    "read_file",
+    "get_workspace_state",
+    "get_problems",
+    "get_session_summary",
+})
 
 # pair_prompt(device_id, device_name) -> await -> allowed?  Injected by the PM so
 # the broker stays GTK-agnostic (tests pass an auto-allow/deny coroutine).
@@ -50,6 +65,24 @@ def _list_sessions() -> list[dict]:
             }
         )
     return out
+
+
+def _tool_result_dict(result) -> dict:
+    """Extract a JSON dict from an mcp CallToolResult (structured or text content)."""
+    structured = getattr(result, "structuredContent", None)
+    if isinstance(structured, dict) and structured:
+        # Some FastMCP versions wrap a bare dict return under a "result" key.
+        if set(structured) == {"result"} and isinstance(structured["result"], dict):
+            return structured["result"]
+        return structured
+    for block in getattr(result, "content", None) or []:
+        text = getattr(block, "text", None)
+        if text:
+            try:
+                return json.loads(text)
+            except ValueError:
+                return {"result": text}
+    return {}
 
 
 class DispatchBroker:
@@ -111,11 +144,50 @@ class DispatchBroker:
         sessions = await asyncio.get_running_loop().run_in_executor(None, _list_sessions)
         return JSONResponse({"pty_port": self.pty_port, "sessions": sessions})
 
+    async def _route_mcp(self, request: Request) -> JSONResponse:
+        """Proxy a whitelisted read-only MCP tool of a session to plain JSON."""
+        if self._bearer(request) is None:
+            return JSONResponse({"error": "unauthorized"}, status_code=401)
+        session = request.path_params["session"]
+        tool = request.path_params["tool"]
+        if tool not in _READ_TOOLS:
+            return JSONResponse({"error": "tool not allowed"}, status_code=403)
+
+        args: dict = dict(request.query_params)
+        if "staged" in args:
+            args["staged"] = str(args["staged"]).lower() in ("1", "true", "yes")
+        if "max_bytes" in args:
+            try:
+                args["max_bytes"] = int(args["max_bytes"])
+            except ValueError:
+                args.pop("max_bytes")
+
+        try:
+            data = await self._mcp_call(session, tool, args)
+        except Exception as exc:
+            return JSONResponse({"error": str(exc)}, status_code=502)
+        return JSONResponse(data)
+
+    async def _mcp_call(self, session: str, tool: str, args: dict) -> dict:
+        """Call one MCP tool on a session's loopback server; return its JSON dict."""
+        port = claude_session.session_env(session, "CC_MCP_PORT")
+        token = claude_session.session_env(session, "CC_MCP_TOKEN")
+        if not port or not token or not port.isdigit():
+            raise RuntimeError("session has no MCP endpoint")
+        url = f"http://127.0.0.1:{port}/mcp"
+        headers = {"Authorization": f"Bearer {token}"}
+        async with streamablehttp_client(url, headers=headers) as (read, write, _):
+            async with ClientSession(read, write) as sess:
+                await sess.initialize()
+                result = await sess.call_tool(tool, args or {})
+        return _tool_result_dict(result)
+
     def _build_app(self) -> Starlette:
         return Starlette(
             routes=[
                 Route("/pair", self._route_pair, methods=["POST"]),
                 Route("/sessions", self._route_sessions, methods=["GET"]),
+                Route("/{session}/mcp/{tool}", self._route_mcp, methods=["GET"]),
             ]
         )
 

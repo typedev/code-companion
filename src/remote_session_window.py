@@ -25,6 +25,7 @@ gi.require_version("Adw", "1")
 from gi.repository import Adw, GLib, Gtk
 
 from .widgets import TerminalView
+from .widgets.remote_panels import RemotePanels
 
 _PROJECT_ROOT = str(Path(__file__).resolve().parent.parent)
 
@@ -40,18 +41,20 @@ class RemoteSessionWindow(Adw.ApplicationWindow):
         token: str,
         session: str,
         title: str = "",
+        http_port: int | None = None,
         **kwargs,
     ):
         super().__init__(**kwargs)
 
         self._host = host
-        self._port = port
+        self._port = port  # PTY bridge port (terminal)
+        self._http_port = http_port or max(1, port - 1)  # broker HTTP port (panels)
         self._token = token
         self._session = session
         self._title = title or session
 
         self.set_title(f"{self._title} · remote")
-        self.set_default_size(1000, 700)
+        self.set_default_size(1200, 760)
 
         self._toolbar = Adw.ToolbarView()
         header = Adw.HeaderBar()
@@ -59,15 +62,36 @@ class RemoteSessionWindow(Adw.ApplicationWindow):
         title_widget.set_title(self._title)
         title_widget.set_subtitle(f"remote · {host}")
         header.set_title_widget(title_widget)
+
+        # Toggle the read-only desktop panels (Changes / Files / Problems).
+        self._sidebar_toggle = Gtk.ToggleButton(icon_name="sidebar-show-symbolic")
+        self._sidebar_toggle.set_tooltip_text("Desktop panels: Changes, Files, Problems")
+        self._sidebar_toggle.set_active(True)
+        self._sidebar_toggle.connect("toggled", self._on_sidebar_toggled)
+        header.pack_end(self._sidebar_toggle)
         self._toolbar.add_top_bar(header)
 
+        # Terminal lives in _content (rebuilt on reconnect); panels are a sibling
+        # in the split sidebar, so the terminal lifecycle never touches them.
         self._content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         self._content.set_vexpand(True)
-        self._toolbar.set_content(self._content)
+
+        self._split = Adw.OverlaySplitView()
+        self._split.set_content(self._content)
+        self._split.set_sidebar_position(Gtk.PackType.END)
+        self._panels = RemotePanels(host, self._http_port, token, session)
+        self._split.set_sidebar(self._panels)
+        self._split.set_min_sidebar_width(320)
+        self._split.set_max_sidebar_width(560)
+        self._split.set_show_sidebar(True)
+        self._toolbar.set_content(self._split)
         self.set_content(self._toolbar)
 
         self._terminal: TerminalView | None = None
         self._connect()
+
+    def _on_sidebar_toggled(self, button: Gtk.ToggleButton) -> None:
+        self._split.set_show_sidebar(button.get_active())
 
     # ------------------------------------------------------------------ #
     # Connection lifecycle

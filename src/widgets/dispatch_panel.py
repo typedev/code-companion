@@ -51,6 +51,9 @@ class DispatchPanel(Gtk.Box):
         self._advertiser: DispatchAdvertiser | None = None
         self._browser: DispatchBrowser | None = None
         self._peers: list[dict] = []
+        # (host, session) -> the RemoteSessionWindow process, to avoid opening a
+        # second window for a session that's already open here.
+        self._launched: dict[tuple[str, str], subprocess.Popen] = {}
 
         header = Gtk.Label(label="Machines on this network")
         header.add_css_class("title-4")
@@ -231,10 +234,17 @@ class DispatchPanel(Gtk.Box):
         if not pty_port:
             ToastService.show_error("Dispatch: broker did not report a PTY port")
             return
-        spec = f"{peer['host']}:{pty_port}:{token}:{session}"
+        key = (peer["host"], session)
+        existing = self._launched.get(key)
+        if existing is not None and existing.poll() is None:
+            ToastService.show(f"{name} is already open")
+            return
+        # host:http_port:pty_port:token:session — terminal uses the PTY port, the
+        # read-only panels use the broker HTTP port (peer["port"]).
+        spec = f"{peer['host']}:{peer['port']}:{pty_port}:{token}:{session}"
         # Inherit env/cwd like _open_project so `-m src.main` resolves in dev and
         # when packaged.
-        subprocess.Popen(
+        self._launched[key] = subprocess.Popen(
             [sys.executable, "-m", "src.main", "--remote", spec, "--remote-title", name],
             start_new_session=True,
         )
