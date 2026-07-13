@@ -142,3 +142,22 @@ def fetch_files(
         raise DispatchError(str(exc)) from exc
     with resp:
         yield from wire.read_files(resp.read)
+
+
+def request_pull(
+    host, port, token, project_id: str, source_device_id: str, source_port: int
+) -> dict:
+    """Ask a peer to Get project ``project_id`` from us (the Give direction).
+
+    ``source_device_id``/``source_port`` identify us so the peer can connect back
+    to our broker (it derives our host from the request's source address).
+    """
+    return _post(
+        f"http://{host}:{port}/filesync/pull-request",
+        {
+            "project_id": project_id,
+            "source_device_id": source_device_id,
+            "source_port": source_port,
+        },
+        token=token,
+    )
