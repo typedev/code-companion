@@ -52,18 +52,37 @@ def _send(req: urllib.request.Request) -> dict:
         raise DispatchError(str(exc)) from exc
 
 
-def pair(host: str, port: int, device_id: str, device_name: str) -> str:
+def pair(
+    host: str, port: int, device_id: str, device_name: str, callback_token: str | None = None
+) -> str:
     """Pair with a broker; return the issued token (raises on denial/error).
 
     Blocks until the desktop user clicks Allow/Deny — call off the main thread.
+    ``callback_token`` (optional) is a token WE issued for the peer so, on Allow,
+    the peer can call us back — this makes pairing mutual (bidirectional).
     """
-    resp = _post(f"http://{host}:{port}/pair", {
-        "device_id": device_id,
-        "device_name": device_name,
-    })
+    body = {"device_id": device_id, "device_name": device_name}
+    if callback_token:
+        body["callback_token"] = callback_token
+    resp = _post(f"http://{host}:{port}/pair", body)
     token = resp.get("token")
     if not token:
         raise DispatchError("no token returned")
+    return token
+
+
+def pair_mutual(
+    host: str, port: int, my_device_id: str, my_name: str,
+    peer_device_id: str, peer_name: str, paired, remote_tokens,
+) -> str:
+    """Pair mutually: one Allow on the peer leaves BOTH machines able to call the
+    other. We pre-issue the peer a token (registered in our own ``paired`` allow-
+    list) and send it as ``callback_token``; the peer's issued token is stored in
+    our ``remote_tokens``. Returns the token we use to call the peer.
+    """
+    callback = paired.add(peer_device_id, peer_name)
+    token = pair(host, port, my_device_id, my_name, callback_token=callback)
+    remote_tokens.set(peer_device_id, peer_name, token)
     return token
 
 

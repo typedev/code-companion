@@ -21,6 +21,7 @@ from gi.repository import Adw, GLib, Gtk  # noqa: E402
 from ..services import dispatch_api, file_sync_service as svc  # noqa: E402
 from ..services.device_identity import get_device_id, get_device_name  # noqa: E402
 from ..services.dispatch_discovery import DispatchBrowser  # noqa: E402
+from ..services.paired_devices import PairedDevices  # noqa: E402
 from ..services.remote_tokens import RemoteTokens  # noqa: E402
 from ..services.toast_service import ToastService  # noqa: E402
 from ..utils.project_identity import resolve_project_identity  # noqa: E402
@@ -250,9 +251,12 @@ class FileSyncDialog:
                 token = self._tokens.token_for(did)
                 if not token:
                     # Pair on demand — blocks until the other device clicks Allow.
+                    # Mutual: one Allow leaves both machines able to get from each other.
                     GLib.idle_add(self._set_progress_text, f"Waiting for {name} to allow…")
-                    token = dispatch_api.pair(host, port, self._device_id, self._device_name)
-                    self._tokens.set(did, name, token)
+                    token = dispatch_api.pair_mutual(
+                        host, port, self._device_id, self._device_name,
+                        did, name, PairedDevices(), self._tokens,
+                    )
                 peer = svc.Peer(did, name, host, port, token)
                 result = svc.run_get(path, project_id, peer, progress=progress)
                 GLib.idle_add(self._get_done, result, None)

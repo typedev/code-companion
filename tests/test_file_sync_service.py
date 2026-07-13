@@ -124,6 +124,38 @@ def test_pull_request_rejects_unpaired_requester(tmp_path, monkeypatch):
         broker.stop()
 
 
+def test_mutual_pairing_stores_callback_token(tmp_path, monkeypatch):
+    monkeypatch.setattr(file_index, "get_config_dir", lambda: tmp_path / "cfg")
+
+    async def _allow(_id, _name):
+        return True
+
+    paired = PairedDevices(path=tmp_path / "paired.json")
+    rt = RemoteTokens(path=tmp_path / "rt.json")
+    port = _free_port()
+    broker = DispatchBroker(
+        port, _allow, paired=paired, remote_tokens=rt,
+        resolve_project=lambda pid: None,
+    )
+    broker.start()
+    try:
+        token = None
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            try:
+                token = dispatch_api.pair(
+                    "127.0.0.1", port, "laptop-id", "laptop", callback_token="CB-TOKEN"
+                )
+                break
+            except dispatch_api.DispatchError:
+                time.sleep(0.2)
+        assert token  # peer issued us a token to call it
+        # ...and it stored our callback token so it can call us back (mutual)
+        assert rt.token_for("laptop-id") == "CB-TOKEN"
+    finally:
+        broker.stop()
+
+
 def test_pull_request_accepts_when_paired(tmp_path, monkeypatch):
     dest = tmp_path / "B"
     (dest / "shared").mkdir(parents=True)

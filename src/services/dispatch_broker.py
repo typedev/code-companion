@@ -109,7 +109,14 @@ class DispatchBroker:
         if not device_id:
             return JSONResponse({"error": "device_id required"}, status_code=400)
 
+        # Mutual pairing: a token the peer issued us to call it back. Store it only
+        # once the pairing is authorized (existing or freshly allowed), keyed by the
+        # peer's device_id, so file-sync works in both directions.
+        callback = str(body.get("callback_token", "")).strip()
+
         if self.paired.is_paired(device_id):  # idempotent re-pair
+            if callback:
+                self._remote_tokens.set(device_id, device_name, callback)
             return JSONResponse({"token": self.paired.token_for(device_id)})
 
         try:
@@ -120,6 +127,8 @@ class DispatchBroker:
             return JSONResponse({"error": "denied"}, status_code=403)
 
         token = self.paired.add(device_id, device_name)
+        if callback:
+            self._remote_tokens.set(device_id, device_name, callback)
         return JSONResponse({"token": token})
 
     async def _route_sessions(self, request: Request) -> JSONResponse:
