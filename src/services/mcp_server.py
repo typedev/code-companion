@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import subprocess
 import threading
 from concurrent.futures import Future
 from pathlib import Path
@@ -752,77 +751,24 @@ class McpServer:
         }
 
     def _do_list_changes(self) -> dict:
-        git = getattr(self.window, "git_service", None)
-        if git is None:
-            return {"ok": False, "error": "not a git repository", "changes": []}
-        try:
-            staged, unstaged = git.get_porcelain_status()
-        except Exception as exc:  # RuntimeError from git failure
-            return {"ok": False, "error": str(exc), "changes": []}
-        changes = [
-            {"path": fs.path, "status": fs.status.value, "staged": fs.staged}
-            for fs in list(unstaged) + list(staged)
-        ]
-        return {"ok": True, "changes": changes}
+        from . import workspace_readonly
+        root = getattr(self.window, "project_path", None)
+        return workspace_readonly.list_changes(root) if root else {"ok": False, "error": "no project", "changes": []}
 
     def _do_get_file_diff(self, path: str, staged: bool) -> dict:
-        git = getattr(self.window, "git_service", None)
-        if git is None:
-            return {"ok": False, "error": "not a git repository"}
-        try:
-            old, new = git.get_diff(path, staged)
-        except Exception as exc:
-            return {"ok": False, "error": str(exc)}
-        return {"ok": True, "path": path, "staged": staged, "old": old, "new": new}
+        from . import workspace_readonly
+        root = getattr(self.window, "project_path", None)
+        return workspace_readonly.get_file_diff(root, path, staged) if root else {"ok": False, "error": "no project"}
 
     def _do_list_files(self) -> dict:
-        # Worker thread: standalone `git ls-files` (no shared pygit2 state).
+        from . import workspace_readonly
         root = getattr(self.window, "project_path", None)
-        if not root:
-            return {"ok": False, "error": "no project", "files": []}
-        try:
-            result = subprocess.run(
-                ["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z"],
-                capture_output=True, cwd=str(root), timeout=15,
-            )
-        except (OSError, subprocess.SubprocessError) as exc:
-            return {"ok": False, "error": str(exc), "files": []}
-        if result.returncode != 0:
-            return {"ok": False, "error": "git ls-files failed", "files": []}
-        files = [f for f in result.stdout.decode("utf-8", "replace").split("\0") if f]
-        return {"ok": True, "files": sorted(files)}
+        return workspace_readonly.list_files(root) if root else {"ok": False, "error": "no project", "files": []}
 
     def _do_read_file(self, path: str, max_bytes: int) -> dict:
-        # Worker thread: plain file read, path-guarded to the project root.
+        from . import workspace_readonly
         root = getattr(self.window, "project_path", None)
-        if not root:
-            return {"ok": False, "error": "no project"}
-        from ..utils.text_files import is_binary_bytes
-
-        base = Path(root).resolve()
-        try:
-            target = (base / path).resolve()
-        except (OSError, ValueError):
-            return {"ok": False, "error": "bad path"}
-        if target != base and base not in target.parents:
-            return {"ok": False, "error": "path outside project"}
-        if not target.is_file():
-            return {"ok": False, "error": "not a file"}
-        cap = max(0, int(max_bytes))
-        try:
-            data = target.read_bytes()[: cap + 1]
-        except OSError as exc:
-            return {"ok": False, "error": str(exc)}
-        truncated = len(data) > cap
-        data = data[:cap]
-        if is_binary_bytes(data):
-            return {"ok": True, "path": path, "binary": True}
-        return {
-            "ok": True,
-            "path": path,
-            "content": data.decode("utf-8", "replace"),
-            "truncated": truncated,
-        }
+        return workspace_readonly.read_file(root, path, max_bytes) if root else {"ok": False, "error": "no project"}
 
     def _do_list_linters(self) -> dict:
         from .linter_registry import get_linters
