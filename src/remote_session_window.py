@@ -24,6 +24,7 @@ gi.require_version("Adw", "1")
 
 from gi.repository import Adw, GLib, Gtk
 
+from .services.icon_cache import IconCache
 from .widgets import TerminalView
 from .widgets.remote_panels import RemotePanels
 
@@ -63,22 +64,39 @@ class RemoteSessionWindow(Adw.ApplicationWindow):
         title_widget.set_subtitle(f"remote · {host}")
         header.set_title_widget(title_widget)
 
-        # Sidebar toggle on the start (left), like the workspace.
-        self._sidebar_toggle = Gtk.ToggleButton(icon_name="sidebar-show-symbolic")
-        self._sidebar_toggle.set_tooltip_text("Desktop panels: Changes, Files, Problems")
-        self._sidebar_toggle.set_active(True)
-        self._sidebar_toggle.connect("toggled", self._on_sidebar_toggled)
-        header.pack_start(self._sidebar_toggle)
-        self._toolbar.add_top_bar(header)
-
-        # Left sidebar (panels) + terminal, in a resizable Gtk.Paned — the same
-        # layout as the standard project workspace. The terminal lives in
-        # _content (rebuilt on reconnect); the panels are a sibling, so the
-        # terminal lifecycle never touches them.
         self._content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         self._content.set_vexpand(True)
         self._panels = RemotePanels(host, self._http_port, token, session)
 
+        # Header: sidebar toggle + a horizontal linked panel switcher + reload —
+        # the same layout the standard workspace uses (switcher in the header).
+        self._sidebar_toggle = Gtk.ToggleButton(icon_name="sidebar-show-symbolic")
+        self._sidebar_toggle.set_tooltip_text("Show/hide the panels")
+        self._sidebar_toggle.set_active(True)
+        self._sidebar_toggle.connect("toggled", self._on_sidebar_toggled)
+        header.pack_start(self._sidebar_toggle)
+
+        switcher = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=2)
+        switcher.set_margin_start(6)
+        self._panel_buttons: dict[str, Gtk.ToggleButton] = {}
+        for name, icon, tip in RemotePanels.TABS:
+            btn = self._make_panel_toggle(icon, tip)
+            btn.connect("toggled", self._on_panel_toggled, name)
+            switcher.append(btn)
+            self._panel_buttons[name] = btn
+        header.pack_start(switcher)
+
+        reload_btn = Gtk.Button(icon_name="view-refresh-symbolic")
+        reload_btn.add_css_class("flat")
+        reload_btn.set_tooltip_text("Reload panels")
+        reload_btn.connect("clicked", lambda _b: self._panels.refresh())
+        header.pack_end(reload_btn)
+
+        self._toolbar.add_top_bar(header)
+
+        # Left sidebar (panels) + terminal in a resizable Gtk.Paned — like the
+        # workspace. The terminal lives in _content (rebuilt on reconnect); the
+        # panels are a sibling, so the terminal lifecycle never touches them.
         self._paned = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL)
         self._paned.set_shrink_start_child(False)
         self._paned.set_shrink_end_child(False)
@@ -90,8 +108,34 @@ class RemoteSessionWindow(Adw.ApplicationWindow):
         self._toolbar.set_content(self._paned)
         self.set_content(self._toolbar)
 
+        self._panel_buttons["changes"].set_active(True)  # default page
+
         self._terminal: TerminalView | None = None
         self._connect()
+
+    def _make_panel_toggle(self, icon_name: str, tooltip: str) -> Gtk.ToggleButton:
+        # Same as project_window._create_toolbar_button: flat, 36x36, 20px icon.
+        btn = Gtk.ToggleButton()
+        btn.set_tooltip_text(tooltip)
+        btn.add_css_class("flat")
+        btn.set_size_request(36, 36)
+        gicon = IconCache().get_provider_gicon(icon_name)
+        if gicon is not None:
+            image = Gtk.Image.new_from_gicon(gicon)
+            image.set_pixel_size(20)
+            btn.set_child(image)
+        return btn
+
+    def _on_panel_toggled(self, button: Gtk.ToggleButton, name: str) -> None:
+        if button.get_active():
+            if not self._sidebar_toggle.get_active():
+                self._sidebar_toggle.set_active(True)  # reveal the sidebar
+            self._panels.select(name)
+            for other, btn in self._panel_buttons.items():
+                if other != name:
+                    btn.set_active(False)
+        elif not any(b.get_active() for b in self._panel_buttons.values()):
+            button.set_active(True)
 
     def _on_sidebar_toggled(self, button: Gtk.ToggleButton) -> None:
         self._panels.set_visible(button.get_active())
