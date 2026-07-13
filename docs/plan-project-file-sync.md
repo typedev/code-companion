@@ -1,78 +1,88 @@
-# Plan: LAN project file-sync (`.shared` include, directional mirror)
+# LAN project file-sync (`.shared` include, one-way Get)
 
-Status: **approved**, implementing. Phase 1 (local core) first.
+Status: **shipped** on `main` (13 commits, `957a85d`…`0ffc74c`). GUI verified live
+(15k+ files transferred fast). This doc reflects what actually shipped.
 
-## Context
+## Why
 
-Cross-machine sync of Claude context/sessions/memory works, but the user still can't fully continue
-work on the second machine because **many needed files are gitignored** (build inputs, generated
-assets, and especially UFO font sources — a single `.ufo` is a directory of *hundreds of thousands*
-of tiny `.glif` files). GitHub moves only tracked files; the working set doesn't travel.
+Cross-machine sync of Claude context/sessions/memory worked, but many files needed
+for work are **gitignored** (build inputs, generated assets, UFO font sources — a
+single `.ufo` is hundreds of thousands of tiny `.glif` files). GitHub moves only
+tracked files, so the working set didn't travel. This adds an opt-in, LAN-only,
+one-way file mirror so the machine you sit down at can pull the working files it
+lacks — for both the user and Claude.
 
-Constraints (confirmed with the user):
-- **Never edits one project on two machines concurrently** — a clean handoff, not a live merge.
-- **Both machines online on the same LAN at sync time** → realtime P2P, no cloud store; reuse the
-  "local dispatch / remote client" transport (zeroconf + pairing + auth).
-- **Explicit opt-in** via a `.shared` file (gitignore-style *allowlist*, committed to git) + a
-  user-created `shared/` folder.
-- **Explicit direction, one button + preview** — the user picks Get / Give and sees the diff first.
-  No automatic merge, no conflict files.
+## Model
 
-## Model — directional mirror (no 3-way, no base)
+- **One-way Get**, per project, on demand from the Files toolbar. The machine that
+  has the files serves; the one that needs them pulls. (Matches the dispatch
+  topology: the server advertises, the client browses.) Give was designed then
+  dropped — one-way fits the workflow and the transport.
+- **Directional mirror, no 3-way/base**: fetch a peer's manifest, diff against the
+  local one, pull the difference. Anything overwritten/removed locally is moved to
+  `<project>/.deleted/<stamp>/` first (recoverable), never hard-deleted.
+- **Scope** = (`.shared` allowlist ∪ `shared/`) **minus** git-tracked files
+  (`git ls-files`), `.git`, `.deleted/`, and heavy dirs (`node_modules`, `.venv`, …).
+  `.shared` is a committed, gitignore-syntax file (negation supported); it's re-read
+  every sync (no cache), so edits take effect on the next Get.
 
-- **Get (⭠ peer→local)**: make the local shared-set match the peer's — pull differing/missing files,
-  remove local-only files. Anything overwritten/removed is first moved to `<project>/.deleted/<stamp>/<rel>`.
-- **Give (⭒ local→peer)**: symmetric, implemented as a **pull-request** to the peer (both online) —
-  the peer performs a Get from us. Each machine only writes its own disk; remote stays read-only.
+## Pairing (mutual trust)
 
-No base state, no `SyncStateStore`, no `.remote` conflict files — the chosen direction wins,
-`.deleted/` is the safety net.
+- Pairing is **mutual**: one Allow trusts both directions forever (`pair_mutual` —
+  the client pre-issues the peer a callback token so the peer can call back). Used
+  by both file-sync and the dispatch/remote-client panel.
+- Preferences lists **one row per trusted device** with a single **Forget** (drops
+  trust both ways). The "Sync files" button appears on its own once the machine has
+  any trusted device — no setting/toggle.
+- **Auto re-pair on revoke**: if the peer did Forget, our token 401s on the next
+  Get; we drop the stale token and re-pair on demand (peer shows Allow). The 401
+  hits the first call (manifest), before any file/trash change, so the retry is clean.
 
-## Scope of the shared set
+## Transport (reuses dispatch)
 
-`resolve(project)` = (matched by `.shared` allowlist ∪ everything under `shared/`) **minus** git-tracked
-files (`git ls-files`), `.git`, `.deleted/`, and `problems_service._SKIP_DIRS`. `.shared` is committed
-to git; `shared/` is user-created; `.deleted/` is auto-added to `.gitignore`.
+Bearer-authorized, `project_id`-addressed routes on the existing dispatch broker
+(zeroconf discovery + per-device tokens reused unchanged):
+- `POST /filesync/manifest` → `{rel: sha256}` for the resolved shared set.
+- `POST /filesync/fetch` → a streamed frame of the requested files (one request/one
+  stream → collapses the 100k-tiny-file overhead), **sandboxed** to the shared set
+  (blocks path escapes / non-shared / tracked files).
+Serving needs the peer's Project Manager running (dispatch on); the project's window
+need not be open — the broker serves any registered project by id.
 
-## Components (new module `src/services/file_sync/`)
+## Layout (`src/services/file_sync/` + `file_sync_service.py`)
 
-1. **`share_spec.py`** — include resolver: `pathspec` allowlist (negation ok) + `shared/`; `os.walk`
-   with `_SKIP_DIRS` pruning; subtract `git ls-files -z`; always exclude `.git`/`.deleted/`.
-2. **`file_index.py`** — persistent `{rel: {mtime_ns,size,sha256}}` per project under `get_config_dir()`;
-   re-hash only on `stat_differs`; schema-versioned JSON via `atomic_write_text`; `manifest()->{rel:sha256}`.
-3. **`file_sync_engine.py`** — pure `diff(local,remote)->{only_remote,only_local,changed}`; per-direction
-   preview; apply (Get): fetch + `atomic_write_bytes`, back up overwritten/removed to `.deleted/<stamp>/`.
-   Retention manual ("Empty `.deleted/`"). Reuse `hash_file`/`hash_bytes`; NOT `decide_*`/`SyncStateStore`.
-4. **Transport** (`dispatch_broker.py`+`dispatch_api.py`): bearer-guarded, `project_id`-addressed routes —
-   `/filesync/manifest`, `/filesync/fetch` (tar `StreamingResponse`, sandboxed), `/filesync/pull-request`
-   (triggers Give). Reuse zeroconf + paired tokens.
-5. **UI** (`file_sync_service.py` + Files-section button): "Sync files" → peer select → preview
-   (counts, **destructive count flagged**, direction) → progress bar → apply off-thread. Off `sync_repo`.
-6. **Settings**: `file_sync.enabled` (per-project), optional peer pin. `.shared` re-resolve via
-   `FileMonitorService`.
+- `share_spec.py` — resolver (`.shared` pathspec allowlist + `shared/`, minus tracked/
+  skip-dirs).
+- `file_index.py` — persistent `{rel:(mtime,size,sha256)}` cache; builds the manifest,
+  re-hashing only stat-changed files.
+- `file_sync_engine.py` — pure `diff` → `plan_get` (with `destructive_count`) →
+  `prepare_trash`/`write_file`; `.deleted/` backup.
+- `file_sync_service.py` — `build_preview`, `run_get` (streamed apply + progress),
+  `git_operation_in_progress` / `ensure_deleted_gitignored` / `count_trash` /
+  `empty_trash`.
+- `wire.py` — framed file stream shared by broker + client. `project_resolver.py` —
+  `project_id` → path via the registry.
+- `dispatch_broker.py` / `dispatch_api.py` — the routes + client (`fetch_manifest`,
+  `fetch_files`, `pair_mutual`).
+- `src/widgets/file_sync_dialog.py` — "Sync files" dialog (peer picker, preview with a
+  prominent destructive-count warning, `Gtk.ProgressBar`, "Empty .deleted/").
+- `src/project_window.py` — the toolbar button (auto-shown when a trusted device exists).
+- `scripts/file_sync_probe.py` — headless serve/preview/get probe for cross-machine
+  validation.
 
-## Git interaction
-- Only untracked files sync (scope subtracts `git ls-files`) — never touches `.git`/index/tracked.
-- Branch-independent; no sync during an in-progress git op.
+## Safety
 
-## Robustness
-- Both machines online; no peer → "peer not found", nothing changes. User-initiated only.
-- Pairing is the identity guard. Atomic + resumable; `.deleted/` recovers wrong-direction mistakes.
-- **Serving requires the peer's Project Manager running** (dispatch on) — the machine-level broker
-  lives in the PM; the project's workspace need not be open (serves any registered project by id).
+- Only untracked files sync — never fights git or touches `.git`/index/tracked files.
+- Skips a Get while a git merge/rebase/cherry-pick/revert is in progress.
+- `.deleted/` is auto-added to `.gitignore` and never synced; "Empty .deleted/" clears it.
+- Per-file atomic apply + resumable; pairing (bearer token) is the identity guard;
+  transfers are LAN-only.
 
-## Phasing
-1. **Local core** — `share_spec` + `file_index` + mirror `diff`/apply + `.deleted/`. Unit-testable.
-2. **Transport** — manifest + fetch tar-stream + pull-request + sandbox, `project_id`-addressed.
-3. **UI** — Files-section button → preview (peer/direction/counts) → progress → apply.
-4. **Polish** — `.deleted/` `.gitignore` guard + "Empty" action, statuses, `.shared` live re-resolve,
-   in-git-op guard.
+## Tests
 
-## Verification
-- **Unit**: resolver (negation, `shared/`, `.git`/`.deleted`/tracked excluded, `_SKIP_DIRS` pruned);
-  index (stat-cache hit / rehash / schema bump); `diff`+apply (Get pulls, only_local→`.deleted/`,
-  overwrite backed up, recovery restores); loopback round-trip both directions.
-- **E2E (canary)**: `shared/` codeword file A→B via Sync files (Get); delete on A → lands in B's
-  `.deleted/`; Give A→B; tracked/`node_modules`/`.venv`/`.git` never transfer; `.deleted/` gitignored.
-- **Offline**: peer off → "peer not found", no change.
-- **Regression**: `tests/test_sync_*` stay green (untouched `sync_repo`/metadata base).
+20 file-sync tests (`tests/test_file_sync*.py`): resolver (negation / skip-dirs /
+git-tracked / `.git`&`.deleted` exclusion), index stat-cache, diff/plan/apply +
+`.deleted` recovery, wire round-trip, a live loopback broker (manifest / streamed
+fetch / sandbox / auth), full loopback Get (mirror + `.deleted`), mutual-pairing
+callback storage, and the git-guard / gitignore / trash helpers. Suite green apart
+from a pre-existing keyring env failure.
