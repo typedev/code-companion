@@ -22,7 +22,6 @@ from ..services import file_sync_service as svc  # noqa: E402
 from ..services.device_identity import get_device_id  # noqa: E402
 from ..services.dispatch_discovery import DispatchBrowser  # noqa: E402
 from ..services.remote_tokens import RemoteTokens  # noqa: E402
-from ..services.settings_service import SettingsService  # noqa: E402
 from ..services.toast_service import ToastService  # noqa: E402
 from ..utils.project_identity import resolve_project_identity  # noqa: E402
 
@@ -38,7 +37,6 @@ class FileSyncDialog:
         self._on_synced = on_synced  # called on the main thread after a Get applies
 
         self._device_id = get_device_id()
-        self._broker_port = int(SettingsService.get_instance().get("dispatch.port", 47100))
         self._tokens = RemoteTokens()
 
         self._project_id: str | None = None
@@ -143,16 +141,14 @@ class FileSyncDialog:
         box.append(self._warn_label)
 
         dialog.set_extra_child(box)
-        dialog.add_response("get", "⭠ Get from device")
-        dialog.add_response("give", "⭒ Give to device")
-        dialog.set_response_appearance("give", Adw.ResponseAppearance.DESTRUCTIVE)
+        dialog.add_response("get", "Get files")
+        dialog.set_response_appearance("get", Adw.ResponseAppearance.SUGGESTED)
         self._set_actions_enabled(False)
         self._refresh_preview()
 
     def _set_actions_enabled(self, enabled: bool) -> None:
         if self._dialog is not None:
             self._dialog.set_response_enabled("get", enabled)
-            self._dialog.set_response_enabled("give", enabled)
 
     def _selected_peer(self) -> svc.Peer | None:
         if self._dropdown is None:
@@ -199,11 +195,8 @@ class FileSyncDialog:
             self._set_actions_enabled(False)
             return False
 
-        get, give = preview.get, preview.give
-        self._counts_label.set_text(
-            f"⭠ Get: fetch {len(get.fetch)} file(s)\n"
-            f"⭒ Give: send {len(give.fetch)} file(s)"
-        )
+        get = preview.get
+        self._counts_label.set_text(f"Get will fetch {len(get.fetch)} file(s) from this device.")
         if get.destructive_count:
             self._warn_label.set_text(
                 f"Get will overwrite/remove {get.destructive_count} local file(s) "
@@ -218,8 +211,6 @@ class FileSyncDialog:
     def _on_response(self, dialog, response) -> None:
         if response == "get":
             self._start_get()
-        elif response == "give":
-            self._start_give()
         # any response closes the selection dialog
         if self._browser:
             self._browser.stop()
@@ -291,30 +282,4 @@ class FileSyncDialog:
             )
             if self._on_synced is not None:
                 self._on_synced()
-        return False
-
-    # -- Give ----------------------------------------------------------------
-    def _start_give(self) -> None:
-        peer = self._selected_peer()
-        if peer is None or self._project_id is None:
-            return
-        project_id = self._project_id
-
-        def worker():
-            try:
-                svc.request_give(
-                    project_id, peer,
-                    my_device_id=self._device_id, my_broker_port=self._broker_port,
-                )
-                GLib.idle_add(self._give_done, peer.name, None)
-            except Exception as exc:
-                GLib.idle_add(self._give_done, peer.name, str(exc))
-
-        threading.Thread(target=worker, daemon=True).start()
-
-    def _give_done(self, name, error) -> bool:
-        if error:
-            ToastService.show(f"Give failed: {error}")
-        else:
-            ToastService.show(f"Asked {name} to pull — it will sync in the background")
         return False
