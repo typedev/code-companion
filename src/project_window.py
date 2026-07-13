@@ -907,6 +907,14 @@ class ProjectWindow(Adw.ApplicationWindow):
         self.show_ignored_btn.connect("toggled", self._on_show_ignored_toggled)
         header_box.append(self.show_ignored_btn)
 
+        # Sync files with a paired LAN device (mirror the .shared/shared/ set)
+        sync_files_btn = Gtk.Button()
+        sync_files_btn.set_icon_name("folder-remote-symbolic")
+        sync_files_btn.add_css_class("flat")
+        sync_files_btn.set_tooltip_text("Sync files with a device on the network")
+        sync_files_btn.connect("clicked", self._on_sync_files_clicked)
+        header_box.append(sync_files_btn)
+
         # Refresh button
         refresh_btn = Gtk.Button()
         refresh_btn.set_icon_name("view-refresh-symbolic")
@@ -1697,6 +1705,14 @@ class ProjectWindow(Adw.ApplicationWindow):
     def _on_refresh_files_clicked(self, button):
         """Refresh file tree."""
         self.file_tree.refresh()
+
+    def _on_sync_files_clicked(self, button):
+        """Open the LAN 'Sync files' dialog for this project."""
+        from .widgets.file_sync_dialog import FileSyncDialog
+
+        FileSyncDialog(
+            self, self.project_path, on_synced=self.file_tree.refresh
+        ).present()
 
     def _on_show_ignored_toggled(self, button):
         """Toggle showing ignored files in file tree."""
