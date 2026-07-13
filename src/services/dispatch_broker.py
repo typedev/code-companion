@@ -180,7 +180,32 @@ class DispatchBroker:
         finally:
             loop.close()
 
+    async def _await_ports_free(self, timeout: float = 8.0) -> None:
+        """Wait for both ports to be bindable.
+
+        A quick disable/enable or PM restart can leave the previous broker's
+        sockets held for a moment; without this the fresh broker would hit
+        "address already in use", die silently, and never retry — leaving the
+        machine invisible on the LAN. Poll until free (or give up and try anyway).
+        """
+        import socket as _socket
+
+        def free(port: int) -> bool:
+            try:
+                with _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM) as probe:
+                    probe.setsockopt(_socket.SOL_SOCKET, _socket.SO_REUSEADDR, 1)
+                    probe.bind(("0.0.0.0", port))
+                return True
+            except OSError:
+                return False
+
+        for _ in range(max(1, int(timeout / 0.3))):
+            if free(self.http_port) and free(self.pty_port):
+                return
+            await asyncio.sleep(0.3)
+
     async def _amain(self) -> None:
+        await self._await_ports_free()
         # start_server begins accepting immediately; it needs no serve_forever(),
         # so uvicorn's server.serve() is the only thing we block on. That lets
         # should_exit shut everything down gracefully (no CancelledError storm).
