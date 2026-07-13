@@ -54,6 +54,7 @@ class FileSyncDialog:
         self._progress_dialog: Adw.AlertDialog | None = None
         self._progress_bar: Gtk.ProgressBar | None = None
         self._cancelled = False
+        self._get_finished = False  # guards the progress dialog's close vs a real cancel
 
     # -- entry ---------------------------------------------------------------
     def present(self) -> None:
@@ -233,7 +234,11 @@ class FileSyncDialog:
         pd = self._selected_peer_dict()
         if pd is None or self._project_id is None:
             return
+        if svc.git_operation_in_progress(str(self._project_path)):
+            ToastService.show("Finish the in-progress git operation before syncing files")
+            return
         self._cancelled = False
+        self._get_finished = False
         name = pd.get("name", "device")
         self._present_progress(f"Getting files from {name}…")
 
@@ -270,7 +275,7 @@ class FileSyncDialog:
         dlg.set_heading(heading)
         dlg.add_response("cancel", "Cancel")
         dlg.set_close_response("cancel")
-        dlg.connect("response", lambda *_: setattr(self, "_cancelled", True))
+        dlg.connect("response", self._on_progress_response)
         bar = Gtk.ProgressBar()
         bar.set_show_text(True)
         bar.set_text("Preparing…")
@@ -295,7 +300,14 @@ class FileSyncDialog:
         self._progress_bar.set_text(f"{done} / {total}")
         return False
 
+    def _on_progress_response(self, dialog, response) -> None:
+        # Only a *user* Cancel counts — programmatic close() after success also
+        # fires this with the close response, so ignore it once we've finished.
+        if not self._get_finished:
+            self._cancelled = True
+
     def _get_done(self, result, error) -> bool:
+        self._get_finished = True
         if self._progress_dialog is not None:
             self._progress_dialog.close()
             self._progress_dialog = None

@@ -12,7 +12,9 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 
+from ..utils.atomic_write import atomic_write_text
 from . import dispatch_api
 from .file_sync import file_index
 from .file_sync.file_sync_engine import (
@@ -62,6 +64,34 @@ def default_stamp() -> str:
     return datetime.now().strftime("%Y%m%d-%H%M%S")
 
 
+def git_operation_in_progress(project_path: str) -> bool:
+    """True if a git merge/rebase/cherry-pick/revert is mid-flight in this repo.
+
+    We skip file-sync then so we never apply onto a transient tree. Linked
+    worktrees (``.git`` is a file) are treated leniently (guard skipped).
+    """
+    git = Path(project_path) / ".git"
+    if not git.is_dir():
+        return False
+    markers = ("MERGE_HEAD", "rebase-merge", "rebase-apply", "CHERRY_PICK_HEAD", "REVERT_HEAD")
+    return any((git / m).exists() for m in markers)
+
+
+def ensure_deleted_gitignored(project_path: str) -> None:
+    """Make sure ``.deleted/`` is in the project's ``.gitignore`` (the trash is
+    machine-local and must never be committed). Idempotent, best-effort."""
+    gitignore = Path(project_path) / ".gitignore"
+    entry = ".deleted/"
+    try:
+        existing = gitignore.read_text(encoding="utf-8") if gitignore.exists() else ""
+        if entry in [line.strip() for line in existing.splitlines()]:
+            return
+        prefix = existing if (not existing or existing.endswith("\n")) else existing + "\n"
+        atomic_write_text(gitignore, prefix + entry + "\n")
+    except OSError:
+        pass
+
+
 def build_preview(local_path: str, project_id: str, peer: Peer) -> SyncPreview:
     """Fetch the peer manifest, build the local one, and diff — no changes made."""
     remote = dispatch_api.fetch_manifest(peer.host, peer.port, peer.token, project_id)
@@ -88,6 +118,8 @@ def run_get(
     local = file_index.build_manifest(local_path)
     plan = plan_get(diff_manifests(local, remote), local)
 
+    if plan.remove or plan.overwrite:
+        ensure_deleted_gitignored(local_path)  # the trash must never be committed
     prepare_trash(local_path, plan, stamp)  # recoverable safety net before writing
 
     total = len(plan.fetch)

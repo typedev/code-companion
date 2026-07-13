@@ -3,6 +3,7 @@
 import subprocess
 from pathlib import Path
 
+from src.services import file_sync_service as svc
 from src.services.file_sync import file_index, file_sync_engine as E, share_spec
 
 
@@ -147,6 +148,28 @@ def test_apply_get_backs_up_then_writes(tmp_path):
     # both destroyed local versions recoverable from .deleted/
     assert (root / ".deleted" / "STAMP" / "onlyL.txt").read_text() == "local-only"
     assert (root / ".deleted" / "STAMP" / "changed.txt").read_text() == "old-local"
+
+
+def test_git_operation_in_progress(tmp_path):
+    (tmp_path / ".git").mkdir()
+    assert svc.git_operation_in_progress(str(tmp_path)) is False
+    (tmp_path / ".git" / "MERGE_HEAD").write_text("x", encoding="utf-8")
+    assert svc.git_operation_in_progress(str(tmp_path)) is True
+
+
+def test_ensure_deleted_gitignored(tmp_path):
+    gi = tmp_path / ".gitignore"
+    # no gitignore -> created with the entry
+    svc.ensure_deleted_gitignored(str(tmp_path))
+    assert ".deleted/" in gi.read_text().splitlines()
+    # idempotent -> no duplicate
+    svc.ensure_deleted_gitignored(str(tmp_path))
+    assert gi.read_text().count(".deleted/") == 1
+    # appends to an existing gitignore, preserving prior lines
+    gi.write_text("node_modules/\n", encoding="utf-8")
+    svc.ensure_deleted_gitignored(str(tmp_path))
+    lines = gi.read_text().splitlines()
+    assert "node_modules/" in lines and ".deleted/" in lines
 
 
 def test_apply_get_new_file_needs_no_backup(tmp_path):
