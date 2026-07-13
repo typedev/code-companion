@@ -113,21 +113,21 @@ class SessionInsightService:
     def get_latest_insight(
         self, adapter, project_path, project_id: str | None = None
     ) -> SessionInsight | None:
-        """Insight for the most recently active session (newest mtime), or None."""
+        """Insight for the most recently active session, or None.
+
+        Ranks by in-file last activity, not filesystem mtime: sync rewrites
+        session files when merging in remote content, which resets their mtime to
+        "now" and would make a stale synced session outrank the live one. The
+        adapter returns them already sorted most-recent-first by in-file activity
+        (matching native ``/resume``), so the first element is the right pick.
+        """
         sessions = adapter.get_sessions_for_path(Path(project_path))
         if not sessions:
             return None
-        newest = max(sessions, key=self._session_mtime)
+        newest = sessions[0]
         return self.get_insight(newest, adapter, project_path, project_id)
 
     # -- internals --------------------------------------------------------
-
-    @staticmethod
-    def _session_mtime(session: Session) -> float:
-        try:
-            return session.path.stat().st_mtime
-        except OSError:
-            return 0.0
 
     @staticmethod
     def _cached(index: dict, session: Session, stat) -> SessionInsight | None:
