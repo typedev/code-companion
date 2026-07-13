@@ -98,6 +98,26 @@ def normalize_remote_url(url: str) -> str:
     return f"{host}/{path}".strip("/")
 
 
+def credential_key(remote_url: str) -> str:
+    """Return the identity under which credentials for ``remote_url`` are stored.
+
+    Access tokens (GitHub/GitLab PATs, and the git credential-store helper) are
+    scoped per **host**, not per repository — one token authenticates every repo on
+    the host. So http(s) remotes key by bare host (``github.com``), matching the
+    granularity the plaintext store helper already uses (``protocol``/``host``) and
+    the "Connect" repo picker (which stores before any repo is chosen). Non-http(s)
+    remotes fall back to the full ``host/owner/repo`` identity.
+
+    This is deliberately distinct from :func:`normalize_remote_url` (the project
+    identity used for sync), which must stay per-repo.
+    """
+    if _is_http_remote(remote_url):
+        host = (urllib.parse.urlparse(remote_url.strip()).hostname or "").lower()
+        if host:
+            return host
+    return normalize_remote_url(remote_url)
+
+
 def _credential_cwd(repo_path: str | Path | None) -> str | None:
     """Return an existing directory to run ``git credential`` in.
 

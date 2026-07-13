@@ -9,13 +9,22 @@ EventControllerKey.
 from gi.repository import Gtk, Adw
 
 
-def show_github_credentials_dialog(parent: Gtk.Widget, remote_url: str, on_credentials):
-    """Prompt for GitHub credentials (PAT) and invoke ``on_credentials((user, pat))``.
+def show_github_credentials_dialog(
+    parent: Gtk.Widget, remote_url: str, on_credentials, *, show_remember: bool = False
+):
+    """Prompt for GitHub credentials (PAT) and invoke ``on_credentials(creds, remember)``.
+
+    This is the single credential prompt for the whole app (clone, push, pull, repo
+    picker, issues). Persistence goes through :class:`CredentialService`.
 
     Args:
         parent: Any widget inside the window (used to find the root for present()).
         remote_url: The remote URL shown to the user.
-        on_credentials: Callback receiving a (username, password) tuple on submit.
+        on_credentials: Callback receiving a ``((username, password), remember)`` pair
+            on submit. ``remember`` is the checkbox state, or ``True`` when the
+            checkbox is hidden (``show_remember=False``) — preserving the prior
+            unconditional-store behavior for callers that don't opt in.
+        show_remember: Show a "Remember" opt-in checkbox (for git clone/push/pull).
     """
     dialog = Adw.AlertDialog()
     dialog.set_heading("GitHub Authentication Required")
@@ -55,6 +64,20 @@ def show_github_credentials_dialog(parent: Gtk.Widget, remote_url: str, on_crede
     hint.set_xalign(0)
     box.append(hint)
 
+    # Opt-in persistence. Default on where a keyring exists; otherwise it would fall
+    # back to the plaintext store, so default off and say so.
+    remember_check = None
+    if show_remember:
+        from ..services.credential_service import CredentialService
+
+        keyring = CredentialService.get_instance().available()
+        remember_check = Gtk.CheckButton(
+            label="Remember in keyring" if keyring
+            else "Remember (plaintext — no keyring found)"
+        )
+        remember_check.set_active(keyring)
+        box.append(remember_check)
+
     dialog.set_extra_child(box)
 
     dialog.add_response("cancel", "Cancel")
@@ -68,7 +91,8 @@ def show_github_credentials_dialog(parent: Gtk.Widget, remote_url: str, on_crede
             username = username_entry.get_text().strip()
             password = password_entry.get_text()
             if username and password:
-                on_credentials((username, password))
+                remember = remember_check.get_active() if remember_check else True
+                on_credentials((username, password), remember)
 
     dialog.connect("response", on_response)
     dialog.present(parent.get_root())

@@ -1404,7 +1404,8 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
         show_github_credentials_dialog(self, remote_url, self._retry_refresh_with_credentials)
         return False
 
-    def _retry_refresh_with_credentials(self, credentials: tuple[str, str]):
+    def _retry_refresh_with_credentials(self, credentials: tuple[str, str],
+                                        _remember: bool = True):
         self._on_refresh_clicked(None, credentials=credentials)
 
     def _on_refresh_done(self):
@@ -1492,7 +1493,8 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
         show_github_credentials_dialog(self, remote_url, self._retry_sync_with_credentials)
         return False
 
-    def _retry_sync_with_credentials(self, credentials: tuple[str, str]):
+    def _retry_sync_with_credentials(self, credentials: tuple[str, str],
+                                     _remember: bool = True):
         self._on_sync_clicked(None, credentials=credentials)
 
     def _on_sync_done(self, result):
@@ -1687,7 +1689,7 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
         show_github_credentials_dialog(
             self,
             remote_url,
-            lambda creds: self._run_restore(entries, base, credentials=creds),
+            lambda creds, _remember: self._run_restore(entries, base, credentials=creds),
         )
         return False
 
@@ -2242,7 +2244,9 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
             threading.Thread(target=worker, daemon=True).start()
 
         def on_connect(_b):
-            def got(creds):
+            def got(creds, _remember):
+                # Connecting to list repos requires the token, so store it (best-effort)
+                # regardless of the clone checkbox — that is the point of "Connect".
                 try:
                     CredentialService.get_instance().store(
                         "https://github.com", creds[0], creds[1]
@@ -2269,12 +2273,23 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
         dest_row.append(choose_btn)
         box.append(dest_row)
 
+        # Opt-in credential persistence (same store/UX as push/pull). Default on where
+        # a keyring exists; else it falls back to the plaintext store, so default off.
+        keyring = CredentialService.get_instance().available()
+        remember_check = Gtk.CheckButton(
+            label="Remember credentials" if keyring
+            else "Remember credentials (plaintext — no keyring found)"
+        )
+        remember_check.set_active(keyring)
+        box.append(remember_check)
+
         dialog.set_extra_child(box)
         dialog.add_response("cancel", "Cancel")
         dialog.add_response("clone", "Clone")
         dialog.set_response_appearance("clone", Adw.ResponseAppearance.SUGGESTED)
         dialog.set_default_response("clone")
-        dialog.connect("response", self._on_clone_response, url_entry, name_entry, dest_holder)
+        dialog.connect("response", self._on_clone_response, url_entry, name_entry,
+                       dest_holder, remember_check)
         dialog.present(self)
 
     @staticmethod
@@ -2321,7 +2336,8 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
 
         fd.select_folder(self, None, done)
 
-    def _on_clone_response(self, _dialog, response, url_entry, name_entry, dest_holder):
+    def _on_clone_response(self, _dialog, response, url_entry, name_entry, dest_holder,
+                           remember_check):
         if response != "clone":
             return
         url = url_entry.get_text().strip()
@@ -2333,7 +2349,7 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
             ToastService.show_error("Choose a destination folder")
             return
         name = name_entry.get_text().strip() or self._clone_name_from_url(url)
-        self._start_clone(url, parent, name)
+        self._start_clone(url, parent, name, remember=remember_check.get_active())
 
     @staticmethod
     def _clone_name_from_url(url: str) -> str:
@@ -2342,7 +2358,7 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
             base = base[:-4]
         return base or "repo"
 
-    def _start_clone(self, url, parent, name, credentials=None):
+    def _start_clone(self, url, parent, name, credentials=None, remember=True):
         target = Path(parent) / name
         n = 2
         while target.exists():
@@ -2357,7 +2373,8 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
             def progress(msg):
                 GLib.idle_add(label.set_text, f"Cloning {name}… {msg[:40]}")
             try:
-                GitService.clone(url, target, credentials=credentials, progress=progress)
+                GitService.clone(url, target, credentials=credentials, progress=progress,
+                                 remember=remember)
                 GLib.idle_add(self._on_clone_done, target, name, row)
             except AuthenticationRequired as exc:
                 GLib.idle_add(self._on_clone_auth, url, parent, name, exc.remote_url, row)
@@ -2396,7 +2413,9 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
         self.project_list.remove(row)
         show_github_credentials_dialog(
             self, remote_url,
-            lambda creds: self._start_clone(url, parent, name, credentials=creds),
+            lambda creds, remember: self._start_clone(
+                url, parent, name, credentials=creds, remember=remember),
+            show_remember=True,
         )
         return False
 

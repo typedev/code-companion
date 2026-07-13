@@ -360,5 +360,6 @@ class IssueDetailView(Gtk.Box):
         self._busy = False
         self.state_btn.set_sensitive(True)
         show_github_credentials_dialog(
-            self, remote_url, lambda creds: self._set_state(new_state, credentials=creds)
+            self, remote_url,
+            lambda creds, _remember: self._set_state(new_state, credentials=creds)
         )

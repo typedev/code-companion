@@ -1088,79 +1088,19 @@ class GitChangesPanel(Gtk.Box):
         self._show_credentials_dialog(operation, remote_url, retry_callback)
 
     def _show_credentials_dialog(self, operation: str, remote_url: str, retry_callback):
-        """Show dialog to get git credentials."""
-        dialog = Adw.AlertDialog()
-        dialog.set_heading("Authentication Required")
-        dialog.set_body(f"Enter credentials for {remote_url}")
+        """Prompt for git credentials via the shared, app-wide credential dialog.
 
-        # Create form
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
-        box.set_margin_start(12)
-        box.set_margin_end(12)
+        Captures the "Remember" opt-in into ``self._remember_creds`` (consumed by
+        push/pull) and adapts the shared ``(creds, remember)`` callback back to this
+        panel's single-arg ``retry_callback(credentials)`` contract.
+        """
+        from .github_auth import show_github_credentials_dialog
 
-        # Username entry
-        username_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        username_label = Gtk.Label(label="Username:")
-        username_label.set_xalign(0)
-        username_label.set_size_request(80, -1)
-        username_box.append(username_label)
+        def on_creds(credentials, remember):
+            self._remember_creds = remember
+            retry_callback(credentials)
 
-        username_entry = Gtk.Entry()
-        username_entry.set_hexpand(True)
-        username_box.append(username_entry)
-        box.append(username_box)
-
-        # Password entry
-        password_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        password_label = Gtk.Label(label="Password:")
-        password_label.set_xalign(0)
-        password_label.set_size_request(80, -1)
-        password_box.append(password_label)
-
-        password_entry = Gtk.PasswordEntry()
-        password_entry.set_hexpand(True)
-        password_entry.set_show_peek_icon(True)
-        password_box.append(password_entry)
-        box.append(password_box)
-
-        # Hint about tokens
-        hint = Gtk.Label(label="Tip: For GitHub, use a Personal Access Token as password")
-        hint.add_css_class("dim-label")
-        hint.add_css_class("caption")
-        hint.set_wrap(True)
-        hint.set_xalign(0)
-        box.append(hint)
-
-        # Opt-in persistence (roadmap 3.7). Default on where a keyring exists;
-        # otherwise it would fall back to the plaintext store, so default off.
-        from ..services.credential_service import CredentialService
-        keyring = CredentialService.get_instance().available()
-        remember_check = Gtk.CheckButton(
-            label="Remember in keyring" if keyring else "Remember (plaintext — no keyring found)"
-        )
-        remember_check.set_active(keyring)
-        box.append(remember_check)
-
-        dialog.set_extra_child(box)
-
-        dialog.add_response("cancel", "Cancel")
-        dialog.add_response("authenticate", operation)
-        dialog.set_response_appearance("authenticate", Adw.ResponseAppearance.SUGGESTED)
-        dialog.set_default_response("authenticate")
-        dialog.set_close_response("cancel")
-
-        def on_response(d, response):
-            if response == "authenticate":
-                username = username_entry.get_text().strip()
-                password = password_entry.get_text()
-                if username and password:
-                    self._remember_creds = remember_check.get_active()
-                    retry_callback((username, password))
-                else:
-                    self._show_error("Username and password are required")
-
-        dialog.connect("response", on_response)
-        dialog.present(self.get_root())
+        show_github_credentials_dialog(self, remote_url, on_creds, show_remember=True)
 
     def _on_branch_switched(self, popover):
         """Handle branch switch - refresh and notify."""

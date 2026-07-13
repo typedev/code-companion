@@ -976,15 +976,27 @@ class GitService:
             raise RuntimeError(result.stderr.strip() or result.stdout.strip() or "Stash drop failed")
 
     @staticmethod
-    def clone(url: str, dest: str, credentials=None, progress=None) -> None:
+    def clone(url: str, dest: str, credentials=None, progress=None,
+              remember: bool = True) -> None:
         """Clone ``url`` into ``dest`` (git CLI, --progress).
 
         ``progress`` is called with each git progress line (from stderr). Raises
         ``AuthenticationRequired`` on an auth failure, ``RuntimeError`` otherwise.
         Does not register the project — the caller decides what to do on success.
+
+        Credentials go through the same single store as push/pull
+        (:class:`CredentialService`): when none are passed for an http(s) remote a
+        stored/host token is looked up first (so a token entered once — e.g. via the
+        repo picker — is reused without re-prompting), and on a successful clone the
+        credentials are persisted when ``remember`` is set.
         """
+        from .credential_service import CredentialService
+
         dest = str(dest)
         parent = str(Path(dest).parent)
+        # Reuse an already-stored host token instead of prompting again.
+        if not credentials and url.lower().startswith(("http://", "https://")):
+            credentials = CredentialService.get_instance().lookup(url, parent)
         env, askpass = git_auth.build_auth_env(url, credentials, parent)
         stderr_lines: list[str] = []
         proc = None
@@ -1015,6 +1027,10 @@ class GitService:
             if git_auth.is_auth_error(error):
                 raise AuthenticationRequired(error, url)
             raise RuntimeError(error or "Clone failed")
+        # Success: persist the credentials that worked, if the user opted in.
+        if credentials and remember:
+            username, password = credentials
+            CredentialService.get_instance().store(url, username, password, parent)
 
     def delete_branch(self, name: str, force: bool = False) -> None:
         """Delete a branch.

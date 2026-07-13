@@ -232,7 +232,7 @@ class IssuesPanel(Gtk.Box):
         )
         show_github_credentials_dialog(self, remote_url, self._retry_with_credentials)
 
-    def _retry_with_credentials(self, credentials):
+    def _retry_with_credentials(self, credentials, _remember=True):
         self.refresh(credentials=credentials)
 
     # ------------------------------------------------------------------
@@ -446,5 +446,6 @@ class IssuesPanel(Gtk.Box):
 
     def _on_create_auth_required(self, title: str, body: str, remote_url: str):
         show_github_credentials_dialog(
-            self, remote_url, lambda creds: self._create_issue(title, body, credentials=creds)
+            self, remote_url,
+            lambda creds, _remember: self._create_issue(title, body, credentials=creds)
         )

@@ -4,7 +4,9 @@ Git HTTPS credentials used to be persisted, silently and unconditionally, in
 plaintext at ``~/.git-credentials`` (git's ``credential.helper=store``). This
 service stores them in the desktop keyring (gnome-keyring / KWallet via the
 Secret Service API) instead — encrypted at rest, unlocked with the login
-session — keyed per-remote via :func:`git_auth.normalize_remote_url`.
+session — keyed per-host via :func:`git_auth.credential_key` (access tokens are
+host-scoped, so one entry serves every repo on a host, matching the plaintext
+fallback's granularity).
 
 libsecret is optional. When ``gi.repository.Secret`` isn't importable (or the
 keyring is unavailable), :meth:`CredentialService.available` is False and every
@@ -58,7 +60,7 @@ class CredentialService:
         """Persist credentials for ``remote_url`` (keyring if available, else store helper)."""
         if _SECRET_OK:
             try:
-                key = git_auth.normalize_remote_url(remote_url)
+                key = git_auth.credential_key(remote_url)
                 Secret.password_store_sync(
                     _SCHEMA, {"remote": key}, Secret.COLLECTION_DEFAULT,
                     f"Code Companion — git {key}", f"{username}\n{password}", None,
@@ -78,7 +80,7 @@ class CredentialService:
         """
         if _SECRET_OK:
             try:
-                key = git_auth.normalize_remote_url(remote_url)
+                key = git_auth.credential_key(remote_url)
                 value = Secret.password_lookup_sync(_SCHEMA, {"remote": key}, None)
                 if value and "\n" in value:
                     username, password = value.split("\n", 1)
