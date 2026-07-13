@@ -15,6 +15,7 @@ those via sync/cloud.
 from __future__ import annotations
 
 import threading
+from pathlib import Path
 
 import gi
 
@@ -22,53 +23,95 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 gi.require_version("GtkSource", "5")
 
-from gi.repository import Adw, GLib, GtkSource, Gtk
+from gi.repository import Adw, Gio, GLib, GtkSource, Gtk
 
 from ..services import dispatch_api
 from ..services.settings_service import SettingsService
 from .code_view import DiffView, get_language_for_file
 
+# Material Design SVG icons (same set the workspace sidebar uses).
+_ICON_DIR = Path(__file__).resolve().parent.parent / "resources" / "icons"
+
 
 class RemotePanels(Gtk.Box):
+    # (page name, Material icon file stem, tooltip) — mirrors the workspace bar.
+    _TABS = [
+        ("changes", "git", "Changes"),
+        ("files", "folder-open", "Files"),
+        ("problems", "problems", "Problems"),
+    ]
+
     def __init__(self, host: str, http_port: int, token: str, session: str):
-        super().__init__(orientation=Gtk.Orientation.VERTICAL)
+        # Horizontal: [vertical activity toolbar][separator][stack] — the
+        # standard-workspace sidebar layout.
+        super().__init__(orientation=Gtk.Orientation.HORIZONTAL)
         self._host = host
         self._port = http_port
         self._token = token
         self._session = session
         self._loaded: set[str] = set()
         self._all_files: list[str] = []
+        self.set_size_request(300, -1)
 
-        self._stack = Adw.ViewStack()
-        self._changes = self._build_changes_page()
-        self._files = self._build_files_page()
-        self._problems = self._build_problems_page()
-        self._stack.add_titled_with_icon(self._changes, "changes", "Changes", "document-edit-symbolic")
-        self._stack.add_titled_with_icon(self._files, "files", "Files", "folder-open-symbolic")
-        self._stack.add_titled_with_icon(self._problems, "problems", "Problems", "dialog-warning-symbolic")
+        self._stack = Gtk.Stack()
+        self._stack.set_transition_type(Gtk.StackTransitionType.CROSSFADE)
+        self._stack.set_hexpand(True)
+        self._stack.set_vexpand(True)
+        self._stack.add_named(self._build_changes_page(), "changes")
+        self._stack.add_named(self._build_files_page(), "files")
+        self._stack.add_named(self._build_problems_page(), "problems")
 
-        switcher = Adw.ViewSwitcher()
-        switcher.set_stack(self._stack)
-        switcher.set_policy(Adw.ViewSwitcherPolicy.WIDE)
-        switcher.set_hexpand(True)
-
+        toolbar = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        toolbar.set_margin_top(6)
+        toolbar.set_margin_start(4)
+        toolbar.set_margin_end(4)
+        self._buttons: dict[str, Gtk.ToggleButton] = {}
+        for name, icon, tip in self._TABS:
+            btn = self._make_toolbar_button(icon, tip, name)
+            toolbar.append(btn)
+            self._buttons[name] = btn
+        spacer = Gtk.Box()
+        spacer.set_vexpand(True)
+        toolbar.append(spacer)
         refresh = Gtk.Button(icon_name="view-refresh-symbolic")
         refresh.add_css_class("flat")
+        refresh.set_size_request(36, 36)
         refresh.set_tooltip_text("Reload")
+        refresh.set_margin_bottom(6)
         refresh.connect("clicked", lambda _b: self.refresh())
+        toolbar.append(refresh)
 
-        top = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-        top.set_margin_top(6)
-        top.set_margin_bottom(6)
-        top.set_margin_start(6)
-        top.set_margin_end(6)
-        top.append(switcher)
-        top.append(refresh)
-        self.append(top)
+        self.append(toolbar)
+        self.append(Gtk.Separator(orientation=Gtk.Orientation.VERTICAL))
         self.append(self._stack)
 
         self._stack.connect("notify::visible-child-name", self._on_page_changed)
+        self._buttons["changes"].set_active(True)
         GLib.idle_add(self._ensure_loaded, "changes")
+
+    def _make_toolbar_button(self, icon_name: str, tooltip: str, name: str) -> Gtk.ToggleButton:
+        # Crisp Material SVG, same idiom as project_window._create_toolbar_button.
+        btn = Gtk.ToggleButton()
+        btn.set_tooltip_text(tooltip)
+        btn.add_css_class("flat")
+        btn.set_size_request(36, 36)
+        icon_path = _ICON_DIR / f"{icon_name}.svg"
+        if icon_path.exists():
+            gicon = Gio.FileIcon.new(Gio.File.new_for_path(str(icon_path)))
+            image = Gtk.Image.new_from_gicon(gicon)
+            image.set_pixel_size(20)
+            btn.set_child(image)
+        btn.connect("toggled", self._on_tab_toggled, name)
+        return btn
+
+    def _on_tab_toggled(self, button: Gtk.ToggleButton, name: str) -> None:
+        if button.get_active():
+            self._stack.set_visible_child_name(name)
+            for other, btn in self._buttons.items():  # manual radio group
+                if other != name:
+                    btn.set_active(False)
+        elif not any(b.get_active() for b in self._buttons.values()):
+            button.set_active(True)  # keep one tab always selected
 
     # ------------------------------------------------------------------ #
     # Fetch plumbing

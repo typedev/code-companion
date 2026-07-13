@@ -63,35 +63,38 @@ class RemoteSessionWindow(Adw.ApplicationWindow):
         title_widget.set_subtitle(f"remote · {host}")
         header.set_title_widget(title_widget)
 
-        # Toggle the read-only desktop panels (Changes / Files / Problems).
+        # Sidebar toggle on the start (left), like the workspace.
         self._sidebar_toggle = Gtk.ToggleButton(icon_name="sidebar-show-symbolic")
         self._sidebar_toggle.set_tooltip_text("Desktop panels: Changes, Files, Problems")
         self._sidebar_toggle.set_active(True)
         self._sidebar_toggle.connect("toggled", self._on_sidebar_toggled)
-        header.pack_end(self._sidebar_toggle)
+        header.pack_start(self._sidebar_toggle)
         self._toolbar.add_top_bar(header)
 
-        # Terminal lives in _content (rebuilt on reconnect); panels are a sibling
-        # in the split sidebar, so the terminal lifecycle never touches them.
+        # Left sidebar (panels) + terminal, in a resizable Gtk.Paned — the same
+        # layout as the standard project workspace. The terminal lives in
+        # _content (rebuilt on reconnect); the panels are a sibling, so the
+        # terminal lifecycle never touches them.
         self._content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         self._content.set_vexpand(True)
-
-        self._split = Adw.OverlaySplitView()
-        self._split.set_content(self._content)
-        self._split.set_sidebar_position(Gtk.PackType.END)
         self._panels = RemotePanels(host, self._http_port, token, session)
-        self._split.set_sidebar(self._panels)
-        self._split.set_min_sidebar_width(320)
-        self._split.set_max_sidebar_width(560)
-        self._split.set_show_sidebar(True)
-        self._toolbar.set_content(self._split)
+
+        self._paned = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL)
+        self._paned.set_shrink_start_child(False)
+        self._paned.set_shrink_end_child(False)
+        self._paned.set_resize_start_child(False)
+        self._paned.set_resize_end_child(True)
+        self._paned.set_start_child(self._panels)  # panels on the LEFT
+        self._paned.set_end_child(self._content)    # terminal on the right
+        self._paned.set_position(380)
+        self._toolbar.set_content(self._paned)
         self.set_content(self._toolbar)
 
         self._terminal: TerminalView | None = None
         self._connect()
 
     def _on_sidebar_toggled(self, button: Gtk.ToggleButton) -> None:
-        self._split.set_show_sidebar(button.get_active())
+        self._panels.set_visible(button.get_active())
 
     # ------------------------------------------------------------------ #
     # Connection lifecycle
