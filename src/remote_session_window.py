@@ -2,30 +2,33 @@
 
 This is deliberately *not* a ``ProjectWindow`` (no ProjectLock, GitService,
 FileTree, registry or file monitor — those all assume a real local project
-path). It only hosts a terminal that relays the desktop's tmux session over the
-dispatch PTY bridge, via the ``TerminalView(argv=...)`` seam:
-
-    python -m src.dispatch_client <host> <port> <token> <session>
-
-Read-only MCP panels are added in a later phase; for now the terminal is the
-whole window. Closing it just detaches the relay client — the desktop session
-keeps running.
+path). Layout mirrors the workspace: a left sidebar of read-only navigator
+panels (Changes / Files / Problems) and a main tab area whose first, pinned tab
+is the terminal relaying the desktop's tmux session; activating a file or change
+opens it as a tab beside the terminal. Closing the window just detaches the
+relay client — the desktop session keeps running.
 """
 
 from __future__ import annotations
 
 import sys
+import threading
 from pathlib import Path
 
 import gi
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
+gi.require_version("GtkSource", "5")
 
-from gi.repository import Adw, GLib, Gtk
+from gi.repository import Adw, GLib, GtkSource, Gtk
 
+from .services import dispatch_api
 from .services.icon_cache import IconCache
+from .services.settings_service import SettingsService
+from .services.toast_service import ToastService
 from .widgets import TerminalView
+from .widgets.code_view import DiffView, get_language_for_file
 from .widgets.remote_panels import RemotePanels
 
 _PROJECT_ROOT = str(Path(__file__).resolve().parent.parent)
@@ -66,7 +69,13 @@ class RemoteSessionWindow(Adw.ApplicationWindow):
 
         self._content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         self._content.set_vexpand(True)
-        self._panels = RemotePanels(host, self._http_port, token, session)
+        self._panels = RemotePanels(
+            host, self._http_port, token, session,
+            on_open_file=self.open_file_tab,
+            on_open_diff=self.open_diff_tab,
+        )
+        self._file_page = None  # reused viewer tab (like the workspace git-diff tab)
+        self._diff_page = None
 
         # Header: sidebar toggle + a horizontal linked panel switcher + reload —
         # the same layout the standard workspace uses (switcher in the header).
@@ -94,17 +103,35 @@ class RemoteSessionWindow(Adw.ApplicationWindow):
 
         self._toolbar.add_top_bar(header)
 
-        # Left sidebar (panels) + terminal in a resizable Gtk.Paned — like the
-        # workspace. The terminal lives in _content (rebuilt on reconnect); the
-        # panels are a sibling, so the terminal lifecycle never touches them.
+        # Main area: a tab view like the workspace. The terminal is the first,
+        # pinned tab (lives in _content, rebuilt on reconnect); files/diffs open
+        # as tabs beside it.
+        self._tab_view = Adw.TabView()
+        self._tab_view.set_vexpand(True)
+        self._tab_view.connect("close-page", self._on_tab_close)
+        self._tab_bar = Adw.TabBar()
+        self._tab_bar.set_autohide(False)
+        self._tab_bar.set_view(self._tab_view)
+        main_area = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        main_area.append(self._tab_bar)
+        main_area.append(self._tab_view)
+
+        self._terminal_page = self._tab_view.append(self._content)
+        self._terminal_page.set_title("Terminal")
+        self._tab_view.set_page_pinned(self._terminal_page, True)
+        tgicon = IconCache().get_provider_gicon("claude")
+        if tgicon is not None:
+            self._terminal_page.set_icon(tgicon)
+
+        # Left sidebar (panels) + main tab area in a resizable Gtk.Paned.
         self._paned = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL)
         self._paned.set_shrink_start_child(False)
         self._paned.set_shrink_end_child(False)
         self._paned.set_resize_start_child(False)
         self._paned.set_resize_end_child(True)
         self._paned.set_start_child(self._panels)  # panels on the LEFT
-        self._paned.set_end_child(self._content)    # terminal on the right
-        self._paned.set_position(380)
+        self._paned.set_end_child(main_area)        # tabs on the right
+        self._paned.set_position(320)
         self._toolbar.set_content(self._paned)
         self.set_content(self._toolbar)
 
@@ -139,6 +166,90 @@ class RemoteSessionWindow(Adw.ApplicationWindow):
 
     def _on_sidebar_toggled(self, button: Gtk.ToggleButton) -> None:
         self._panels.set_visible(button.get_active())
+
+    def _on_tab_close(self, tab_view, page) -> bool:
+        # Drop our reused-tab references so a later open re-creates them; let the
+        # default handler actually close the page.
+        if page is self._file_page:
+            self._file_page = None
+        if page is self._diff_page:
+            self._diff_page = None
+        return False
+
+    # ------------------------------------------------------------------ #
+    # Open content as tabs (panels call these; fetch off the GTK thread)
+    # ------------------------------------------------------------------ #
+    def open_file_tab(self, path: str) -> None:
+        def work() -> None:
+            try:
+                data = dispatch_api.read_file(self._host, self._http_port, self._token, self._session, path)
+            except dispatch_api.DispatchError as exc:
+                data = {"ok": False, "error": str(exc)}
+            GLib.idle_add(self._show_file_tab, path, data)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _show_file_tab(self, path: str, data: dict) -> bool:
+        if not data.get("ok"):
+            ToastService.show_error(f"Dispatch: {data.get('error', 'could not read file')}")
+            return False
+        if data.get("binary"):
+            ToastService.show(f"{path} — binary file")
+            return False
+        view = self._make_source_view(data.get("content", ""), path, bool(data.get("truncated")))
+        if self._file_page is not None:
+            self._tab_view.close_page(self._file_page)
+        self._file_page = self._tab_view.append(view)
+        self._file_page.set_title(Path(path).name)
+        self._file_page.set_tooltip(path)
+        self._tab_view.set_selected_page(self._file_page)
+        return False
+
+    def open_diff_tab(self, path: str, staged: bool) -> None:
+        def work() -> None:
+            try:
+                data = dispatch_api.get_file_diff(self._host, self._http_port, self._token, self._session, path, staged)
+            except dispatch_api.DispatchError as exc:
+                data = {"ok": False, "error": str(exc)}
+            GLib.idle_add(self._show_diff_tab, path, staged, data)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _show_diff_tab(self, path: str, staged: bool, data: dict) -> bool:
+        if not data.get("ok"):
+            ToastService.show_error(f"Dispatch: {data.get('error', 'could not load diff')}")
+            return False
+        view = DiffView(data.get("old", ""), data.get("new", ""), file_path=path)
+        view.set_vexpand(True)
+        if self._diff_page is not None:
+            self._tab_view.close_page(self._diff_page)
+        self._diff_page = self._tab_view.append(view)
+        self._diff_page.set_title(("[staged] " if staged else "") + Path(path).name)
+        self._diff_page.set_tooltip(path)
+        self._tab_view.set_selected_page(self._diff_page)
+        return False
+
+    def _make_source_view(self, content: str, path: str, truncated: bool) -> Gtk.Widget:
+        buf = GtkSource.Buffer()
+        lang_id = get_language_for_file(path)
+        if lang_id:
+            lang = GtkSource.LanguageManager.get_default().get_language(lang_id)
+            if lang:
+                buf.set_language(lang)
+        scheme_id = SettingsService.get_instance().get("appearance.syntax_scheme", "Adwaita-dark")
+        scheme = GtkSource.StyleSchemeManager.get_default().get_scheme(scheme_id)
+        if scheme:
+            buf.set_style_scheme(scheme)
+        buf.set_text(content + ("\n\n… (truncated)" if truncated else ""))
+        view = GtkSource.View(buffer=buf)
+        view.set_editable(False)
+        view.set_cursor_visible(False)
+        view.set_monospace(True)
+        view.set_show_line_numbers(True)
+        scroll = Gtk.ScrolledWindow()
+        scroll.set_vexpand(True)
+        scroll.set_child(view)
+        return scroll
 
     # ------------------------------------------------------------------ #
     # Connection lifecycle

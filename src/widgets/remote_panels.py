@@ -1,52 +1,55 @@
-"""Read-only side panels for a remote (dispatched) session.
+"""Read-only navigator panels for a remote (dispatched) session.
 
-Shows the *live desktop working state* of the attached session — pulled as plain
-JSON from the broker (which proxies the session's MCP tools):
-
-* **Changes** — uncommitted files → click → `DiffView`.
-* **Files**   — quick-open any project file → read-only source view.
-* **Problems**— the session's linter findings.
-
-All fetches run on a worker thread and marshal back with `GLib.idle_add`.
-History / memory / messages / issues are NOT here — the laptop's normal app shows
-those via sync/cloud.
+Just the *lists* — Changes / Files / Problems — pulled as plain JSON from the
+broker (which computes them from the session's project path). Activating a row
+calls back into the window, which opens the content as a TAB in the main area
+(the app's standard scheme), never inside this sidebar.
 """
 
 from __future__ import annotations
 
 import threading
+from typing import Callable
 
 import gi
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
-gi.require_version("GtkSource", "5")
 
-from gi.repository import Adw, GLib, GtkSource, Gtk
+from gi.repository import Adw, GLib, Gtk
 
 from ..services import dispatch_api
-from ..services.settings_service import SettingsService
-from .code_view import DiffView, get_language_for_file
 
 
 class RemotePanels(Gtk.Box):
-    # (page name, Material icon file stem, tooltip). The switcher toggles live in
-    # the window header (like the workspace); this widget is just the stack.
+    # (page name, Material icon file stem, tooltip). The switcher lives in the
+    # window header; this widget is just the stack of lists.
     TABS = [
         ("changes", "git", "Changes"),
         ("files", "folder-open", "Files"),
         ("problems", "problems", "Problems"),
     ]
 
-    def __init__(self, host: str, http_port: int, token: str, session: str):
+    def __init__(
+        self,
+        host: str,
+        http_port: int,
+        token: str,
+        session: str,
+        *,
+        on_open_file: Callable[[str], None],
+        on_open_diff: Callable[[str, bool], None],
+    ):
         super().__init__(orientation=Gtk.Orientation.VERTICAL)
         self._host = host
         self._port = http_port
         self._token = token
         self._session = session
+        self._on_open_file = on_open_file
+        self._on_open_diff = on_open_diff
         self._loaded: set[str] = set()
         self._all_files: list[str] = []
-        self.set_size_request(300, -1)
+        self.set_size_request(280, -1)
 
         self._stack = Gtk.Stack()
         self._stack.set_transition_type(Gtk.StackTransitionType.CROSSFADE)
@@ -61,7 +64,6 @@ class RemotePanels(Gtk.Box):
         GLib.idle_add(self._ensure_loaded, "changes")
 
     def select(self, name: str) -> None:
-        """Show a page by name (driven by the header switcher)."""
         self._stack.set_visible_child_name(name)
 
     def current(self) -> str | None:
@@ -97,7 +99,6 @@ class RemotePanels(Gtk.Box):
 
     def _reload(self, name: str) -> None:
         if name == "changes":
-            self._changes_stack.set_visible_child_name("list")
             self._fetch(
                 lambda: dispatch_api.get_changes(self._host, self._port, self._token, self._session),
                 self._render_changes,
@@ -119,54 +120,44 @@ class RemotePanels(Gtk.Box):
             listbox.remove(row)
 
     @staticmethod
-    def _placeholder(text: str) -> Gtk.Label:
+    def _placeholder(text: str) -> Gtk.Widget:
         lbl = Gtk.Label(label=text)
         lbl.add_css_class("dim-label")
+        lbl.set_wrap(True)
         lbl.set_margin_top(12)
         lbl.set_margin_bottom(12)
-        return lbl
+        lbl.set_margin_start(8)
+        lbl.set_margin_end(8)
+        return Gtk.ListBoxRow(child=lbl, activatable=False, selectable=False)
+
+    @staticmethod
+    def _scrolled(child: Gtk.Widget) -> Gtk.ScrolledWindow:
+        scroll = Gtk.ScrolledWindow()
+        scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        scroll.set_vexpand(True)
+        scroll.set_child(child)
+        return scroll
 
     # ------------------------------------------------------------------ #
-    # Changes page (master/detail)
+    # Changes
     # ------------------------------------------------------------------ #
     def _build_changes_page(self) -> Gtk.Widget:
-        self._changes_stack = Gtk.Stack()
-
         self._changes_list = Gtk.ListBox()
         self._changes_list.add_css_class("boxed-list")
         self._changes_list.set_selection_mode(Gtk.SelectionMode.NONE)
-        list_scroll = Gtk.ScrolledWindow()
-        list_scroll.set_vexpand(True)
-        list_scroll.set_child(self._changes_list)
-        list_scroll.set_margin_start(6)
-        list_scroll.set_margin_end(6)
-        list_scroll.set_margin_bottom(6)
-        self._changes_stack.add_named(list_scroll, "list")
-
-        detail = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        back = Gtk.Button(label="← Changes")
-        back.add_css_class("flat")
-        back.set_halign(Gtk.Align.START)
-        back.set_margin_start(6)
-        back.set_margin_top(6)
-        back.connect("clicked", lambda _b: self._changes_stack.set_visible_child_name("list"))
-        detail.append(back)
-        self._changes_detail = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        self._changes_detail.set_vexpand(True)
-        detail.append(self._changes_detail)
-        self._changes_stack.add_named(detail, "detail")
-
-        self._changes_stack.set_visible_child_name("list")
-        return self._changes_stack
+        self._changes_list.set_margin_start(6)
+        self._changes_list.set_margin_end(6)
+        self._changes_list.set_margin_top(6)
+        return self._scrolled(self._changes_list)
 
     def _render_changes(self, data: dict) -> bool:
         self._clear(self._changes_list)
         if not data.get("ok", True):
-            self._changes_list.append(Gtk.ListBoxRow(child=self._placeholder(data.get("error", "error"))))
+            self._changes_list.append(self._placeholder(data.get("error", "error")))
             return False
         changes = data.get("changes", [])
         if not changes:
-            self._changes_list.append(Gtk.ListBoxRow(child=self._placeholder("No uncommitted changes")))
+            self._changes_list.append(self._placeholder("No uncommitted changes"))
             return False
         for c in changes:
             row = Adw.ActionRow()
@@ -177,77 +168,32 @@ class RemotePanels(Gtk.Box):
             badge.set_valign(Gtk.Align.CENTER)
             row.add_prefix(badge)
             row.set_activatable(True)
-            row.connect("activated", lambda _r, p=c["path"], s=bool(c.get("staged")): self._open_diff(p, s))
+            row.connect("activated", lambda _r, p=c["path"], s=bool(c.get("staged")): self._on_open_diff(p, s))
             self._changes_list.append(row)
         return False
 
-    def _open_diff(self, path: str, staged: bool) -> None:
-        while child := self._changes_detail.get_first_child():
-            self._changes_detail.remove(child)
-        self._changes_detail.append(self._placeholder(f"Loading {path}…"))
-        self._changes_stack.set_visible_child_name("detail")
-        self._fetch(
-            lambda: dispatch_api.get_file_diff(self._host, self._port, self._token, self._session, path, staged),
-            lambda d: self._render_diff(path, d),
-        )
-
-    def _render_diff(self, path: str, data: dict) -> bool:
-        while child := self._changes_detail.get_first_child():
-            self._changes_detail.remove(child)
-        if not data.get("ok"):
-            self._changes_detail.append(self._placeholder(data.get("error", "could not load diff")))
-            return False
-        view = DiffView(data.get("old", ""), data.get("new", ""), file_path=path)
-        view.set_vexpand(True)
-        self._changes_detail.append(view)
-        return False
-
     # ------------------------------------------------------------------ #
-    # Files page (quick-open + read-only view)
+    # Files (quick-open list)
     # ------------------------------------------------------------------ #
     def _build_files_page(self) -> Gtk.Widget:
-        self._files_stack = Gtk.Stack()
-
-        list_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
-        list_box.set_margin_start(6)
-        list_box.set_margin_end(6)
-        list_box.set_margin_bottom(6)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        box.set_margin_start(6)
+        box.set_margin_end(6)
+        box.set_margin_top(6)
         self._files_search = Gtk.SearchEntry()
         self._files_search.set_placeholder_text("Open file…")
         self._files_search.set_key_capture_widget(None)
         self._files_search.connect("search-changed", lambda _e: self._filter_files())
-        list_box.append(self._files_search)
+        box.append(self._files_search)
 
         self._files_list = Gtk.ListBox()
         self._files_list.add_css_class("boxed-list")
         self._files_list.set_selection_mode(Gtk.SelectionMode.NONE)
-        files_scroll = Gtk.ScrolledWindow()
-        files_scroll.set_vexpand(True)
-        files_scroll.set_child(self._files_list)
-        list_box.append(files_scroll)
-        self._files_stack.add_named(list_box, "list")
-
-        detail = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        back = Gtk.Button(label="← Files")
-        back.add_css_class("flat")
-        back.set_halign(Gtk.Align.START)
-        back.set_margin_start(6)
-        back.set_margin_top(6)
-        back.connect("clicked", lambda _b: self._files_stack.set_visible_child_name("list"))
-        detail.append(back)
-        self._files_detail = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        self._files_detail.set_vexpand(True)
-        detail.append(self._files_detail)
-        self._files_stack.add_named(detail, "detail")
-
-        self._files_stack.set_visible_child_name("list")
-        return self._files_stack
+        box.append(self._scrolled(self._files_list))
+        return box
 
     def _render_files(self, data: dict) -> bool:
-        if not data.get("ok", True):
-            self._all_files = []
-        else:
-            self._all_files = data.get("files", [])
+        self._all_files = data.get("files", []) if data.get("ok", True) else []
         self._filter_files()
         return False
 
@@ -255,86 +201,38 @@ class RemotePanels(Gtk.Box):
         query = self._files_search.get_text().strip().lower()
         self._clear(self._files_list)
         matches = [f for f in self._all_files if query in f.lower()] if query else self._all_files
-        for path in matches[:300]:  # cap rendered rows; refine the search to narrow
+        for path in matches[:300]:
             row = Adw.ActionRow()
             row.set_title(GLib.markup_escape_text(path))
             row.set_activatable(True)
-            row.connect("activated", lambda _r, p=path: self._open_file(p))
+            row.connect("activated", lambda _r, p=path: self._on_open_file(p))
             self._files_list.append(row)
         if not matches:
-            self._files_list.append(Gtk.ListBoxRow(child=self._placeholder("No matching files")))
+            self._files_list.append(self._placeholder("No matching files"))
         elif len(matches) > 300:
-            self._files_list.append(Gtk.ListBoxRow(child=self._placeholder(f"…{len(matches) - 300} more — refine search")))
-
-    def _open_file(self, path: str) -> None:
-        while child := self._files_detail.get_first_child():
-            self._files_detail.remove(child)
-        self._files_detail.append(self._placeholder(f"Loading {path}…"))
-        self._files_stack.set_visible_child_name("detail")
-        self._fetch(
-            lambda: dispatch_api.read_file(self._host, self._port, self._token, self._session, path),
-            lambda d: self._render_file(path, d),
-        )
-
-    def _render_file(self, path: str, data: dict) -> bool:
-        while child := self._files_detail.get_first_child():
-            self._files_detail.remove(child)
-        if not data.get("ok"):
-            self._files_detail.append(self._placeholder(data.get("error", "could not read file")))
-            return False
-        if data.get("binary"):
-            self._files_detail.append(self._placeholder(f"{path} — binary file"))
-            return False
-        self._files_detail.append(self._source_view(data.get("content", ""), path, bool(data.get("truncated"))))
-        return False
-
-    def _source_view(self, content: str, path: str, truncated: bool) -> Gtk.Widget:
-        buf = GtkSource.Buffer()
-        lang_id = get_language_for_file(path)
-        if lang_id:
-            lang = GtkSource.LanguageManager.get_default().get_language(lang_id)
-            if lang:
-                buf.set_language(lang)
-        scheme_id = SettingsService.get_instance().get("appearance.syntax_scheme", "Adwaita-dark")
-        scheme = GtkSource.StyleSchemeManager.get_default().get_scheme(scheme_id)
-        if scheme:
-            buf.set_style_scheme(scheme)
-        buf.set_text(content + ("\n\n… (truncated)" if truncated else ""))
-        view = GtkSource.View(buffer=buf)
-        view.set_editable(False)
-        view.set_cursor_visible(False)
-        view.set_monospace(True)
-        view.set_show_line_numbers(True)
-        scroll = Gtk.ScrolledWindow()
-        scroll.set_vexpand(True)
-        scroll.set_child(view)
-        return scroll
+            self._files_list.append(self._placeholder(f"…{len(matches) - 300} more — refine search"))
 
     # ------------------------------------------------------------------ #
-    # Problems page
+    # Problems
     # ------------------------------------------------------------------ #
     def _build_problems_page(self) -> Gtk.Widget:
         self._problems_list = Gtk.ListBox()
         self._problems_list.add_css_class("boxed-list")
         self._problems_list.set_selection_mode(Gtk.SelectionMode.NONE)
-        scroll = Gtk.ScrolledWindow()
-        scroll.set_vexpand(True)
-        scroll.set_child(self._problems_list)
-        scroll.set_margin_start(6)
-        scroll.set_margin_end(6)
-        scroll.set_margin_bottom(6)
-        scroll.set_margin_top(6)
-        return scroll
+        self._problems_list.set_margin_start(6)
+        self._problems_list.set_margin_end(6)
+        self._problems_list.set_margin_top(6)
+        return self._scrolled(self._problems_list)
 
     def _render_problems(self, data: dict) -> bool:
         self._clear(self._problems_list)
         if not data.get("ok", True):
-            self._problems_list.append(Gtk.ListBoxRow(child=self._placeholder(data.get("error", "error"))))
+            self._problems_list.append(self._placeholder(data.get("error", "error")))
             return False
         problems = data.get("problems", [])
         if not problems:
-            note = "No problems" if data.get("has_run", True) else "Open the Problems tab on the desktop to populate"
-            self._problems_list.append(Gtk.ListBoxRow(child=self._placeholder(note)))
+            note = "No problems" if data.get("has_run", True) else "No problems yet"
+            self._problems_list.append(self._placeholder(note))
             return False
         for p in problems:
             row = Adw.ActionRow()
@@ -345,5 +243,7 @@ class RemotePanels(Gtk.Box):
             sev.add_css_class("dim-label")
             sev.set_valign(Gtk.Align.CENTER)
             row.add_prefix(sev)
+            row.set_activatable(True)
+            row.connect("activated", lambda _r, f=p.get("file", ""): self._on_open_file(f))
             self._problems_list.append(row)
         return False
