@@ -18,17 +18,19 @@ from __future__ import annotations
 
 import asyncio
 import threading
+from pathlib import Path
 from typing import Awaitable, Callable
 
 import uvicorn
 from starlette.applications import Starlette
 from starlette.requests import Request
-from starlette.responses import JSONResponse
+from starlette.responses import JSONResponse, StreamingResponse
 from starlette.routing import Route
 
 from ..dispatch.pty_bridge import handle_connection
 from ..utils import claude_session
 from . import workspace_readonly
+from .file_sync import file_index, project_resolver, share_spec, wire
 from .paired_devices import PairedDevices
 
 # Read-only panel views the laptop may pull. Computed DIRECTLY from the session's
@@ -65,11 +67,16 @@ class DispatchBroker:
         pair_prompt: PairPrompt,
         *,
         paired: PairedDevices | None = None,
+        resolve_project: Callable[[str], str | None] | None = None,
     ) -> None:
         self.http_port = port
         self.pty_port = port + 1
         self._pair_prompt = pair_prompt
         self.paired = paired or PairedDevices()
+        # Map a machine-independent project_id -> local path (registry-backed by
+        # default; injectable for tests). Lets file-sync address a project without
+        # a live session.
+        self._resolve_project = resolve_project or project_resolver.resolve_path_for_id
 
         self._thread: threading.Thread | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -151,12 +158,59 @@ class DispatchBroker:
             return JSONResponse({"error": str(exc)}, status_code=502)
         return JSONResponse(data)
 
+    # ---- file-sync (project-addressed, read-only) --------------------------
+    async def _filesync_project_path(self, request: Request) -> tuple[str | None, dict]:
+        """(local_path | None, body) for a bearer-authorized file-sync request."""
+        if self._bearer(request) is None:
+            return None, {"_status": 401, "error": "unauthorized"}
+        try:
+            body = await request.json()
+        except (ValueError, TypeError):
+            return None, {"_status": 400, "error": "bad request"}
+        project_id = str(body.get("project_id", "")).strip()
+        if not project_id:
+            return None, {"_status": 400, "error": "project_id required"}
+        path = await asyncio.to_thread(self._resolve_project, project_id)
+        if not path:
+            return None, {"_status": 404, "error": "project not found"}
+        return path, body
+
+    async def _route_filesync_manifest(self, request: Request) -> JSONResponse:
+        path, body = await self._filesync_project_path(request)
+        if path is None:
+            return JSONResponse({"error": body["error"]}, status_code=body["_status"])
+        manifest = await asyncio.to_thread(file_index.build_manifest, path)
+        return JSONResponse({"manifest": manifest})
+
+    async def _route_filesync_fetch(self, request: Request):
+        path, body = await self._filesync_project_path(request)
+        if path is None:
+            return JSONResponse({"error": body["error"]}, status_code=body["_status"])
+        requested = [r for r in (body.get("rels") or []) if isinstance(r, str)]
+        # Sandbox: only serve rels that are actually in the resolved shared set —
+        # this excludes git-tracked/.git/.deleted and blocks any path escape.
+        allowed = await asyncio.to_thread(share_spec.resolve_shared_files, path)
+        safe = [r for r in requested if r in allowed]
+        root = Path(path)
+
+        def stream():
+            for rel in safe:
+                try:
+                    data = (root / rel).read_bytes()
+                except OSError:
+                    continue
+                yield wire.encode_file(rel, data)
+
+        return StreamingResponse(stream(), media_type="application/octet-stream")
+
     def _build_app(self) -> Starlette:
         return Starlette(
             routes=[
                 Route("/pair", self._route_pair, methods=["POST"]),
                 Route("/sessions", self._route_sessions, methods=["GET"]),
                 Route("/{session}/panel/{tool}", self._route_panel, methods=["GET"]),
+                Route("/filesync/manifest", self._route_filesync_manifest, methods=["POST"]),
+                Route("/filesync/fetch", self._route_filesync_fetch, methods=["POST"]),
             ]
         )
 

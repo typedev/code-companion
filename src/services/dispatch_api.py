@@ -10,8 +10,12 @@ from __future__ import annotations
 import json
 import urllib.error
 import urllib.request
+from collections.abc import Iterator
+
+from .file_sync import wire
 
 _TIMEOUT = 8
+_FETCH_TIMEOUT = 60  # per-read socket timeout during a (possibly large) file stream
 
 
 class DispatchError(Exception):
@@ -96,3 +100,45 @@ def read_file(host, port, token, session, path: str, max_bytes: int = 1_000_000)
 
 def get_problems(host, port, token, session) -> dict:
     return _panel(host, port, token, session, "get_problems")
+
+
+# --- file-sync (project-addressed) ------------------------------------------
+
+def fetch_manifest(host, port, token, project_id: str) -> dict[str, str]:
+    """Return the peer's ``{rel: sha256}`` manifest for a project's shared set."""
+    resp = _post(
+        f"http://{host}:{port}/filesync/manifest",
+        {"project_id": project_id},
+        token=token,
+    )
+    manifest = resp.get("manifest", {})
+    return manifest if isinstance(manifest, dict) else {}
+
+
+def fetch_files(
+    host, port, token, project_id: str, rels
+) -> Iterator[tuple[str, bytes]]:
+    """Stream ``(rel, bytes)`` for each requested file from the peer.
+
+    Yields incrementally so a large seed never buffers wholly in memory. The peer
+    only serves rels inside its resolved shared set (others are silently dropped).
+    """
+    data = json.dumps({"project_id": project_id, "rels": list(rels)}).encode("utf-8")
+    req = urllib.request.Request(
+        f"http://{host}:{port}/filesync/fetch", data=data, method="POST"
+    )
+    req.add_header("Content-Type", "application/json")
+    if token:
+        req.add_header("Authorization", f"Bearer {token}")
+    try:
+        resp = urllib.request.urlopen(req, timeout=_FETCH_TIMEOUT)
+    except urllib.error.HTTPError as exc:
+        try:
+            payload = json.loads(exc.read() or b"{}")
+        except ValueError:
+            payload = {}
+        raise DispatchError(payload.get("error") or f"HTTP {exc.code}") from exc
+    except (urllib.error.URLError, OSError) as exc:
+        raise DispatchError(str(exc)) from exc
+    with resp:
+        yield from wire.read_files(resp.read)

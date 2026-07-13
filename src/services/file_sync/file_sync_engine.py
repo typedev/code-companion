@@ -96,27 +96,41 @@ def backup_to_trash(root: Path, rel: str, stamp: str) -> bool:
     return True
 
 
-def apply_get(
-    root: str | os.PathLike,
-    plan: GetPlan,
-    fetch_bytes: Callable[[str], bytes | None],
-    stamp: str,
-) -> None:
-    """Apply a Get plan locally.
+def prepare_trash(root: str | os.PathLike, plan: GetPlan, stamp: str) -> None:
+    """Move everything a Get will destroy (removals + overwrites) into the trash.
 
-    Order: (1) move ``remove`` files to the trash, (2) back up files about to be
-    overwritten, (3) write fetched bytes atomically. ``fetch_bytes(rel)`` returns
-    the peer's bytes for a rel (or None to skip). ``stamp`` names the trash batch.
+    Call this once before writing any fetched bytes, so a wrong-direction Get is
+    fully recoverable from ``.deleted/<stamp>/``.
     """
     root = Path(root)
     for rel in sorted(plan.remove):
         backup_to_trash(root, rel, stamp)
     for rel in sorted(plan.overwrite):
         backup_to_trash(root, rel, stamp)
+
+
+def write_file(root: str | os.PathLike, rel: str, data: bytes) -> None:
+    """Atomically write one fetched file (creating parent dirs)."""
+    dest = Path(root) / rel
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write_bytes(dest, data)
+
+
+def apply_get(
+    root: str | os.PathLike,
+    plan: GetPlan,
+    fetch_bytes: Callable[[str], bytes | None],
+    stamp: str,
+) -> None:
+    """Apply a Get plan locally (pull-based convenience over :func:`prepare_trash`).
+
+    Backs up destroyed files, then writes each fetched file. ``fetch_bytes(rel)``
+    returns the peer's bytes for a rel (or None to skip). Streaming callers can
+    instead call :func:`prepare_trash` once and :func:`write_file` per received file.
+    """
+    prepare_trash(root, plan, stamp)
     for rel in sorted(plan.fetch):
         data = fetch_bytes(rel)
         if data is None:
             continue
-        dest = root / rel
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        atomic_write_bytes(dest, data)
+        write_file(root, rel, data)
