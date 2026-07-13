@@ -19,6 +19,7 @@ Rel-paths used as the merge unit are ``memory/<name>``, ``sessions/<name>`` and
 
 import hashlib
 import json
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -64,6 +65,45 @@ def sanitize_jsonl(data: bytes) -> bytes:
         if trimmed and not trimmed.endswith("\n"):
             trimmed += "\n"
         return trimmed.encode("utf-8")
+
+
+# --------------------------------------------------------------------------- #
+# Machine-independent project root in synced session transcripts
+# --------------------------------------------------------------------------- #
+#
+# Claude Code records the absolute project path as the top-level ``cwd`` field on
+# most JSONL records, and native ``/resume`` only lists sessions whose ``cwd``
+# matches the current working directory. Since the same project lives at a
+# different absolute path on each machine, we store ``cwd`` as a fixed placeholder
+# in the sync repo and materialize it back to the local path on import. Only the
+# top-level ``cwd`` is rewritten (nested tool/snapshot paths are left as-is — they
+# do not affect ``/resume``). The transform is a targeted byte rewrite of just the
+# ``cwd`` value: it never re-serializes the JSON, so the append-only byte-length
+# invariant that ``merge_session_pair`` relies on is preserved.
+
+_PROJECT_ROOT_PLACEHOLDER = "__CC_PROJECT_ROOT__"
+
+
+def _cwd_rewrite(data: bytes, from_root: str, to_root: str) -> bytes:
+    """Rewrite the top-level ``cwd`` value's ``from_root`` prefix to ``to_root``.
+
+    Anchored to the ``"cwd"`` key; the ``["/]`` lookahead means the prefix only
+    matches at a path boundary, so a sibling project that merely shares a prefix
+    (``…/code-companion`` vs ``…/code-companion-2``) is never touched. Handles both
+    ``cwd == root`` (followed by ``"``) and ``cwd`` being a subdirectory of it.
+    """
+    pat = re.compile(rb'("cwd"\s*:\s*")' + re.escape(from_root.encode()) + rb'(?=["/])')
+    return pat.sub(rb"\1" + to_root.encode(), data)
+
+
+def _cwd_to_placeholder(data: bytes, local_abs_path: str) -> bytes:
+    """Export direction: local absolute project path -> placeholder."""
+    return _cwd_rewrite(data, local_abs_path, _PROJECT_ROOT_PLACEHOLDER)
+
+
+def _placeholder_to_cwd(data: bytes, local_abs_path: str) -> bytes:
+    """Import direction: placeholder -> local absolute project path."""
+    return _cwd_rewrite(data, _PROJECT_ROOT_PLACEHOLDER, local_abs_path)
 
 
 # --------------------------------------------------------------------------- #
@@ -192,6 +232,10 @@ class LocalProjectView:
         data = path.read_bytes()
         if rel.startswith(SESSIONS_PREFIX):
             data = sanitize_jsonl(data)
+            # Normalize the local project path to a machine-independent placeholder
+            # *below* the hashing/merge layer, so synced files hash identically on
+            # every machine (no churn) and /resume works after materialization.
+            data = _cwd_to_placeholder(data, self.local_abs_path)
         return data
 
     def local_hashes(self) -> dict[str, str]:
@@ -237,6 +281,10 @@ class LocalProjectView:
         path = self._local_path(rel)
         if path is None:
             return
+        if rel.startswith(SESSIONS_PREFIX):
+            # Materialize the placeholder back to this machine's project path so
+            # native /resume lists the session for the current working directory.
+            data = _placeholder_to_cwd(data, self.local_abs_path)
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_name(path.name + ".cc-sync.tmp")
         tmp.write_bytes(data)

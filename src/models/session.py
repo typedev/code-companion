@@ -139,7 +139,8 @@ class Session:
         """Return formatted date for display."""
         if self.timestamp is None:
             return "Unknown"
-        return self.timestamp.strftime("%Y-%m-%d %H:%M")
+        # Timestamps are stored UTC-aware; show them in the local timezone.
+        return self.timestamp.astimezone().strftime("%Y-%m-%d %H:%M")
 
     @property
     def short_preview(self) -> str:

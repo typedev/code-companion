@@ -20,12 +20,12 @@ from src.services.sync_engine import (
 # helpers
 # --------------------------------------------------------------------------- #
 
-def make_view(root: Path, fields=None) -> LocalProjectView:
+def make_view(root: Path, fields=None, abs_path="/home/u/proj") -> LocalProjectView:
     project_dir = root / "claude" / "projects" / "enc"
     memory_dir = project_dir / "memory"
     memory_dir.mkdir(parents=True, exist_ok=True)
     return LocalProjectView(
-        local_abs_path="/home/u/proj",
+        local_abs_path=abs_path,
         project_dir=project_dir,
         memory_dir=memory_dir,
         claude_json_path=root / "claude.json",
@@ -260,3 +260,69 @@ def test_config_slice_roundtrips_through_export_import(tmp_path):
     import_project(b, repo, base={}, snapshot_dir=tmp_path / "snap")
     data = json.loads(b.claude_json_path.read_text())
     assert data["projects"]["/home/u/proj"]["allowedTools"] == ["Bash", "Read"]
+
+
+# --------------------------------------------------------------------------- #
+# cwd placeholder (cross-machine /resume continuity)
+# --------------------------------------------------------------------------- #
+
+def _sess_line(cwd: str, **extra) -> bytes:
+    return json.dumps({"type": "user", "cwd": cwd, **extra}).encode() + b"\n"
+
+
+def test_cwd_transform_roundtrip_and_guards():
+    P = "/home/u/proj"
+    # root + subdirs round-trip exactly
+    for cwd in (P, P + "/src", P + "/src/w"):
+        line = _sess_line(cwd)
+        ph = E._cwd_to_placeholder(line, P)
+        assert b"__CC_PROJECT_ROOT__" in ph
+        assert E._placeholder_to_cwd(ph, P) == line
+    # sibling sharing a path prefix must NOT be rewritten
+    sib = _sess_line(P + "-2/foo")
+    assert E._cwd_to_placeholder(sib, P) == sib
+    # a foreign cwd (other machine's path) does not match on export
+    foreign = _sess_line("/home/other/proj")
+    assert E._cwd_to_placeholder(foreign, P) == foreign
+    # placeholder form is byte-identical regardless of local path length (no churn)
+    assert E._cwd_to_placeholder(_sess_line(P), P) == E._cwd_to_placeholder(
+        _sess_line("/a/much/longer/home/proj"), "/a/much/longer/home/proj"
+    )
+    # nested absolute paths (tool inputs) are left untouched
+    nested = json.dumps({
+        "type": "assistant", "cwd": P,
+        "message": {"content": [{"type": "tool_use", "input": {"file_path": P + "/a.py"}}]},
+    }).encode() + b"\n"
+    out = json.loads(E._cwd_to_placeholder(nested, P))
+    assert out["cwd"] == "__CC_PROJECT_ROOT__"
+    assert out["message"]["content"][0]["input"]["file_path"] == P + "/a.py"
+
+
+def test_session_cwd_normalized_in_repo_and_materialized_per_machine(tmp_path):
+    # machine A: session recorded with A's absolute project path
+    a = make_view(tmp_path / "A", abs_path="/home/alice/proj")
+    write(a.project_dir / "s.jsonl", '{"type":"user","cwd":"/home/alice/proj","m":1}\n')
+    repo = tmp_path / "repo" / "projects" / "id"
+    export_project(a, repo, base={})
+
+    # repo copy is machine-independent: placeholder, no absolute path
+    repo_bytes = (repo / "sessions" / "s.jsonl").read_text()
+    assert "__CC_PROJECT_ROOT__" in repo_bytes
+    assert "/home/alice/proj" not in repo_bytes
+
+    # machine B (different path) imports -> cwd materialized to B's path
+    b = make_view(tmp_path / "B", abs_path="/home/bob/work/proj")
+    import_project(b, repo, base={}, snapshot_dir=tmp_path / "snap")
+    local_bytes = (b.project_dir / "s.jsonl").read_text()
+    assert '"cwd":"/home/bob/work/proj"' in local_bytes
+    assert "__CC_PROJECT_ROOT__" not in local_bytes
+
+
+def test_session_export_is_churn_free_after_roundtrip(tmp_path):
+    a = make_view(tmp_path / "A", abs_path="/home/alice/proj")
+    write(a.project_dir / "s.jsonl", '{"type":"user","cwd":"/home/alice/proj","m":1}\n')
+    repo = tmp_path / "repo" / "projects" / "id"
+    export_project(a, repo, base={})
+    # base = what this machine now considers synced; a second export must be a no-op
+    base = a.local_hashes()
+    assert export_project(a, repo, base).written == []

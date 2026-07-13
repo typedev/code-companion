@@ -14,6 +14,21 @@ from ..utils import encode_project_path
 _FILE_TOOL_KEYS = {"Edit": "file_path", "Write": "file_path", "NotebookEdit": "notebook_path"}
 
 
+def _is_command_meta(text: str) -> bool:
+    """True for slash-command / local-command wrapper messages (not a real prompt).
+
+    Sessions opened via a slash command (e.g. ``/usage-credits``) begin with a
+    ``<local-command-caveat>`` / ``<command-…>`` user event; these should not be
+    used as a session preview.
+    """
+    t = text.lstrip()
+    return (
+        t.startswith("<local-command-caveat>")
+        or t.startswith("<local-command-stdout>")
+        or t.startswith("<command-")
+    )
+
+
 class HistoryService:
     """Reads and parses Claude Code session history."""
 
@@ -117,18 +132,12 @@ class HistoryService:
                         except (ValueError, TypeError):
                             pass
 
-                    # Get first user message for preview
+                    # Get first *real* user message for preview, skipping
+                    # slash-command wrappers (e.g. the /usage-credits caveat).
                     if not first_user_message and event_type == "user":
-                        msg = event.get("message", {})
-                        content = msg.get("content", "")
-                        if isinstance(content, str):
-                            first_user_message = content
-                        elif isinstance(content, list):
-                            # Extract text from content blocks
-                            for block in content:
-                                if isinstance(block, dict) and block.get("type") == "text":
-                                    first_user_message = block.get("text", "")
-                                    break
+                        candidate = self._extract_user_text(event)
+                        if candidate and not _is_command_meta(candidate):
+                            first_user_message = candidate
 
             return Session(
                 id=session_file.stem,
