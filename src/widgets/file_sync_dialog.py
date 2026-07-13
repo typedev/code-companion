@@ -18,8 +18,8 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Adw, GLib, Gtk  # noqa: E402
 
-from ..services import file_sync_service as svc  # noqa: E402
-from ..services.device_identity import get_device_id  # noqa: E402
+from ..services import dispatch_api, file_sync_service as svc  # noqa: E402
+from ..services.device_identity import get_device_id, get_device_name  # noqa: E402
 from ..services.dispatch_discovery import DispatchBrowser  # noqa: E402
 from ..services.remote_tokens import RemoteTokens  # noqa: E402
 from ..services.toast_service import ToastService  # noqa: E402
@@ -37,11 +37,12 @@ class FileSyncDialog:
         self._on_synced = on_synced  # called on the main thread after a Get applies
 
         self._device_id = get_device_id()
+        self._device_name = get_device_name()
         self._tokens = RemoteTokens()
 
         self._project_id: str | None = None
         self._browser: DispatchBrowser | None = None
-        self._peers: list[svc.Peer] = []
+        self._peer_dicts: list[dict] = []  # discovered peers {device_id,name,host,port}
         self._preview: svc.SyncPreview | None = None
 
         self._dialog: Adw.AlertDialog | None = None
@@ -85,21 +86,14 @@ class FileSyncDialog:
         identity = resolve_project_identity(self._project_path)
         self._project_id = identity.project_id if identity else None
 
-        self._peers = self._paired_online(raw)
+        # Show every discovered device (minus self); pairing happens on demand at
+        # Get time, so a device we haven't paired with yet still appears here.
+        self._peer_dicts = [
+            p for p in raw
+            if p.get("device_id") and p["device_id"] != self._device_id and p.get("host")
+        ]
         self._render_selection()
         return False
-
-    def _paired_online(self, raw: list[dict]) -> list[svc.Peer]:
-        peers = []
-        for p in raw:
-            did = p.get("device_id")
-            if not did or did == self._device_id or not p.get("host"):
-                continue
-            token = self._tokens.token_for(did)
-            if not token:
-                continue  # discovered but not paired -> skip
-            peers.append(svc.Peer(did, p.get("name", did), p["host"], int(p["port"]), token))
-        return peers
 
     # -- selection UI --------------------------------------------------------
     def _render_selection(self) -> None:
@@ -113,20 +107,24 @@ class FileSyncDialog:
             )
             dialog.set_extra_child(None)
             return
-        if not self._peers:
+        if not self._peer_dicts:
             dialog.set_body(
-                "No paired device is online on this network.\n"
-                "Open Code Companion on the other machine (dispatch enabled) and pair it first."
+                "No device found on this network.\n"
+                "Open Code Companion on the other machine with dispatch enabled."
             )
             dialog.set_extra_child(None)
             return
 
-        dialog.set_body("Choose a device and a direction. A preview is shown below.")
+        dialog.set_body("Choose a device to get files from. A preview is shown below.")
 
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
         box.set_margin_top(4)
 
-        labels = [f"{p.name}  ({p.host})" for p in self._peers]
+        labels = [
+            f"{p.get('name', p['device_id'])}  ({p['host']})"
+            + ("" if self._tokens.token_for(p["device_id"]) else "  — not paired")
+            for p in self._peer_dicts
+        ]
         self._dropdown = Gtk.DropDown.new_from_strings(labels)
         self._dropdown.connect("notify::selected", lambda *_: self._refresh_preview())
         box.append(self._dropdown)
@@ -150,39 +148,52 @@ class FileSyncDialog:
         if self._dialog is not None:
             self._dialog.set_response_enabled("get", enabled)
 
-    def _selected_peer(self) -> svc.Peer | None:
+    def _selected_peer_dict(self) -> dict | None:
         if self._dropdown is None:
             return None
         idx = self._dropdown.get_selected()
-        if 0 <= idx < len(self._peers):
-            return self._peers[idx]
+        if 0 <= idx < len(self._peer_dicts):
+            return self._peer_dicts[idx]
         return None
 
     def _refresh_preview(self) -> None:
-        peer = self._selected_peer()
-        if peer is None or self._project_id is None:
+        pd = self._selected_peer_dict()
+        if pd is None or self._project_id is None:
             return
         self._preview = None
         self._set_actions_enabled(False)
-        if self._counts_label:
-            self._counts_label.set_text("Comparing with device…")
         if self._warn_label:
             self._warn_label.set_text("")
 
+        token = self._tokens.token_for(pd["device_id"])
+        if not token:
+            # Not paired yet — no manifest until we pair; offer Get (pairs on demand).
+            if self._counts_label:
+                self._counts_label.set_text(
+                    f"{pd.get('name', 'This device')} isn't paired yet — press Get files "
+                    "to pair (the other device must allow), then sync."
+                )
+            self._set_actions_enabled(True)
+            return
+
+        if self._counts_label:
+            self._counts_label.set_text("Comparing with device…")
+        peer = svc.Peer(pd["device_id"], pd.get("name", ""), pd["host"], int(pd["port"]), token)
         project_id = self._project_id
         path = str(self._project_path)
 
         def worker():
             try:
                 preview = svc.build_preview(path, project_id, peer)
-                GLib.idle_add(self._preview_ready, peer, preview, None)
+                GLib.idle_add(self._preview_ready, pd["device_id"], preview, None)
             except Exception as exc:  # network / broker error
-                GLib.idle_add(self._preview_ready, peer, None, str(exc))
+                GLib.idle_add(self._preview_ready, pd["device_id"], None, str(exc))
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def _preview_ready(self, peer, preview, error) -> bool:
-        if self._dialog is None or self._selected_peer() is not peer:
+    def _preview_ready(self, device_id, preview, error) -> bool:
+        cur = self._selected_peer_dict()
+        if self._dialog is None or cur is None or cur["device_id"] != device_id:
             return False  # dialog closed or selection moved on
         if error is not None or preview is None:
             if self._counts_label:
@@ -218,14 +229,16 @@ class FileSyncDialog:
 
     # -- Get (with progress) -------------------------------------------------
     def _start_get(self) -> None:
-        peer = self._selected_peer()
-        if peer is None or self._project_id is None:
+        pd = self._selected_peer_dict()
+        if pd is None or self._project_id is None:
             return
         self._cancelled = False
-        self._present_progress(f"Getting files from {peer.name}…")
+        name = pd.get("name", "device")
+        self._present_progress(f"Getting files from {name}…")
 
         project_id = self._project_id
         path = str(self._project_path)
+        did, host, port = pd["device_id"], pd["host"], int(pd["port"])
 
         def progress(done, total, rel):
             if self._cancelled:
@@ -234,6 +247,13 @@ class FileSyncDialog:
 
         def worker():
             try:
+                token = self._tokens.token_for(did)
+                if not token:
+                    # Pair on demand — blocks until the other device clicks Allow.
+                    GLib.idle_add(self._set_progress_text, f"Waiting for {name} to allow…")
+                    token = dispatch_api.pair(host, port, self._device_id, self._device_name)
+                    self._tokens.set(did, name, token)
+                peer = svc.Peer(did, name, host, port, token)
                 result = svc.run_get(path, project_id, peer, progress=progress)
                 GLib.idle_add(self._get_done, result, None)
             except Exception as exc:
@@ -257,6 +277,11 @@ class FileSyncDialog:
         self._progress_dialog = dlg
         self._progress_bar = bar
         dlg.present(self._parent)
+
+    def _set_progress_text(self, text: str) -> bool:
+        if self._progress_bar is not None:
+            self._progress_bar.set_text(text)
+        return False
 
     def _update_progress(self, done, total) -> bool:
         if self._progress_bar is None:
