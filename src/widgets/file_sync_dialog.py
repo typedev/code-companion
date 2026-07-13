@@ -214,7 +214,15 @@ class FileSyncDialog:
         if self._dialog is None or cur is None or cur["device_id"] != device_id:
             return False  # dialog closed or selection moved on
         if error is not None or preview is None:
-            if self._counts_label:
+            if error and "unauthorized" in error.lower():
+                # The peer revoked our token (it did Forget). Drop it so Get re-pairs.
+                self._tokens.forget(device_id)
+                if self._counts_label:
+                    self._counts_label.set_text(
+                        "This device no longer trusts us — press Get files to re-pair."
+                    )
+                self._set_actions_enabled(True)
+            elif self._counts_label:
                 self._counts_label.set_text(f"Could not reach the device: {error}")
             return False
         self._preview = preview
@@ -267,19 +275,30 @@ class FileSyncDialog:
                 raise RuntimeError("cancelled")
             GLib.idle_add(self._update_progress, done, total)
 
+        def do_pair():
+            # Blocks until the other device clicks Allow. Mutual: one Allow leaves
+            # both machines able to get from each other.
+            GLib.idle_add(self._set_progress_text, f"Waiting for {name} to allow…")
+            return dispatch_api.pair_mutual(
+                host, port, self._device_id, self._device_name,
+                did, name, PairedDevices(), self._tokens,
+            )
+
         def worker():
             try:
-                token = self._tokens.token_for(did)
-                if not token:
-                    # Pair on demand — blocks until the other device clicks Allow.
-                    # Mutual: one Allow leaves both machines able to get from each other.
-                    GLib.idle_add(self._set_progress_text, f"Waiting for {name} to allow…")
-                    token = dispatch_api.pair_mutual(
-                        host, port, self._device_id, self._device_name,
-                        did, name, PairedDevices(), self._tokens,
-                    )
+                token = self._tokens.token_for(did) or do_pair()
                 peer = svc.Peer(did, name, host, port, token)
-                result = svc.run_get(path, project_id, peer, progress=progress)
+                try:
+                    result = svc.run_get(path, project_id, peer, progress=progress)
+                except dispatch_api.DispatchError as exc:
+                    if "unauthorized" not in str(exc).lower():
+                        raise
+                    # Our stored token was revoked on the peer (it did Forget) —
+                    # drop it and re-pair. run_get fails at the first call, before
+                    # any file/trash change, so the retry is clean.
+                    self._tokens.forget(did)
+                    peer = svc.Peer(did, name, host, port, do_pair())
+                    result = svc.run_get(path, project_id, peer, progress=progress)
                 GLib.idle_add(self._get_done, result, None)
             except Exception as exc:
                 GLib.idle_add(self._get_done, None, str(exc))
