@@ -22,7 +22,7 @@ import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 
-from gi.repository import Adw, Gtk
+from gi.repository import Adw, GLib, Gtk
 
 from .widgets import TerminalView
 
@@ -86,6 +86,7 @@ class RemoteSessionWindow(Adw.ApplicationWindow):
     def _connect(self) -> None:
         """(Re)spawn the relay client terminal."""
         self._clear_content()
+        self._connected_at = GLib.get_monotonic_time()
         # PYTHONPATH/cwd so `-m src.dispatch_client` resolves both from source
         # (cwd = project root) and when packaged (launcher sets PYTHONPATH).
         terminal = TerminalView(
@@ -98,22 +99,42 @@ class RemoteSessionWindow(Adw.ApplicationWindow):
         self._content.append(terminal)
 
     def _on_disconnected(self, _terminal, _status: int) -> None:
-        """The relay client exited (session ended or connection dropped)."""
+        """The relay client exited (session ended, refused, or connection dropped)."""
         self._terminal = None
         self._clear_content()
 
+        # A near-instant exit means we never really attached (refused/busy/no
+        # session) rather than a live session that ended — say so instead of a
+        # blank window.
+        elapsed_s = (GLib.get_monotonic_time() - getattr(self, "_connected_at", 0)) / 1e6
+        quick_fail = elapsed_s < 3
+
         status = Adw.StatusPage()
         status.set_icon_name("network-offline-symbolic")
-        status.set_title("Disconnected")
-        status.set_description(
-            f"The connection to {self._title} on {self._host} ended."
-        )
-        button = Gtk.Button(label="Reconnect")
-        button.add_css_class("suggested-action")
-        button.add_css_class("pill")
-        button.set_halign(Gtk.Align.CENTER)
-        button.connect("clicked", lambda _b: self._connect())
-        status.set_child(button)
+        if quick_fail:
+            status.set_title("Could not attach")
+            status.set_description(
+                f"“{self._title}” may be busy (open on another screen) or "
+                f"unavailable on {self._host}."
+            )
+        else:
+            status.set_title("Disconnected")
+            status.set_description(
+                f"The connection to {self._title} on {self._host} ended."
+            )
+
+        buttons = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        buttons.set_halign(Gtk.Align.CENTER)
+        reconnect = Gtk.Button(label="Reconnect")
+        reconnect.add_css_class("suggested-action")
+        reconnect.add_css_class("pill")
+        reconnect.connect("clicked", lambda _b: self._connect())
+        close = Gtk.Button(label="Close")
+        close.add_css_class("pill")
+        close.connect("clicked", lambda _b: self.close())
+        buttons.append(reconnect)
+        buttons.append(close)
+        status.set_child(buttons)
 
         self._content.append(status)
 

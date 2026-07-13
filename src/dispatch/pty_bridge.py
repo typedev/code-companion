@@ -23,7 +23,11 @@ import subprocess
 import termios
 from typing import Callable
 
-from ..utils.claude_session import live_session_names, managed_tmux_conf
+from ..utils.claude_session import (
+    live_session_names,
+    managed_tmux_conf,
+    session_clients,
+)
 from .protocol import (
     FRAME_DATA,
     FRAME_RESIZE,
@@ -139,6 +143,13 @@ async def _serve(
     session = str(hs.get("session", ""))
     if session not in live_session_names():
         _reject(writer, "no such session")
+        return
+
+    # Single-owner: refuse if the session already has a client (open on the
+    # desktop, or attached from another device). Authoritative backstop for a
+    # stale "free" row in the UI — never disturb a session that is in use.
+    if session_clients(session) > 0:
+        _reject(writer, "session is busy — it's open on another screen")
         return
 
     try:
