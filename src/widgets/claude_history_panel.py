@@ -48,6 +48,10 @@ class ClaudeHistoryPanel(Gtk.Box):
     def _setup_css(self):
         """Set up CSS for the panel."""
         css = b"""
+        .session-title {
+            font-weight: bold;
+            color: @accent_color;
+        }
         .session-preview {
             font-size: 0.9em;
         }
@@ -237,6 +241,7 @@ class ClaudeHistoryPanel(Gtk.Box):
                 s for s in self._all_sessions
                 if self._filter_text in (s.short_preview or "").lower()
                 or self._filter_text in s.display_date.lower()
+                or self._filter_text in (s.ai_title or "").lower()
             ]
         else:
             filtered = self._all_sessions
@@ -300,6 +305,15 @@ class ClaudeHistoryPanel(Gtk.Box):
         top_box.append(count_label)
 
         box.append(top_box)
+
+        # Title: Claude Code's auto-generated aiTitle — the same label the native
+        # /resume picker shows, so a session is recognizable across both lists.
+        if session.ai_title:
+            title_label = Gtk.Label(label=session.ai_title)
+            title_label.set_xalign(0)
+            title_label.set_ellipsize(3)  # END
+            title_label.add_css_class("session-title")
+            box.append(title_label)
 
         # Preview
         if session.short_preview:

@@ -64,10 +64,10 @@ class HistoryService:
             if session:
                 sessions.append(session)
 
-        # Sort by timestamp, most recent first
+        # Sort by last activity, most recent first (matches native /resume order)
         min_date = datetime.min.replace(tzinfo=timezone.utc)
         sessions.sort(
-            key=lambda s: s.timestamp or min_date, reverse=True
+            key=lambda s: s.last_timestamp or s.timestamp or min_date, reverse=True
         )
         return sessions
 
@@ -82,10 +82,10 @@ class HistoryService:
             if session:
                 sessions.append(session)
 
-        # Sort by timestamp, most recent first
+        # Sort by last activity, most recent first (matches native /resume order)
         min_date = datetime.min.replace(tzinfo=timezone.utc)
         sessions.sort(
-            key=lambda s: s.timestamp or min_date, reverse=True
+            key=lambda s: s.last_timestamp or s.timestamp or min_date, reverse=True
         )
         return sessions
 
@@ -104,7 +104,9 @@ class HistoryService:
         try:
             message_count = 0
             first_timestamp = None
+            last_timestamp = None
             first_user_message = ""
+            ai_title = ""
 
             with open(session_file, "r", encoding="utf-8", errors="replace") as f:
                 for line in f:
@@ -122,15 +124,19 @@ class HistoryService:
                     if event_type in ("user", "assistant"):
                         message_count += 1
 
-                    # Get first timestamp
-                    if first_timestamp is None and "timestamp" in event:
-                        try:
-                            ts = event["timestamp"]
-                            if ts.endswith("Z"):
-                                ts = ts[:-1] + "+00:00"
-                            first_timestamp = datetime.fromisoformat(ts)
-                        except (ValueError, TypeError):
-                            pass
+                    # Track first/last activity timestamps
+                    ts = self._parse_timestamp(event.get("timestamp"))
+                    if ts is not None:
+                        if first_timestamp is None:
+                            first_timestamp = ts
+                        last_timestamp = ts
+
+                    # Claude Code's auto-generated title — this is what the native
+                    # /resume picker shows. It evolves during a session; last wins.
+                    if event_type == "ai-title":
+                        title = event.get("aiTitle")
+                        if title:
+                            ai_title = title
 
                     # Get first *real* user message for preview, skipping
                     # slash-command wrappers (e.g. the /usage-credits caveat).
@@ -145,6 +151,8 @@ class HistoryService:
                 message_count=message_count,
                 timestamp=first_timestamp,
                 preview=first_user_message,
+                ai_title=ai_title,
+                last_timestamp=last_timestamp,
             )
 
         except (OSError, IOError):

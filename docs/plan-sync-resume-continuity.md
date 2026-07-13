@@ -1,6 +1,8 @@
 # Plan: Cross-machine `/resume` continuity (cwd placeholder in sync) + History display fixes
 
-Status: **code complete + unit-verified**, pending live two-machine canary validation.
+Status: **core ✅ validated live** (laptop `…/code-companion` → desktop `…/claude-companion`,
+canary `ЯНТАРНЫЙ-ОСЬМИНОГ-0713`, 2026-07-13). Follow-up A (History label match) ✅ done;
+follow-up B (resume-from-History) deferred.
 
 ## Context
 
@@ -65,3 +67,32 @@ after one push→pull round-trip per session.
 4. Laptop: Sync → launch → `/resume` → session appears → select → ask "что делали" → recalls codeword.
 5. Laptop local JSONL: `"cwd"` shows the laptop abspath.
 6. History panel: current session shows local time + real preview (not `<local-command-caveat>`).
+
+### Live validation result (2026-07-13)
+
+Confirmed end-to-end laptop→desktop: transcript synced, `/resume` on the desktop listed and
+restored the session (canary `ЯНТАРНЫЙ-ОСЬМИНОГ-0713` recalled without hints), and all 314 `cwd`
+fields were materialized to the desktop path (0 leftover laptop-path, 0 `cwd`-placeholders; the 22
+remaining `__CC_PROJECT_ROOT__` occurrences are prose mentions in the transcript — proof the
+anchored rewrite touches only the `cwd` field, not arbitrary text).
+
+## Follow-up A — History ↔ `/resume` label match  ✅
+
+The live test surfaced that the native `/resume` picker labels sessions by Claude Code's
+auto-generated `aiTitle` (e.g. `cross-machine-resume-cwd-sync`) while History labeled by the first
+prompt — the same session looked different in the two lists, and our fix (which newly populates the
+`/resume` list with synced sessions) made the mismatch acute.
+
+- `src/models/session.py`: `Session` gains `ai_title` and `last_timestamp`.
+- `src/services/history.py` `_parse_session_metadata`: parse the `ai-title` record's `aiTitle`
+  (last wins) and track last activity; list methods now sort by `last_timestamp` (recency, matching
+  `/resume`) instead of session start.
+- `src/widgets/claude_history_panel.py`: render `aiTitle` as the row title (`.session-title`,
+  accent/bold) above the preview; include it in the search filter.
+
+## Follow-up B — resume a session directly from History  (deferred)
+
+Add a "Resume" action in History that launches `claude --resume <session-id>`, so the native picker
+is never needed. Deferred because it collides with the one-live-session-per-project tmux supervisor
+(resuming another session displaces the current one) — needs a UX decision (replace / new tab /
+confirm). To be planned separately.

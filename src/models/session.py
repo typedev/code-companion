@@ -131,8 +131,10 @@ class Session:
     id: str  # Session UUID (filename without extension)
     path: Path  # Full path to JSONL file
     message_count: int = 0
-    timestamp: datetime | None = None
+    timestamp: datetime | None = None  # First activity (session start)
     preview: str = ""  # First user message preview
+    ai_title: str = ""  # Claude Code auto-generated title (what native /resume shows)
+    last_timestamp: datetime | None = None  # Last activity, for recency ordering
 
     @property
     def display_date(self) -> str:
