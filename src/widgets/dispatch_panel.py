@@ -171,11 +171,13 @@ class DispatchPanel(Gtk.Box):
             try:
                 token = self.tokens.token_for(peer["device_id"])
                 if not token:
-                    # Blocks until the desktop user clicks Allow/Deny.
-                    token = dispatch_api.pair(
-                        peer["host"], peer["port"], self.device_id, self.device_name
+                    # Blocks until the desktop user clicks Allow/Deny. Mutual, so a
+                    # single pairing trusts both directions (file-sync works either way).
+                    from ..services.paired_devices import PairedDevices
+                    token = dispatch_api.pair_mutual(
+                        peer["host"], peer["port"], self.device_id, self.device_name,
+                        peer["device_id"], peer.get("name", ""), PairedDevices(), self.tokens,
                     )
-                    self.tokens.set(peer["device_id"], peer.get("name", ""), token)
                 data = dispatch_api.list_sessions(peer["host"], peer["port"], token)
                 GLib.idle_add(self._show_sessions, peer, row, token, data)
             except dispatch_api.DispatchError as exc:

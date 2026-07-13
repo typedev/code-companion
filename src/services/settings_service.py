@@ -65,12 +65,6 @@ DEFAULT_SETTINGS = {
         "port": 47100,  # broker TCP port (control API + PTY bridge + MCP proxy)
         "advertise": True,  # publish presence via zeroconf while enabled
     },
-    "file_sync": {
-        # Show the "Sync files" button in a project's Files toolbar (mirror a
-        # project's .shared/shared/ set from a paired LAN device). Uses the
-        # dispatch transport; the peer must have dispatch enabled.
-        "enabled": True,
-    },
 }
 
 

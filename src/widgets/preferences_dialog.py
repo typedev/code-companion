@@ -295,19 +295,8 @@ class PreferencesDialog(Adw.PreferencesDialog):
         dispatch_row.connect("notify::active", self._on_dispatch_enabled_changed)
         dispatch_group.add(dispatch_row)
 
-        file_sync_row = Adw.SwitchRow()
-        file_sync_row.set_title("Show 'Sync files' button")
-        file_sync_row.set_subtitle("Mirror a project's .shared/shared/ files from a paired device")
-        file_sync_row.set_active(self.settings.get("file_sync.enabled", True))
-        file_sync_row.connect(
-            "notify::active",
-            lambda row, _p: self.settings.set("file_sync.enabled", row.get_active()),
-        )
-        dispatch_group.add(file_sync_row)
-
-        # Paired devices — one row per device, merging both relationships: allowed
-        # to attach here (Revoke) and/or a remote we paired with (Forget). Mutual
-        # pairing puts a device in both, so we must not list it twice.
+        # Trusted devices — pairing is mutual (bidirectional), so one row per device
+        # with a single Forget that drops trust in both directions.
         from ..services.paired_devices import PairedDevices
         from ..services.remote_tokens import RemoteTokens
 
@@ -317,53 +306,25 @@ class PreferencesDialog(Adw.PreferencesDialog):
             info = here.get(did) or remote.get(did)
             row = Adw.ActionRow()
             row.set_title(info.get("name") or did[:8])
-            row._pair_kinds = set()
-            if did in here:
-                row._pair_kinds.add("here")
-                row.add_suffix(self._pair_action_button(dispatch_group, row, did, "here"))
-            if did in remote:
-                row._pair_kinds.add("remote")
-                row.add_suffix(self._pair_action_button(dispatch_group, row, did, "remote"))
-            self._update_pair_subtitle(row)
+            row.set_subtitle("Trusted device (sync both ways)")
+            btn = Gtk.Button(label="Forget")
+            btn.add_css_class("flat")
+            btn.add_css_class("destructive-action")
+            btn.set_valign(Gtk.Align.CENTER)
+            btn.connect(
+                "clicked",
+                lambda _b, d=did, r=row: (
+                    PairedDevices().revoke(d),
+                    RemoteTokens().forget(d),
+                    dispatch_group.remove(r),
+                ),
+            )
+            row.add_suffix(btn)
             dispatch_group.add(row)
 
         page.add(dispatch_group)
 
         self.add(page)
-
-    def _update_pair_subtitle(self, row):
-        kinds = row._pair_kinds
-        if kinds == {"here", "remote"}:
-            row.set_subtitle("Paired — can attach here and you paired with it")
-        elif kinds == {"here"}:
-            row.set_subtitle("Allowed to attach to this machine")
-        else:
-            row.set_subtitle("Remote machine you've paired with")
-
-    def _pair_action_button(self, group, row, did, kind):
-        from ..services.paired_devices import PairedDevices
-        from ..services.remote_tokens import RemoteTokens
-
-        btn = Gtk.Button(label="Revoke" if kind == "here" else "Forget")
-        btn.add_css_class("flat")
-        if kind == "here":
-            btn.add_css_class("destructive-action")
-        btn.set_valign(Gtk.Align.CENTER)
-
-        def on_click(_b):
-            if kind == "here":
-                PairedDevices().revoke(did)
-            else:
-                RemoteTokens().forget(did)
-            btn.set_sensitive(False)
-            row._pair_kinds.discard(kind)
-            if not row._pair_kinds:
-                group.remove(row)
-            else:
-                self._update_pair_subtitle(row)
-
-        btn.connect("clicked", on_click)
-        return btn
 
     # Signal handlers
 
