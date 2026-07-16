@@ -77,9 +77,13 @@ def sanitize_jsonl(data: bytes) -> bytes:
 # different absolute path on each machine, we store ``cwd`` as a fixed placeholder
 # in the sync repo and materialize it back to the local path on import. Only the
 # top-level ``cwd`` is rewritten (nested tool/snapshot paths are left as-is — they
-# do not affect ``/resume``). The transform is a targeted byte rewrite of just the
-# ``cwd`` value: it never re-serializes the JSON, so the append-only byte-length
-# invariant that ``merge_session_pair`` relies on is preserved.
+# do not affect ``/resume``).
+#
+# CAUTION: this rewrite does NOT preserve byte length (the placeholder is 18 chars,
+# a real path is usually longer), so ``merge_session_pair``'s "longer wins" only
+# holds when both sides are in the SAME encoding. Repo copies written before this
+# shipped are still in real-path form and deadlock against it in both directions —
+# see "legacy repo sessions never converge" in docs/plan-sync-across-machines.md.
 
 _PROJECT_ROOT_PLACEHOLDER = "__CC_PROJECT_ROOT__"
 
@@ -281,25 +285,44 @@ class LocalProjectView:
         path = self._local_path(rel)
         if path is None:
             return
-        if rel.startswith(SESSIONS_PREFIX):
-            # Materialize the placeholder back to this machine's project path so
-            # native /resume lists the session for the current working directory.
-            data = _placeholder_to_cwd(data, self.local_abs_path)
+        data = self.materialized_bytes(rel, data)
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_name(path.name + ".cc-sync.tmp")
         tmp.write_bytes(data)
         tmp.replace(path)  # atomic
 
-    def snapshot(self, snapshot_dir: Path) -> None:
-        """Copy the current local target subtree into snapshot_dir (machine-local)."""
-        snapshot_dir.mkdir(parents=True, exist_ok=True)
-        for rel in self._iter_local_rels():
-            data = self.read_local_bytes(rel)
-            if data is None:
-                continue
-            dest = snapshot_dir / rel
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            dest.write_bytes(data)
+    def materialized_bytes(self, rel: str, data: bytes) -> bytes:
+        """The bytes write_local() would actually land on disk for `data`."""
+        if rel.startswith(SESSIONS_PREFIX):
+            # Materialize the placeholder back to this machine's project path so
+            # native /resume lists the session for the current working directory.
+            return _placeholder_to_cwd(data, self.local_abs_path)
+        return data
+
+    def raw_local_bytes(self, rel: str) -> bytes | None:
+        """Exactly what is on disk now — no sanitizing, no cwd rewrite."""
+        path = self._local_path(rel)
+        if path is None:
+            return self.read_local_bytes(rel)  # CONFIG_REL is virtual
+        return path.read_bytes() if path.exists() else None
+
+    def snapshot_one(self, rel: str, snapshot_dir: Path) -> bool:
+        """Copy one local file into snapshot_dir before we overwrite it.
+
+        Raw on-disk bytes, deliberately not read_local_bytes(): the escape hatch
+        has to restore byte-exactly, and the session read path rewrites cwd to a
+        placeholder — a session restored from that would be silently invisible to
+        native /resume.
+
+        Returns True iff bytes were written.
+        """
+        data = self.raw_local_bytes(rel)
+        if data is None:
+            return False
+        dest = snapshot_dir / rel
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(data)
+        return True
 
 
 # --------------------------------------------------------------------------- #
@@ -409,10 +432,15 @@ def import_project(
     base: dict[str, str],
     snapshot_dir: Path,
 ) -> ImportReport:
-    """Safely apply repo files to local: snapshot -> validate -> atomic write.
+    """Safely apply repo files to local: validate -> snapshot -> atomic write.
 
     Additive (never deletes local files). On a both-sides change, keeps local and
     stashes the repo copy in the snapshot as ``<name>.remote`` for manual merge.
+
+    The snapshot is the escape hatch, so it captures exactly what a write can
+    destroy, plus both sides of a conflict. A run that loses nothing writes
+    nothing — snapshotting the whole subtree per run cost 400MB a pop and kept
+    copies of files no one touched.
     """
     report = ImportReport()
     local = view.local_hashes()
@@ -422,9 +450,24 @@ def import_project(
     if not repo:
         return report
 
-    # 1. snapshot current local state (the escape hatch).
-    view.snapshot(snapshot_dir)
-    report.snapshot_path = str(snapshot_dir)
+    def snapshot(rel: str) -> None:
+        if view.snapshot_one(rel, snapshot_dir):
+            report.snapshot_path = str(snapshot_dir)
+
+    def snapshot_if_destructive(rel: str, new_data: bytes) -> None:
+        """Snapshot only if this write can lose bytes that are on disk right now.
+
+        Decided in raw on-disk bytes — the space the escape hatch restores into.
+        Comparing repo-space bytes instead would misjudge every session, whose
+        cwd is encoded differently on each side.
+        """
+        on_disk = view.raw_local_bytes(rel)
+        if on_disk is None:
+            return  # nothing there to lose
+        landing = view.materialized_bytes(rel, new_data)
+        if landing.startswith(on_disk):
+            return  # identical, or a pure append — the old bytes all survive
+        snapshot(rel)
 
     all_rels = set(local) | set(repo) | set(base)
     for rel in sorted(all_rels):
@@ -444,6 +487,12 @@ def import_project(
                 local_bytes = view.read_local_bytes(rel) or b""
                 merged = merge_session_pair(local_bytes, repo_bytes)
                 if hash_bytes(merged) != h_local:
+                    # A wholesale replace, not a merge — so it can destroy a
+                    # local tail the repo copy lacks. That, and only that, needs
+                    # the escape hatch: an append-only catch-up keeps every local
+                    # byte, and copying a multi-MB session for it is what grew
+                    # this dir to 5.3GB.
+                    snapshot_if_destructive(rel, merged)
                     view.write_local(rel, merged)
                     report.materialized.append(rel)
             continue
@@ -452,10 +501,13 @@ def import_project(
         if action == "materialize":
             data = _repo_read(repo_project_dir, rel)
             if data is not None and validate_file(rel, data):
+                snapshot_if_destructive(rel, data)
                 view.write_local(rel, data)
                 report.materialized.append(rel)
         elif action == "conflict":
-            # Keep local; stash the repo version alongside the snapshot.
+            # Keep local; stash the repo version alongside it in the snapshot so
+            # a manual merge has both sides in one place.
+            snapshot(rel)
             repo_bytes = _repo_read(repo_project_dir, rel)
             if repo_bytes is not None:
                 stash = snapshot_dir / (rel + ".remote")

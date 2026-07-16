@@ -38,6 +38,11 @@ def write(p: Path, text: str):
     p.write_text(text, encoding="utf-8")
 
 
+def write_bytes(p: Path, data: bytes):
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_bytes(data)
+
+
 # --------------------------------------------------------------------------- #
 # decision tables
 # --------------------------------------------------------------------------- #
@@ -188,27 +193,66 @@ def test_import_conflict_keeps_local_and_stashes_remote(tmp_path):
     assert "memory/a.md" in r.conflicts
     assert (view.memory_dir / "a.md").read_text() == "localedit\n"  # local kept
     assert (snap / "memory/a.md.remote").read_text() == "remoteedit\n"
+    # Both sides sit together so a manual merge has everything in one place.
+    assert (snap / "memory/a.md").read_text() == "localedit\n"
+    assert r.snapshot_path == str(snap)
 
 
-def test_import_snapshot_captures_prior_local(tmp_path):
+# --------------------------------------------------------------------------- #
+# snapshots: capture what we overwrite, and nothing else
+# --------------------------------------------------------------------------- #
+
+def test_import_snapshots_overwritten_file(tmp_path):
+    view = make_view(tmp_path)
+    write(view.memory_dir / "a.md", "before\n")
+    repo = tmp_path / "repo" / "projects" / "id"
+    write(repo / "memory" / "a.md", "after\n")
+    base = {"memory/a.md": E.hash_bytes(b"before\n")}  # local agrees with base -> materialize
+    snap = tmp_path / "snap"
+    r = import_project(view, repo, base, snapshot_dir=snap)
+    assert (view.memory_dir / "a.md").read_text() == "after\n"
+    assert (snap / "memory/a.md").read_text() == "before\n"
+    assert r.snapshot_path == str(snap)
+
+
+def test_import_does_not_snapshot_untouched_local(tmp_path):
+    # Inverse of the old contract: a local file the import never touches used to
+    # be copied anyway, which is what grew the snapshot dir to 5.3GB.
     view = make_view(tmp_path)
     write(view.memory_dir / "a.md", "before\n")
     repo = tmp_path / "repo" / "projects" / "id"
     write(repo / "memory" / "b.md", "new\n")
     snap = tmp_path / "snap"
-    import_project(view, repo, base={}, snapshot_dir=snap)
-    assert (snap / "memory/a.md").read_text() == "before\n"
+    r = import_project(view, repo, base={}, snapshot_dir=snap)
+    assert (view.memory_dir / "b.md").read_text() == "new\n"  # import still happened
+    assert not (snap / "memory/a.md").exists()
+    assert r.snapshot_path is None
+
+
+def test_import_materialize_into_empty_local_writes_no_snapshot(tmp_path):
+    view = make_view(tmp_path)
+    repo = tmp_path / "repo" / "projects" / "id"
+    write(repo / "memory" / "x.md", "fresh\n")
+    snap = tmp_path / "snap"
+    r = import_project(view, repo, base={}, snapshot_dir=snap)
+    assert "memory/x.md" in r.materialized
+    assert not snap.exists()  # nothing was overwritten -> nothing to preserve
+    assert r.snapshot_path is None
 
 
 def test_import_rejects_invalid_json(tmp_path):
     view = make_view(tmp_path, fields=["allowedTools"])
     repo = tmp_path / "repo" / "projects" / "id"
     write(repo / "claude-config.json", "{ not json")
-    import_project(view, repo, base={}, snapshot_dir=tmp_path / "snap")
+    snap = tmp_path / "snap"
+    r = import_project(view, repo, base={}, snapshot_dir=snap)
     # Invalid slice must not be applied.
     assert not view.claude_json_path.exists() or "projects" not in json.loads(
         view.claude_json_path.read_text()
     )
+    # Rejected payload -> no write -> no snapshot.
+    assert not snap.exists()
+    assert r.snapshot_path is None
 
 
 # --------------------------------------------------------------------------- #
@@ -316,6 +360,83 @@ def test_session_cwd_normalized_in_repo_and_materialized_per_machine(tmp_path):
     local_bytes = (b.project_dir / "s.jsonl").read_text()
     assert '"cwd":"/home/bob/work/proj"' in local_bytes
     assert "__CC_PROJECT_ROOT__" not in local_bytes
+
+
+def test_import_session_no_write_no_snapshot(tmp_path):
+    # The common case: local is ahead, merge_session_pair keeps local, nothing is
+    # written. Snapshotting here would re-create the whole-subtree-per-run waste.
+    view = make_view(tmp_path, abs_path="/home/u/proj")
+    local = _sess_line("/home/u/proj", m=1) + _sess_line("/home/u/proj", m=2)
+    (view.project_dir / "s.jsonl").write_bytes(local)
+    repo = tmp_path / "repo" / "projects" / "id"
+    write_bytes(repo / "sessions" / "s.jsonl", _sess_line("__CC_PROJECT_ROOT__", m=1))
+    snap = tmp_path / "snap"
+    r = import_project(view, repo, base={}, snapshot_dir=snap)
+    assert (view.project_dir / "s.jsonl").read_bytes() == local  # untouched
+    assert not snap.exists()
+    assert r.snapshot_path is None
+
+
+def test_import_session_content_neutral_rewrite_writes_no_snapshot(tmp_path):
+    # Legacy repo files predate the cwd placeholder, so local (read as placeholder)
+    # never hash-matches the repo copy (real path) and every run "re-imports" them.
+    # The bytes landing on disk are identical to what's there, so nothing is lost
+    # and nothing needs preserving — this churn is what filled 5.3GB.
+    view = make_view(tmp_path, abs_path="/home/u/proj")
+    raw = _sess_line("/home/u/proj", m=1)
+    (view.project_dir / "s.jsonl").write_bytes(raw)
+    repo = tmp_path / "repo" / "projects" / "id"
+    write_bytes(repo / "sessions" / "s.jsonl", raw)  # unnormalized: real path, not placeholder
+    snap = tmp_path / "snap"
+    r = import_project(view, repo, base={}, snapshot_dir=snap)
+    assert (view.project_dir / "s.jsonl").read_bytes() == raw  # disk unchanged
+    assert not snap.exists()
+    assert r.snapshot_path is None
+
+
+def test_import_session_append_only_catchup_writes_no_snapshot(tmp_path):
+    # The other machine appended: local is a prefix of the repo copy, so the
+    # replace loses nothing and a snapshot would be a strict subset of what stays
+    # on disk. This is the dominant real-world case — 93/93 files in a live run.
+    view = make_view(tmp_path, abs_path="/home/u/proj")
+    (view.project_dir / "s.jsonl").write_bytes(_sess_line("/home/u/proj", m=1))
+    repo = tmp_path / "repo" / "projects" / "id"
+    write_bytes(
+        repo / "sessions" / "s.jsonl",
+        _sess_line("__CC_PROJECT_ROOT__", m=1) + _sess_line("__CC_PROJECT_ROOT__", m=2),
+    )
+    snap = tmp_path / "snap"
+    r = import_project(view, repo, base={}, snapshot_dir=snap)
+    assert "sessions/s.jsonl" in r.materialized  # local WAS replaced
+    assert '"m": 2' in (view.project_dir / "s.jsonl").read_text()
+    assert not snap.exists()
+    assert r.snapshot_path is None
+
+
+def test_import_session_divergence_snapshots_prior_local_raw(tmp_path):
+    # Local has a tail the repo copy lacks, so the wholesale replace destroys it —
+    # the snapshot is the only recovery. It must hold raw bytes: written through
+    # the session read path it would carry a placeholder cwd, and a session
+    # restored from that is silently invisible to native /resume.
+    view = make_view(tmp_path, abs_path="/home/u/proj")
+    (view.project_dir / "s.jsonl").write_bytes(
+        _sess_line("/home/u/proj", m=1) + _sess_line("/home/u/proj", mine=True)
+    )
+    repo = tmp_path / "repo" / "projects" / "id"
+    write_bytes(
+        repo / "sessions" / "s.jsonl",
+        _sess_line("__CC_PROJECT_ROOT__", m=1)
+        + _sess_line("__CC_PROJECT_ROOT__", theirs=True)
+        + _sess_line("__CC_PROJECT_ROOT__", m=3),
+    )
+    snap = tmp_path / "snap"
+    r = import_project(view, repo, base={}, snapshot_dir=snap)
+    assert "sessions/s.jsonl" in r.materialized  # local was replaced
+    snapped = (snap / "sessions" / "s.jsonl").read_bytes()
+    assert b'"mine": true' in snapped  # the destroyed tail is recoverable
+    assert b"/home/u/proj" in snapped
+    assert b"__CC_PROJECT_ROOT__" not in snapped
+    assert r.snapshot_path == str(snap)
 
 
 def test_session_export_is_churn_free_after_roundtrip(tmp_path):

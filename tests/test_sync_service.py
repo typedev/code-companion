@@ -125,6 +125,10 @@ def test_history_and_memory_roundtrip_between_machines(tmp_path):
     assert (pdirB / "s1.jsonl").read_text() == '{"a":1}\n'
     assert resB.per_project[str(projB.resolve())].state == SyncState.BEHIND
 
+    # A clean sync overwrites nothing, so it costs no snapshot disk at all.
+    assert not svcA.snapshots_dir.exists()
+    assert not svcB.snapshots_dir.exists()
+
 
 def test_different_projects_on_two_machines_do_not_clobber(tmp_path):
     bare = make_bare(tmp_path)
@@ -377,3 +381,71 @@ def test_snippets_and_rules_ride_the_sync(tmp_path):
         (cfgB / "rules" / "Language Policy.md").read_text(encoding="utf-8")
         == "English only\n"
     )
+
+
+# --------------------------------------------------------------------------- #
+# snapshot retention
+# --------------------------------------------------------------------------- #
+
+def seed_runs(svc: SyncService, stamps: list[str]) -> None:
+    for s in stamps:
+        (svc.snapshots_dir / s / "proj").mkdir(parents=True)
+
+
+def run_dirs(svc: SyncService) -> list[str]:
+    return sorted(p.name for p in svc.snapshots_dir.iterdir() if p.is_dir())
+
+
+def test_prune_snapshots_keeps_newest_three(tmp_path):
+    svc = fresh_service(tmp_path / "m", str(make_bare(tmp_path)))
+    seed_runs(svc, [
+        "20260101T000000", "20260102T000000", "20260103T000000",
+        "20260104T000000", "20260105T000000",
+    ])
+    svc._prune_snapshots()
+    assert run_dirs(svc) == ["20260103T000000", "20260104T000000", "20260105T000000"]
+
+
+def test_prune_snapshots_noop_under_retention(tmp_path):
+    svc = fresh_service(tmp_path / "m", str(make_bare(tmp_path)))
+    seed_runs(svc, ["20260101T000000", "20260102T000000"])
+    svc._prune_snapshots()
+    assert run_dirs(svc) == ["20260101T000000", "20260102T000000"]
+
+
+def test_prune_snapshots_tolerates_missing_dir(tmp_path):
+    # Clean install: the dir is only created when something is actually snapshotted.
+    svc = fresh_service(tmp_path / "m", str(make_bare(tmp_path)))
+    assert not svc.snapshots_dir.exists()
+    svc._prune_snapshots()  # must not raise
+
+
+def test_prune_runs_when_sync_fails(tmp_path, monkeypatch):
+    # Pruning lives in sync()'s finally, so a failing run still cleans up.
+    svc = fresh_service(tmp_path / "m", str(make_bare(tmp_path)))
+    seed_runs(svc, [
+        "20260101T000000", "20260102T000000", "20260103T000000",
+        "20260104T000000", "20260105T000000",
+    ])
+
+    def boom(*a, **kw):
+        raise RuntimeError("run exploded")
+
+    monkeypatch.setattr(svc, "_run", boom)
+    result = svc.sync([str(tmp_path / "m" / "nope")])
+    assert result.error == "run exploded"
+    assert len(run_dirs(svc)) == 3
+
+
+def test_sync_run_prunes_old_snapshots(tmp_path):
+    bare = make_bare(tmp_path)
+    home = tmp_path / "mA"
+    proj = make_project(home, "proj", "https://github.com/test/proj.git")
+    seed_memory(home, proj, {"MEMORY.md": "fact\n"})
+    svc = fresh_service(home, str(bare))
+    seed_runs(svc, [
+        "20260101T000000", "20260102T000000", "20260103T000000",
+        "20260104T000000", "20260105T000000",
+    ])
+    assert svc.sync([str(proj)]).error is None
+    assert len(run_dirs(svc)) == 3

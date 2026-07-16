@@ -7,6 +7,7 @@ step 0-8 sequence from docs/plan-sync-across-machines.md under a single
 """
 
 import json
+import shutil
 import socket
 import subprocess
 from datetime import datetime, timezone
@@ -38,6 +39,10 @@ from .sync_recovery import recover
 from .sync_repo import RebaseConflict, SyncRepo
 
 _GLOBAL_ID = "__global__"
+
+# How many snapshot run dirs to keep. Snapshots are a per-run escape hatch, not
+# an archive: the durable copies live locally and in the sync repo's history.
+_SNAPSHOT_RETENTION = 3
 
 
 def _safe_dirname(name: str) -> str:
@@ -169,8 +174,30 @@ class SyncService:
             result.global_ok = False
         finally:
             self._save_status_cache()
+            self._prune_snapshots()
             lock.release()
         return result
+
+    def _prune_snapshots(self) -> None:
+        """Keep only the newest _SNAPSHOT_RETENTION run dirs.
+
+        Never raises: this runs in sync()'s finally, where an exception would
+        replace an in-flight AuthenticationRequired and break the creds dialog.
+        Deliberately not called on the "busy" path — another process holds the
+        lock there and is writing its own run dir.
+
+        Footgun: runs[:-0] is [], so _SNAPSHOT_RETENTION = 0 would keep
+        everything rather than delete it.
+        """
+        try:
+            if not self.snapshots_dir.exists():
+                return
+            # run_stamp is %Y%m%dT%H%M%S UTC, so name order is chronological.
+            runs = sorted(p for p in self.snapshots_dir.iterdir() if p.is_dir())
+            for old in runs[:-_SNAPSHOT_RETENTION]:
+                shutil.rmtree(old, ignore_errors=True)
+        except OSError:
+            pass
 
     def _run(self, project_paths, credentials, result, progress):
         repo = SyncRepo(self.clone_path, self.settings.get("sync.repo_url"))
@@ -411,12 +438,15 @@ class SyncService:
         base = self.state.get_base(_GLOBAL_ID)
         conflicts: list[str] = []
 
-        # snapshot current local global state.
         snap = snap_root / _GLOBAL_ID
-        for rel, data in local.items():
+
+        def snapshot(rel: str) -> None:
+            """Preserve the prior local copy right before we overwrite/refuse it."""
+            if rel not in local:
+                return  # first-contact fill — nothing local to preserve
             dest = snap / rel
             dest.parent.mkdir(parents=True, exist_ok=True)
-            dest.write_bytes(data)
+            dest.write_bytes(local[rel])
 
         all_rels = set(local) | set(repo_now) | set(base)
         # import (repo -> local)
@@ -426,15 +456,17 @@ class SyncService:
             action = decide_import(hl, base.get(rel), hr)
             if action == "materialize" and rel in repo_now:
                 if E.validate_file(rel, repo_now[rel]):
+                    snapshot(rel)
                     t = local_target(rel)
                     t.parent.mkdir(parents=True, exist_ok=True)
                     tmp = t.with_name(t.name + ".cc-sync.tmp")
                     tmp.write_bytes(repo_now[rel])
                     tmp.replace(t)
             elif action == "conflict":
-                stash = snap / (rel + ".remote")
-                stash.parent.mkdir(parents=True, exist_ok=True)
+                snapshot(rel)
                 if rel in repo_now:
+                    stash = snap / (rel + ".remote")
+                    stash.parent.mkdir(parents=True, exist_ok=True)
                     stash.write_bytes(repo_now[rel])
                 conflicts.append("global/" + rel)
 
