@@ -439,6 +439,59 @@ def test_import_session_divergence_snapshots_prior_local_raw(tmp_path):
     assert r.snapshot_path == str(snap)
 
 
+def test_merge_session_pair_counts_records_not_bytes():
+    P = "/home/alexander/WORK/ufo-widgets-gtk4"
+    # Same two records, different cwd encoding: the legacy real-path form is the
+    # LONGER byte string, so a byte-length rule would wrongly call it the superset.
+    normalized = _sess_line("__CC_PROJECT_ROOT__", m=1) + _sess_line("__CC_PROJECT_ROOT__", m=2)
+    legacy = _sess_line(P, m=1) + _sess_line(P, m=2)
+    assert len(legacy) > len(normalized)
+    assert E.merge_session_pair(normalized, legacy) == normalized  # tie -> normalized wins
+    assert E.merge_session_pair(legacy, normalized) == normalized  # from either side
+
+
+def test_merge_session_pair_prefers_more_records_across_encodings():
+    P = "/home/alexander/WORK/ufo-widgets-gtk4"
+    one_normalized = _sess_line("__CC_PROJECT_ROOT__", m=1)
+    two_legacy = _sess_line(P, m=1) + _sess_line(P, m=2)
+    assert E.merge_session_pair(one_normalized, two_legacy) == two_legacy
+    # ...and a real append still wins even when it is the shorter encoding
+    two_normalized = _sess_line("__CC_PROJECT_ROOT__", m=1) + _sess_line("__CC_PROJECT_ROOT__", m=2)
+    one_legacy = _sess_line(P, m=1)
+    assert len(two_normalized) > len(one_legacy)
+    assert E.merge_session_pair(two_normalized, one_legacy) == two_normalized
+
+
+def test_legacy_repo_session_converges_instead_of_deadlocking(tmp_path):
+    # The regression this whole class of bug lives in: a repo copy written before
+    # the placeholder shipped is the longer byte string, so the old rule picked it
+    # on import AND refused to publish the normalized form on export — forever.
+    # The path must be longer than the 19-char placeholder or the bug can't bite.
+    P = "/home/alexander/WORK/ufo-widgets-gtk4"
+    view = make_view(tmp_path, abs_path=P)
+    raw = _sess_line(P, m=1) + _sess_line(P, m=2)
+    (view.project_dir / "s.jsonl").write_bytes(raw)
+    repo = tmp_path / "repo" / "projects" / "id"
+    write_bytes(repo / "sessions" / "s.jsonl", raw)  # legacy: real path, not placeholder
+    rel = "sessions/s.jsonl"
+
+    # import must not touch a file whose content is already there
+    r = import_project(view, repo, base={}, snapshot_dir=tmp_path / "snap")
+    assert rel not in r.materialized
+    assert (view.project_dir / "s.jsonl").read_bytes() == raw
+
+    # export must publish the normalized form, healing the repo copy
+    e = export_project(view, repo, base={})
+    assert rel in e.written
+    published = (repo / "sessions" / "s.jsonl").read_bytes()
+    assert b"__CC_PROJECT_ROOT__" in published
+    assert P.encode() not in published
+
+    # and now both sides agree -> a second round is a no-op (base can advance)
+    assert view.local_hashes()[rel] == E.hash_file(repo / "sessions" / "s.jsonl")
+    assert export_project(view, repo, base=view.local_hashes()).written == []
+
+
 def test_session_export_is_churn_free_after_roundtrip(tmp_path):
     a = make_view(tmp_path / "A", abs_path="/home/alice/proj")
     write(a.project_dir / "s.jsonl", '{"type":"user","cwd":"/home/alice/proj","m":1}\n')

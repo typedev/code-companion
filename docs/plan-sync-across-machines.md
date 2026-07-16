@@ -127,35 +127,42 @@ The hazard the user named ("two different projects on two machines") is solved b
   unpushed commits; fall back to `settings.sync.last_good_commit` if corrupt.
 - **Never force-push**; `pull --rebase --autostash`; on `RebaseConflict` abort + mark conflict + skip push.
 
-## Known issue: legacy repo sessions never converge
+## Session merge: why records, not bytes (fixed 2026-07-16)
 
-Session files exported **before** the `cwd` placeholder shipped (93bb023) still carry a real
-absolute path in the repo — 94 of 107 files as of 2026-07-16 — and they can never converge.
+`merge_session_pair` used to call the **longer byte string** the superset. That silently
+deadlocked every session exported before the `cwd` placeholder shipped (93bb023) — 94 of 107 files
+in the repo at the time.
 
-The root cause is the byte-length claim in the placeholder comment above `_cwd_rewrite`: rewriting
-`cwd` does **not** preserve byte length. `__CC_PROJECT_ROOT__` is 18 chars against e.g. 37 for
-`/home/alexander/WORK/ufo-widgets-gtk4`, so the same session is ~19 bytes shorter per `cwd`
-occurrence in placeholder form (measured: 21150 bytes over ~1113 records in one file). The
-invariant holds *within* one encoding; `merge_session_pair` compares *across* them.
-
-Both directions then pick the legacy form, because both are "longer wins":
+Rewriting `cwd` does **not** preserve byte length: `__CC_PROJECT_ROOT__` is 19 chars against e.g.
+37 for `/home/alexander/WORK/ufo-widgets-gtk4`, so the placeholder form of a session is ~19 bytes
+shorter per record (measured: 21150 bytes over ~1113 records in one file). The append-only
+byte-length invariant holds *within* one encoding; the comparison spanned two. Both directions
+then picked the legacy form:
 
 - **import**: `h_local` (placeholder) != `h_repo` (real path) → repo is longer → repo wins → local
-  is rewritten with byte-identical content (the disk never actually changes);
-- **export**: same pair → repo is still longer → `hash(merged) == h_repo` → no write.
+  is rewritten with byte-identical content, so the disk never changes and the mismatch survives;
+- **export**: same pair → repo is still longer → `hash(merged) == h_repo` → no write, so the
+  normalized form could never be published.
 
-So the repo copy can never be republished in normalized form, and the base never advances
-(`_advance_base` only records `hl == hr`). Symptom: those projects report `BEHIND` forever and
-every sync rewrites ~93 files. Content-neutral (no data at risk) and it no longer costs snapshot
-disk, but it is churn plus a lying badge.
+The base never advanced (`_advance_base` only records `hl == hr`), so those projects reported
+`BEHIND` forever and every sync rewrote ~93 files to no effect — and, before the snapshot rework,
+copied 366MB per run to protect writes that changed nothing.
 
-Fix: a one-time migration force-publishing this machine's normalized bytes for those files
-(content is identical modulo the `cwd` encoding, so nothing is lost), bypassing the length
-comparison. **Every syncing machine must be on ≥93bb023 first**: a machine that doesn't know the
-placeholder would import it verbatim — writing a literal `cwd: "__CC_PROJECT_ROOT__"` into its
-local sessions, which native `/resume` silently skips — and would re-export its real-path form,
-undoing the migration. Longer term `merge_session_pair` should compare in one normalized space
-rather than trusting raw byte length.
+**Fix**: compare record counts (`count(b"\n")`), which are encoding-independent, and on a tie
+prefer the copy holding the placeholder — the canonical form. That makes a legacy pair converge on
+its own: import stops rewriting (records are equal, local's normalized form wins), export
+republishes the normalized bytes, and the base advances. No migration script was needed; the first
+sync on the fixed code healed 94 files → 1 and turned 12 permanent `BEHIND` into `SYNCED`.
+
+The tie-break is what stops a ping-pong: a machine whose local copy carries *another* machine's
+path can't normalize it (the rewrite is anchored to the local project path), so without preferring
+the placeholder it would keep republishing the legacy form and undo the healing. With it, that
+machine adopts the repo's normalized copy and materializes `cwd` to its own path — which also
+repairs `/resume` there.
+
+Remaining: a session whose `cwd` names a path no machine currently owns (e.g. a project folder
+renamed since) stays in real-path form until the machine holding that path syncs. Harmless — it
+simply hashes equal on both sides and never churns.
 
 ## Module breakdown
 

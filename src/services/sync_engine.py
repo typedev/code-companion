@@ -79,11 +79,9 @@ def sanitize_jsonl(data: bytes) -> bytes:
 # top-level ``cwd`` is rewritten (nested tool/snapshot paths are left as-is — they
 # do not affect ``/resume``).
 #
-# CAUTION: this rewrite does NOT preserve byte length (the placeholder is 18 chars,
-# a real path is usually longer), so ``merge_session_pair``'s "longer wins" only
-# holds when both sides are in the SAME encoding. Repo copies written before this
-# shipped are still in real-path form and deadlock against it in both directions —
-# see "legacy repo sessions never converge" in docs/plan-sync-across-machines.md.
+# The rewrite does NOT preserve byte length (the placeholder is 18 chars, a real
+# path is usually longer), which is why ``merge_session_pair`` compares record
+# counts rather than bytes: the two sides are not always in the same encoding.
 
 _PROJECT_ROOT_PLACEHOLDER = "__CC_PROJECT_ROOT__"
 
@@ -155,8 +153,28 @@ def decide_import(h_local: str | None, h_base: str | None, h_repo: str | None) -
 
 
 def merge_session_pair(local_bytes: bytes, repo_bytes: bytes) -> bytes:
-    """Sessions are append-only: the longer byte string is the superset."""
-    return local_bytes if len(local_bytes) >= len(repo_bytes) else repo_bytes
+    """Sessions are append-only: the copy with more records is the superset.
+
+    Records, not bytes. The two sides can encode ``cwd`` differently — a local
+    read normalizes it to the placeholder, while a repo copy written before that
+    shipped still holds a real absolute path — and the placeholder is shorter
+    than a real path, so byte length is not comparable across the two forms.
+    Comparing it deadlocked every legacy session: the longer real-path form won
+    on import *and* blocked the normalized form on export, forever.
+
+    On a tie, prefer the normalized copy. Same records either way, and the
+    placeholder form is the canonical one, so a legacy pair converges (the
+    normalized side gets published / adopted) instead of ping-ponging between
+    machines that each think their own encoding is the newer one.
+    """
+    n_local = local_bytes.count(b"\n")
+    n_repo = repo_bytes.count(b"\n")
+    if n_local != n_repo:
+        return local_bytes if n_local > n_repo else repo_bytes
+    placeholder = _PROJECT_ROOT_PLACEHOLDER.encode()
+    if placeholder in repo_bytes and placeholder not in local_bytes:
+        return repo_bytes
+    return local_bytes
 
 
 # --------------------------------------------------------------------------- #
