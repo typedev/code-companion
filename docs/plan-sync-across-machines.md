@@ -95,21 +95,67 @@ The hazard the user named ("two different projects on two machines") is solved b
     prefer the longer byte length (append-only ⇒ superset). Never deleted.
   - **Deletions are not exported** (additive-only); cross-machine delete propagation is
     out of scope for MVP (would need tombstones) — documented.
-- **Import (repo → local), safe additive**: `snapshot → materialize to temp → validate →
-  atomic rename`. Both sides changed same file ⇒ **CONFLICT**: keep local, stash repo copy
-  in the snapshot as `<name>.remote`, mark badge — never destructive. Additive: never deletes
+- **Import (repo → local), safe additive**: `validate → snapshot the file we're about to
+  overwrite → atomic rename`. Both sides changed same file ⇒ **CONFLICT**: keep local, stash repo
+  copy in the snapshot as `<name>.remote`, mark badge — never destructive. Additive: never deletes
   a local file absent from the payload. `.claude.json` applied by surgical field patch, never
   whole-file. Validation: every `*.json` parses; `*.jsonl` tolerant of a partial trailing line.
 
 ## Safety / recovery
 
-- Every import snapshots the target subtree to `~/.config/code-companion/sync-snapshots/<iso>/`
-  (machine-local, **not** synced) — the escape hatch that a bad sync cannot corrupt.
+- An import snapshots to `~/.config/code-companion/sync-snapshots/<iso>/` (machine-local, **not**
+  synced) — the escape hatch that a bad sync cannot corrupt. It captures **only** what a run can
+  destroy: a file it overwrites, plus both sides of a conflict (`<name>.remote` next to the local
+  copy, so a manual merge has everything in one place). Raw on-disk bytes, not the normalized read
+  path: a session restored with a placeholder `cwd` would be silently invisible to native
+  `/resume`. A run that changes nothing writes nothing.
+- **The "can this write lose bytes?" test is done in raw on-disk bytes**, the space the escape
+  hatch restores into — not repo-space, which would misjudge every session (its `cwd` is encoded
+  differently on each side). If the bytes about to land start with the bytes already there, the
+  write is identical or a pure append: nothing to preserve. This matters because
+  `merge_session_pair` is a wholesale replace, not a merge, so a catch-up import swaps the whole
+  multi-MB file even when the other machine only appended. Measured on a live 34-project run that
+  re-imported 93 sessions: 366MB → 0.
+- Snapshots are an escape hatch, **not** an archive — the durable copies are the local files and
+  the repo's git history.
+- **Retention**: the newest `_SNAPSHOT_RETENTION` (3) run dirs are kept; older ones are pruned in
+  `sync()`'s `finally`, so a failed or auth-blocked run still cleans up. Snapshotting the whole
+  subtree per run previously grew this dir to 5.3GB of pure duplication.
 - **Schema guard**: if repo `manifest.schemaVersion > SCHEMA_VERSION`, quarantine — refuse
   import, mark ERROR, leave local untouched (protects an older machine against a newer one).
 - **Crash recovery** (`sync_recovery.recover`): heal a clone left mid-rebase (abort) or with
   unpushed commits; fall back to `settings.sync.last_good_commit` if corrupt.
 - **Never force-push**; `pull --rebase --autostash`; on `RebaseConflict` abort + mark conflict + skip push.
+
+## Known issue: legacy repo sessions never converge
+
+Session files exported **before** the `cwd` placeholder shipped (93bb023) still carry a real
+absolute path in the repo — 94 of 107 files as of 2026-07-16 — and they can never converge.
+
+The root cause is the byte-length claim in the placeholder comment above `_cwd_rewrite`: rewriting
+`cwd` does **not** preserve byte length. `__CC_PROJECT_ROOT__` is 18 chars against e.g. 37 for
+`/home/alexander/WORK/ufo-widgets-gtk4`, so the same session is ~19 bytes shorter per `cwd`
+occurrence in placeholder form (measured: 21150 bytes over ~1113 records in one file). The
+invariant holds *within* one encoding; `merge_session_pair` compares *across* them.
+
+Both directions then pick the legacy form, because both are "longer wins":
+
+- **import**: `h_local` (placeholder) != `h_repo` (real path) → repo is longer → repo wins → local
+  is rewritten with byte-identical content (the disk never actually changes);
+- **export**: same pair → repo is still longer → `hash(merged) == h_repo` → no write.
+
+So the repo copy can never be republished in normalized form, and the base never advances
+(`_advance_base` only records `hl == hr`). Symptom: those projects report `BEHIND` forever and
+every sync rewrites ~93 files. Content-neutral (no data at risk) and it no longer costs snapshot
+disk, but it is churn plus a lying badge.
+
+Fix: a one-time migration force-publishing this machine's normalized bytes for those files
+(content is identical modulo the `cwd` encoding, so nothing is lost), bypassing the length
+comparison. **Every syncing machine must be on ≥93bb023 first**: a machine that doesn't know the
+placeholder would import it verbatim — writing a literal `cwd: "__CC_PROJECT_ROOT__"` into its
+local sessions, which native `/resume` silently skips — and would re-export its real-path form,
+undoing the migration. Longer term `merge_session_pair` should compare in one normalized space
+rather than trusting raw byte length.
 
 ## Module breakdown
 
