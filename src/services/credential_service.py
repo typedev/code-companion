@@ -92,11 +92,16 @@ class CredentialService:
 
     # -- clear ---------------------------------------------------------- #
     def clear(self, remote_url: str) -> None:
-        """Remove a stored keyring entry for ``remote_url`` (no-op without libsecret)."""
+        """Remove a stored keyring entry for ``remote_url`` (no-op without libsecret).
+
+        Keyed by credential_key, exactly as store() and lookup() are — keying this
+        by normalize_remote_url instead silently cleared nothing for http(s)
+        remotes, since store() had written the entry under the bare host.
+        """
         if not _SECRET_OK:
             return
         try:
-            key = git_auth.normalize_remote_url(remote_url)
+            key = git_auth.credential_key(remote_url)
             Secret.password_clear_sync(_SCHEMA, {"remote": key}, None)
         except Exception:  # noqa: BLE001
             pass

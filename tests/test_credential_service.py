@@ -57,9 +57,45 @@ def test_keyring_roundtrip_uses_secret_not_store_helper(monkeypatch):
     monkeypatch.setattr(cs.git_auth, "get_stored_credentials", _boom)
 
     svc = CredentialService()
-    svc.store("git@github.com:o/r.git", "bob", "pat")
-    # Keyed by normalize_remote_url -> "github.com/o/r" for both URL forms.
-    assert svc.lookup("https://github.com/o/r") == ("bob", "pat")
+    svc.store("https://github.com/o/r.git", "bob", "pat")
+    assert svc.lookup("https://github.com/o/r.git") == ("bob", "pat")
+
+
+def test_keyring_entry_is_host_scoped_for_http_remotes(monkeypatch):
+    # ca0ade6: access tokens are per-host, so one entry serves every repo on the
+    # host — keyed by credential_key (bare host), NOT normalize_remote_url.
+    fake = _FakeSecret()
+    monkeypatch.setattr(cs, "_SECRET_OK", True)
+    monkeypatch.setattr(cs, "Secret", fake)
+    monkeypatch.setattr(cs, "_SCHEMA", object())
+    monkeypatch.setattr(cs.git_auth, "get_stored_credentials",
+                        lambda url, repo=None: None)  # keyring must answer, not the helper
+
+    svc = CredentialService()
+    svc.store("https://github.com/o/r.git", "bob", "pat")
+    assert list(fake.store) == ["github.com"]
+    # A different repo on the same host hits the same token...
+    assert svc.lookup("https://github.com/other/repo") == ("bob", "pat")
+    # ...while another host does not.
+    assert svc.lookup("https://gitlab.com/o/r") is None
+
+
+def test_clear_removes_what_store_wrote(monkeypatch):
+    # store/lookup/clear must agree on the key: clear() used to compute
+    # normalize_remote_url ("github.com/o/r") while store() wrote the bare host,
+    # so it silently cleared nothing.
+    fake = _FakeSecret()
+    monkeypatch.setattr(cs, "_SECRET_OK", True)
+    monkeypatch.setattr(cs, "Secret", fake)
+    monkeypatch.setattr(cs, "_SCHEMA", object())
+    monkeypatch.setattr(cs.git_auth, "get_stored_credentials",
+                        lambda url, repo=None: None)
+
+    svc = CredentialService()
+    svc.store("https://github.com/o/r.git", "bob", "pat")
+    svc.clear("https://github.com/o/r.git")
+    assert fake.store == {}
+    assert svc.lookup("https://github.com/o/r.git") is None
 
 
 def test_lookup_falls_back_when_keyring_empty(monkeypatch):
