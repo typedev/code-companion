@@ -11,6 +11,7 @@ gi.require_version("Vte", "3.91")
 from gi.repository import Vte, Gtk, GLib, Gdk, Pango, GObject
 
 from ..services import ToastService, SettingsService
+from ..utils.scroll_accumulator import ScrollAccumulator
 
 
 # Dracula palette - matches ptyxis dracula theme
@@ -69,6 +70,14 @@ class TerminalView(Gtk.Box):
         self._argv = argv
         self._respawn_on_exit = argv is None
 
+        # Touchpad scroll damping (vte#2720). Only the multiplexer child is
+        # guaranteed to be in mouse-tracking mode, so only it gets damped —
+        # see _on_scroll.
+        self._scroll_acc = ScrollAccumulator(
+            SettingsService.get_instance().get("terminal.touchpad_pixels_per_click", 25)
+        )
+        self._pointer_xy = (0.0, 0.0)
+
         self._build_ui()
         self._apply_terminal_settings()
         self._spawn_shell(working_directory)
@@ -101,6 +110,19 @@ class TerminalView(Gtk.Box):
         key_controller.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
         key_controller.connect("key-pressed", self._on_key_pressed)
         self.terminal.add_controller(key_controller)
+
+        # Tame touchpad scrolling (vte#2720) — see _on_scroll. CAPTURE, so we get
+        # the event before VTE's own controller does and can take it away.
+        scroll_controller = Gtk.EventControllerScroll.new(
+            Gtk.EventControllerScrollFlags.VERTICAL
+        )
+        scroll_controller.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
+        scroll_controller.connect("scroll", self._on_scroll)
+        self.terminal.add_controller(scroll_controller)
+        # Pointer position, needed to address the mouse events we synthesise.
+        motion_controller = Gtk.EventControllerMotion()
+        motion_controller.connect("motion", self._on_motion)
+        self.terminal.add_controller(motion_controller)
 
         # Horizontal container for left padding + terminal
         hbox = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
@@ -362,6 +384,63 @@ class TerminalView(Gtk.Box):
         for cmd in commands:
             self.terminal.feed_child(f"{cmd}\n".encode())
 
+    def _on_motion(self, controller, x, y):
+        """Track the pointer so synthesised mouse events can be addressed."""
+        self._pointer_xy = (x, y)
+
+    def _on_scroll(self, controller, dx, dy):
+        """Damp touchpad scrolling; leave the mouse wheel strictly alone.
+
+        VTE consumes a scroll delta as a wheel-detent count without ever reading
+        GdkScrollUnit (vte#2720), so a touchpad — whose deltas are *pixels* —
+        sends one wheel click per pixel of finger travel. We take the touchpad's
+        events, bank the pixels, and feed the child one click per
+        ``terminal.touchpad_pixels_per_click``.
+
+        Only the multiplexer child is damped: it is always tmux started with our
+        own tmux-managed.conf (``set -g mouse on``), so mouse tracking is
+        guaranteed on and synthesising SGR mouse reports is correct. A plain
+        shell's mode depends on whatever it is running (htop turns tracking on
+        mid-session) and VTE does not expose it, so shell tabs are left untouched.
+        """
+        if self._argv is None:
+            return False  # shell tab: not our call to make
+
+        event = controller.get_current_event()
+        if event is None or event.get_unit() != Gdk.ScrollUnit.SURFACE:
+            return False  # mouse wheel: already one click per notch
+
+        steps = self._scroll_acc.feed(dy)
+        if steps:
+            self._feed_wheel(steps)
+        return True  # claimed — VTE must not also act on this
+
+    def _feed_wheel(self, steps: int):
+        """Send ``steps`` wheel clicks to the child as SGR mouse reports.
+
+        Mirrors what VTE would emit itself (vte.cc feed_mouse_event): SGR button
+        codes are ``button - 4 + 64``, so 64 = up / 65 = down, with 1-based cell
+        coordinates. tmux enables SGR mode (1006), so this is the encoding the
+        child negotiated.
+        """
+        button = 65 if steps > 0 else 64  # VTE: button = cnt_y > 0 ? 5 : 4
+        col, row = self._pointer_cell()
+        report = f"\x1b[<{button};{col};{row}M".encode()
+        self.terminal.feed_child(report * abs(steps))
+
+    def _pointer_cell(self) -> tuple[int, int]:
+        """Pointer position as 1-based terminal cell coordinates."""
+        char_w = self.terminal.get_char_width() or 1
+        char_h = self.terminal.get_char_height() or 1
+        x, y = self._pointer_xy
+        col = int(x // char_w) + 1
+        row = int(y // char_h) + 1
+        # Clamp inside the grid: an out-of-range report would be nonsense to the
+        # child, and VTE itself refuses to report outside the visible screen.
+        col = max(1, min(col, self.terminal.get_column_count()))
+        row = max(1, min(row, self.terminal.get_row_count()))
+        return col, row
+
     def _on_child_exited(self, terminal, status):
         """Handle shell exit."""
         # Emit signal for parent to handle
@@ -425,6 +504,9 @@ class TerminalView(Gtk.Box):
         """Handle settings changes."""
         if key.startswith("editor."):
             self._apply_font()
+        elif key == "terminal.touchpad_pixels_per_click":
+            # Cached, never read per event: a single gesture delivers ~350 of them.
+            self._scroll_acc.set_pixels_per_click(value)
 
     def _apply_font(self):
         """Apply font settings from app settings (same as editor)."""

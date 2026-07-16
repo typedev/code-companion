@@ -405,6 +405,7 @@ def on_setting_changed(settings, key, value):
 | `editor.word_wrap` | `true` | Wrap long lines at word boundaries |
 | `editor.spellcheck_language` | `"auto"` | libspelling language for the query editor |
 | `terminal.auto_activate_env` | `true` | Auto-activate the project env on terminal spawn (venv/direnv/mise) |
+| `terminal.touchpad_pixels_per_click` | `25` | Touchpad travel per scroll step in the Claude pane (1–100; `1` = VTE's raw behaviour). Works around GNOME/vte#2720 — VTE ignores `GdkScrollUnit` and feeds the app one wheel click per *pixel*. Mouse wheel unaffected |
 | `window.width/height` | `1200/800` | Window size |
 | `window.maximized` | `false` | Maximized state |
 | `window.sidebar_width` | `370` | Sidebar pane width |

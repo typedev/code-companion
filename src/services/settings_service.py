@@ -25,6 +25,15 @@ DEFAULT_SETTINGS = {
         "tab_size": 4,
         "insert_spaces": True,
     },
+    "terminal": {
+        "auto_activate_env": True,
+        # Touchpad damping. VTE feeds the app one wheel click per *pixel* of finger
+        # travel (it ignores GdkScrollUnit — vte#2720), so a flick sends ~1500
+        # clicks where a mouse sends 5. We bank the pixels and emit one step per
+        # this many. 1 = VTE's raw behaviour. No divisor suits every touchpad,
+        # which is exactly why upstream is stuck and why this is a setting.
+        "touchpad_pixels_per_click": 25,
+    },
     "window": {
         "width": 1200,
         "height": 800,

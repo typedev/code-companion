@@ -23,6 +23,7 @@ class PreferencesDialog(Adw.PreferencesDialog):
         # Build pages
         self._build_appearance_page()
         self._build_editor_page()
+        self._build_terminal_page()
         self._build_linters_page()
         self._build_ai_page()
 
@@ -156,6 +157,45 @@ class PreferencesDialog(Adw.PreferencesDialog):
         display_group.add(wrap_row)
 
         page.add(display_group)
+        self.add(page)
+
+    def _build_terminal_page(self):
+        """Build the Terminal preferences page."""
+        page = Adw.PreferencesPage()
+        page.set_title("Terminal")
+        page.set_icon_name("utilities-terminal-symbolic")
+
+        # Scrolling group
+        scroll_group = Adw.PreferencesGroup()
+        scroll_group.set_title("Scrolling")
+        scroll_group.set_description(
+            "VTE sends the running program one scroll step per pixel of touchpad "
+            "movement, which makes the terminal scroll far faster than the rest of "
+            "the app (GNOME/vte#2720). Raising this tames it. The mouse wheel is "
+            "never affected."
+        )
+
+        pixels_row = Adw.SpinRow.new_with_range(1, 100, 1)
+        pixels_row.set_title("Touchpad Travel Per Step")
+        pixels_row.set_subtitle("Pixels of finger movement per scroll step (1 = untamed)")
+        pixels_row.set_value(self.settings.get("terminal.touchpad_pixels_per_click", 25))
+        pixels_row.connect("notify::value", self._on_touchpad_pixels_changed)
+        scroll_group.add(pixels_row)
+
+        page.add(scroll_group)
+
+        # Environment group
+        env_group = Adw.PreferencesGroup()
+        env_group.set_title("Environment")
+
+        env_row = Adw.SwitchRow()
+        env_row.set_title("Auto-Activate Project Environment")
+        env_row.set_subtitle("Activate venv / direnv / mise when a terminal opens")
+        env_row.set_active(self.settings.get("terminal.auto_activate_env", True))
+        env_row.connect("notify::active", self._on_auto_activate_env_changed)
+        env_group.add(env_row)
+
+        page.add(env_group)
         self.add(page)
 
     def _build_linters_page(self):
@@ -363,6 +403,14 @@ class PreferencesDialog(Adw.PreferencesDialog):
     def _on_word_wrap_changed(self, row, pspec):
         """Handle word wrap toggle."""
         self.settings.set("editor.word_wrap", row.get_active())
+
+    def _on_touchpad_pixels_changed(self, row, pspec):
+        """Handle touchpad scroll damping change."""
+        self.settings.set("terminal.touchpad_pixels_per_click", int(row.get_value()))
+
+    def _on_auto_activate_env_changed(self, row, pspec):
+        """Handle auto-activate environment toggle."""
+        self.settings.set("terminal.auto_activate_env", row.get_active())
 
     def _on_mcp_enabled_changed(self, row, pspec):
         """Handle MCP server enabled toggle."""
