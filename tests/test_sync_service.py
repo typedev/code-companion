@@ -467,7 +467,6 @@ def test_sync_run_prunes_old_snapshots(tmp_path):
     assert svc.sync([str(proj)]).error is None
     assert len(run_dirs(svc)) == 3
 
-
 def test_default_settings_never_mutated_by_set(tmp_path):
     # Regression: _deep_merge used to share nested dicts with DEFAULT_SETTINGS,
     # so set() on one instance polluted the defaults for every later instance.
@@ -481,7 +480,6 @@ def test_default_settings_never_mutated_by_set(tmp_path):
     home2 = tmp_path / "m2"
     svc2 = fresh_service(home2, "unused")
     assert svc2.settings.get("appearance.theme") == "system"
-
 
 
 # --------------------------------------------------------------------------- #
@@ -502,7 +500,6 @@ def test_should_auto_sync_matrix():
     # Interval gating once a run happened.
     assert SyncService.should_auto_sync(**{**base, "minutes_since_last": 29.9}) is False
     assert SyncService.should_auto_sync(**{**base, "minutes_since_last": 30.0}) is True
-
 
 
 # --------------------------------------------------------------------------- #
@@ -593,7 +590,6 @@ def test_refresh_from_disk_silently_reports_changes(tmp_path):
 
 
 
-
 # --------------------------------------------------------------------------- #
 # CP9 — non-syncable projects get a warning state
 # --------------------------------------------------------------------------- #
@@ -632,3 +628,10 @@ def test_linked_worktree_still_not_configured(tmp_path):
     status = res.per_project[str(wt)]
     assert status.state == SyncState.NOT_CONFIGURED
     assert "worktree" in status.detail
+
+
+def test_should_offer_wizard():
+    from src.project_manager import should_offer_wizard
+    assert should_offer_wizard(0, False) is True
+    assert should_offer_wizard(0, True) is False
+    assert should_offer_wizard(3, False) is False

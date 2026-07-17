@@ -47,6 +47,11 @@ from .widgets.prompt_search_window import PromptSearchWindow
 from .version import __version__, get_version_info
 
 
+def should_offer_wizard(registered_count: int, dismissed: bool) -> bool:
+    """Offer the first-run restore wizard only on an undecided, empty PM."""
+    return registered_count == 0 and not dismissed
+
+
 def _format_tokens(n: int) -> str:
     """Compact token count, e.g. 480_000_000 -> '480M', 48_200 -> '48.2k'."""
     if n >= 1_000_000:
@@ -148,6 +153,11 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
         self._setup_window()
         self._build_ui()
         self._load_projects()
+        # First-run wizard: an empty PM on (say) a freshly reinstalled OS offers
+        # to restore everything from the sync backup. Deferred an idle tick so
+        # the window presents first.
+        self._post_sync_action = None
+        GLib.idle_add(self._maybe_offer_restore_wizard)
         # Pick up worktrees created outside the app (plain `git worktree add`).
         self._start_worktree_discovery()
 
@@ -1612,9 +1622,57 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
             if parts:
                 msg += " · " + " · ".join(parts)
             self.updated_label.set_text(msg)
+        # A queued follow-up (wizard: sync → restore) runs only on success.
+        action, self._post_sync_action = self._post_sync_action, None
+        if action is not None and not result.error:
+            action()
         return False
 
-    def _show_sync_config_dialog(self):
+    # ------------------------------------------------------------------
+    # First-run restore wizard (fresh machine / reinstalled OS)
+    # ------------------------------------------------------------------
+    def _maybe_offer_restore_wizard(self):
+        settings = self.sync_service.settings
+        dismissed = bool(settings.get("manager.restore_wizard_dismissed", False))
+        if not should_offer_wizard(len(self._rows_by_path), dismissed):
+            return False
+
+        dialog = Adw.AlertDialog()
+        dialog.set_heading("Set up this machine")
+        dialog.set_body(
+            "No projects yet. If you used Code Companion on another machine "
+            "with sync enabled, everything can be restored from your sync "
+            "backup: the project list, cloned repositories, session history, "
+            "agent memory and settings.\n\n"
+            "(Also available later via the sync menu → Restore from backup…)"
+        )
+        dialog.add_response("fresh", "Start fresh")
+        dialog.add_response("restore", "Restore from sync…")
+        dialog.set_response_appearance("restore", Adw.ResponseAppearance.SUGGESTED)
+        dialog.set_default_response("restore")
+        dialog.set_close_response("close")  # Esc: undecided, ask again next launch
+        dialog.connect("response", self._on_wizard_response)
+        dialog.present(self)
+        return False
+
+    def _on_wizard_response(self, _dialog, response):
+        if response not in ("fresh", "restore"):
+            return  # closed without deciding — offer again next launch
+        settings = self.sync_service.settings
+        settings.set("manager.restore_wizard_dismissed", True)
+        if response != "restore":
+            return
+        if self.sync_service.is_configured():
+            self._wizard_sync_then_restore()
+        else:
+            self._show_sync_config_dialog(on_success=self._wizard_sync_then_restore)
+
+    def _wizard_sync_then_restore(self):
+        """Sync (bootstraps the clone + fetches the registry), then restore."""
+        self._post_sync_action = self._on_restore_clicked
+        self._start_sync()
+
+    def _show_sync_config_dialog(self, on_success=None):
         """First-run dialog to set the sync repo URL and enable sync."""
         dialog = Adw.AlertDialog()
         dialog.set_heading("Configure Sync")
@@ -1632,10 +1690,10 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
         dialog.add_response("enable", "Enable & Sync")
         dialog.set_response_appearance("enable", Adw.ResponseAppearance.SUGGESTED)
         dialog.set_default_response("enable")
-        dialog.connect("response", self._on_sync_config_response, entry)
+        dialog.connect("response", self._on_sync_config_response, entry, on_success)
         dialog.present(self)
 
-    def _on_sync_config_response(self, _dialog, response, entry):
+    def _on_sync_config_response(self, _dialog, response, entry, on_success=None):
         if response != "enable":
             return
         url = entry.get_text().strip()
@@ -1643,7 +1701,10 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
             return
         self.sync_service.settings.set("sync.repo_url", url)
         self.sync_service.settings.set("sync.enabled", True)
-        self._on_sync_clicked(None)
+        if on_success is not None:
+            on_success()
+        else:
+            self._on_sync_clicked(None)
 
     @staticmethod
     def _icon_button(svg_name: str, fallback_icon: str, tooltip: str) -> Gtk.Button:
