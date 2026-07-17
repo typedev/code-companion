@@ -222,10 +222,11 @@ def test_schema_guard_refuses_newer_repo(tmp_path):
 
 
 # --------------------------------------------------------------------------- #
-# CP6 — backup mode
+# CP6 — registry export + restore
 # --------------------------------------------------------------------------- #
 
-def test_backup_mode_exports_registry_and_lists_restorable(tmp_path):
+def test_registry_exported_on_every_sync_and_lists_restorable(tmp_path):
+    # No mode switch: the registry must reach the repo on a plain default sync.
     bare = make_bare(tmp_path)
     origin = "https://github.com/test/proj.git"
 
@@ -233,7 +234,6 @@ def test_backup_mode_exports_registry_and_lists_restorable(tmp_path):
     projA = make_project(homeA, "proj", origin)
     seed_memory(homeA, projA, {"M.md": "factA\n"})
     svcA = fresh_service(homeA, str(bare))
-    svcA.settings.set("sync.mode", "backup")
     svcA.sync([str(projA)])
 
     # Registry manifest is written into the repo.
@@ -242,12 +242,27 @@ def test_backup_mode_exports_registry_and_lists_restorable(tmp_path):
     # Machine B with nothing registered: the project shows up as restorable.
     homeB = tmp_path / "mB"
     svcB = fresh_service(homeB, str(bare))
-    svcB.settings.set("sync.mode", "backup")
     svcB.sync([])  # clones the repo; nothing local
     restorable = svcB.list_restorable([])
     assert [e.project_id for e in restorable] == ["github.com_test_proj"]
     assert restorable[0].name == "proj"
     assert restorable[0].remote_url == origin
+
+
+def test_registry_union_preserves_other_machines_entries(tmp_path):
+    bare = make_bare(tmp_path)
+
+    homeA = tmp_path / "mA"
+    projA = make_project(homeA, "aproj", "https://github.com/test/aproj.git")
+    fresh_service(homeA, str(bare)).sync([str(projA)])
+
+    homeB = tmp_path / "mB"
+    projB = make_project(homeB, "bproj", "https://github.com/test/bproj.git")
+    fresh_service(homeB, str(bare)).sync([str(projB)])
+
+    raw = read_repo_file(tmp_path, bare, "global/registry.json")
+    ids = sorted(e["project_id"] for e in json.loads(raw)["projects"])
+    assert ids == ["github.com_test_aproj", "github.com_test_bproj"]
 
 
 def test_restore_project_clones_and_registers(tmp_path):

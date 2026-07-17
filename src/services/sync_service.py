@@ -255,9 +255,11 @@ class SyncService:
         # Global layer (plans + settings).
         global_conflicts = self._sync_global(repo, snap_root)
 
-        # Backup mode also records the project registry for clean-OS restore.
-        if self.settings.get("sync.mode") == "backup":
-            self._export_registry(repo, syncable)
+        # Always record the project registry for clean-OS restore: the list of
+        # projects (+ names/remotes) is tiny and without it a fresh machine has
+        # nothing to enumerate. (This retired the old "backup mode" toggle —
+        # registry export was the only thing sync.mode ever controlled.)
+        self._export_registry(repo, syncable)
 
         # Ensure manifest is present/current.
         self._write_manifest(repo)

@@ -1596,13 +1596,6 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
         configure.connect("activate", lambda *_: self._show_sync_config_dialog())
         group.add_action(configure)
 
-        backup_on = self.sync_service.settings.get("sync.mode") == "backup"
-        backup = Gio.SimpleAction.new_stateful(
-            "backup_mode", None, GLib.Variant.new_boolean(backup_on)
-        )
-        backup.connect("change-state", self._on_backup_mode_toggle)
-        group.add_action(backup)
-
         restore = Gio.SimpleAction.new("restore", None)
         restore.connect("activate", lambda *_: self._on_restore_clicked())
         group.add_action(restore)
@@ -1611,15 +1604,8 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
 
         menu = Gio.Menu()
         menu.append("Configure sync…", "sync.configure")
-        menu.append("Backup mode (all projects + registry)", "sync.backup_mode")
         menu.append("Restore from backup…", "sync.restore")
         return menu
-
-    def _on_backup_mode_toggle(self, action, value):
-        action.set_state(value)
-        self.sync_service.settings.set(
-            "sync.mode", "backup" if value.get_boolean() else "selected"
-        )
 
     def _on_restore_clicked(self):
         """List projects present in the backup but not on this machine, to clone."""
