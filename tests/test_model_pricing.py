@@ -45,3 +45,34 @@ def test_format_cost_labels_estimate():
     assert mp.format_cost(mp.CostEstimate(0.004, False)) == "<$0.01 (est.)"
     # partial estimates get a trailing '+'
     assert mp.format_cost(mp.CostEstimate(1.5, True)) == "~$1.50+ (est.)"
+
+
+def test_openai_gpt56_cost_math():
+    # gpt-5.6-terra: input $2.50, output $15, cache-read 0.1x, cache-write 1.25x.
+    usage = TokenUsage(input=1_000_000, output=1_000_000,
+                       cache_creation=1_000_000, cache_read=1_000_000)
+    cost = mp.cost_for_model("gpt-5.6-terra", usage)
+    # 2.5 + 15 + (2.5 * 1.25) + (2.5 * 0.10) = 2.5 + 15 + 3.125 + 0.25
+    assert cost == 20.875
+
+
+def test_openai_pre56_free_cache_write():
+    usage = TokenUsage(cache_creation=1_000_000)
+    assert mp.cost_for_model("gpt-5.4", usage) == 0.0
+
+
+def test_gpt_family_fallback_order():
+    usage = TokenUsage(input=1_000_000)
+    # A dated terra variant falls back to the gpt-5.6 (terra) family rate...
+    assert mp.cost_for_model("gpt-5.6-terra-2026-09", usage) == 2.5
+    # ...while sol/luna variants hit their own, more specific needles.
+    assert mp.cost_for_model("gpt-5.6-sol-preview", usage) == 5.0
+    # Codex-tuned ids price via the codex needle regardless of gpt version.
+    assert mp.cost_for_model("gpt-5.3-codex", usage) == 2.5
+
+
+def test_codex_unknown_stays_partial():
+    # The Codex reader's synthetic fallback id must stay unpriced: the family
+    # needle is "-codex", so "codex-unknown" reports an honest partial estimate.
+    est = mp.estimate_cost({"codex-unknown": TokenUsage(output=1_000_000)})
+    assert est.is_partial is True

@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+  <!-- Neutral terminal-prompt mark for the Codex CLI (no trademarked logo). -->
+  <rect x="2" y="3" width="20" height="18" rx="3" fill="none" stroke="#10a37f" stroke-width="1.8"/>
+  <path d="M6.5 9l4 3-4 3" fill="none" stroke="#10a37f" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+  <line x1="12.5" y1="15.6" x2="17.5" y2="15.6" stroke="#10a37f" stroke-width="1.8" stroke-linecap="round"/>
+</svg>

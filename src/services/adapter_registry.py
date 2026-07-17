@@ -1,16 +1,17 @@
 """Registry for AI CLI provider adapters."""
 
 from .provider_adapter import ProviderAdapter
-from .adapters import ClaudeHistoryAdapter
+from .adapters import ClaudeHistoryAdapter, CodexAdapter
 
 
 # Register all available adapters
 # Key is the provider ID used in settings
 ADAPTERS: dict[str, type[ProviderAdapter]] = {
     "claude": ClaudeHistoryAdapter,
+    "codex": CodexAdapter,
     # Future adapters:
     # "gemini": GeminiHistoryAdapter,
-    # "codex": CodexAdapter,
+    # "grok": GrokAdapter,
 }
 
 
