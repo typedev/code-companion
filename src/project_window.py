@@ -1187,8 +1187,29 @@ class ProjectWindow(Adw.ApplicationWindow):
 
         terminal.connect("child-exited", self._on_claude_exited)
 
+        # Provider-neutral "attended" signal: focusing or typing into the
+        # terminal clears this session's needs-attention marker. Claude also
+        # clears via its own hooks; Codex has no injectable clear hook
+        # (trust-gated), so this is its only clear path.
+        focus_controller = Gtk.EventControllerFocus()
+        focus_controller.connect("enter", self._on_claude_terminal_attended)
+        terminal.terminal.add_controller(focus_controller)
+        key_controller = Gtk.EventControllerKey()
+        key_controller.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
+        key_controller.connect("key-pressed", self._on_claude_terminal_key)
+        terminal.terminal.add_controller(key_controller)
+
         self.claude_terminal = terminal
         terminal.terminal.grab_focus()
+
+    def _on_claude_terminal_attended(self, *_args) -> None:
+        """User focused the agent terminal: the session is being attended."""
+        session_notify.clear_marker(self._claude_session_name())
+
+    def _on_claude_terminal_key(self, *_args) -> bool:
+        """Typing into the agent terminal also counts as attending it."""
+        session_notify.clear_marker(self._claude_session_name())
+        return False  # observe only; VTE handles the key
 
     def _build_launch_plan(self, mcp_env: dict | None) -> LaunchPlan:
         """The adapter-built CLI launch plan for a fresh session.

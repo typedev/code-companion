@@ -124,3 +124,82 @@ def test_mcp_endpoint_url_forms():
     ep = McpEndpoint(port=20417)
     assert ep.url() == "http://127.0.0.1:${CC_MCP_PORT}/mcp"
     assert ep.url(literal_port=True) == "http://127.0.0.1:20417/mcp"
+
+
+# --- Codex launch composition ---------------------------------------------
+
+from src.services.adapters.codex_adapter import CodexAdapter, _toml_string  # noqa: E402
+
+
+@pytest.fixture
+def codex(tmp_path, monkeypatch):
+    from src.services import session_notify as sn
+    monkeypatch.setattr(sn, "get_config_dir", lambda: tmp_path / "config")
+    return CodexAdapter()
+
+
+def _overrides(command: str) -> list[str]:
+    argv = shlex.split(command)
+    assert argv[0] == "codex"
+    return [argv[i + 1] for i, a in enumerate(argv) if a == "-c"]
+
+
+def test_codex_bare_launch(codex, tmp_path):
+    plan = codex.build_launch(
+        project_path=tmp_path, session_name="cc-x", mcp=None,
+        extra_system_prompt=None, notifications=False,
+    )
+    assert plan.command == "codex"
+    assert plan.temp_files == []
+
+
+def test_codex_mcp_overrides(codex, tmp_path):
+    from src.services.provider_adapter import McpEndpoint
+    plan = codex.build_launch(
+        project_path=tmp_path, session_name="cc-x",
+        mcp=McpEndpoint(port=20417), extra_system_prompt=None, notifications=False,
+    )
+    ov = _overrides(plan.command)
+    assert 'mcp_servers.code-companion.url="http://127.0.0.1:20417/mcp"' in ov
+    assert 'mcp_servers.code-companion.bearer_token_env_var="CC_MCP_TOKEN"' in ov
+    assert 'mcp_servers.code-companion.default_tools_approval_mode="auto"' in ov
+    # The token itself must never appear anywhere in argv.
+    assert "CC_MCP_TOKEN" in plan.command and "Bearer " not in plan.command
+    assert plan.temp_files == []
+
+
+def test_codex_notify_override_and_script(codex, tmp_path):
+    plan = codex.build_launch(
+        project_path=tmp_path, session_name="cc-sess1", mcp=None,
+        extra_system_prompt=None, notifications=True,
+    )
+    ov = _overrides(plan.command)
+    notify = [o for o in ov if o.startswith("notify=")]
+    assert len(notify) == 1
+    assert '"cc-sess1"' in notify[0] and "codex-notify.sh" in notify[0]
+    # The script is a stable managed file, NOT a launch temp file.
+    assert plan.temp_files == []
+
+
+def test_codex_system_prompt_toml_escaped(codex, tmp_path):
+    prompt = 'Line "one"\nLine\ttwo \\ backslash'
+    plan = codex.build_launch(
+        project_path=tmp_path, session_name="cc-x", mcp=None,
+        extra_system_prompt=prompt, notifications=False,
+    )
+    ov = _overrides(plan.command)
+    di = [o for o in ov if o.startswith("developer_instructions=")]
+    assert di == [
+        'developer_instructions="Line \\"one\\"\\nLine\\ttwo \\\\ backslash"'
+    ]
+
+
+def test_toml_string_control_chars():
+    assert _toml_string("a\x01b") == '"a\\u0001b"'
+
+
+def test_codex_capabilities():
+    caps = CodexAdapter.capabilities
+    assert caps.mcp and caps.notifications and caps.system_prompt_append
+    assert caps.notification_clears is False
+    assert CodexAdapter.instruction_filenames == ("AGENTS.md",)
