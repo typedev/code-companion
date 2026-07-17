@@ -126,6 +126,8 @@ def test_history_and_memory_roundtrip_between_machines(tmp_path):
     assert resB.per_project[str(projB.resolve())].state == SyncState.BEHIND
 
     # A clean sync overwrites nothing, so it costs no snapshot disk at all.
+    # (Both machines carry identical default app-settings slices, so even the
+    # settings rel agrees byte-for-byte.)
     assert not svcA.snapshots_dir.exists()
     assert not svcB.snapshots_dir.exists()
 
@@ -500,3 +502,91 @@ def test_should_auto_sync_matrix():
     # Interval gating once a run happened.
     assert SyncService.should_auto_sync(**{**base, "minutes_since_last": 29.9}) is False
     assert SyncService.should_auto_sync(**{**base, "minutes_since_last": 30.0}) is True
+
+
+
+# --------------------------------------------------------------------------- #
+# CP8 — app settings sync (allowlisted slice)
+# --------------------------------------------------------------------------- #
+
+def test_app_settings_roundtrip_excludes_per_machine_keys(tmp_path):
+    bare = make_bare(tmp_path)
+    origin = "https://github.com/test/proj.git"
+
+    homeA = tmp_path / "mA"
+    projA = make_project(homeA, "proj", origin)
+    svcA = fresh_service(homeA, str(bare))
+    svcA.settings.set("appearance.theme", "dark")
+    svcA.settings.set("editor.font_size", 15)
+    svcA.settings.set("window.width", 999)
+    svcA.sync([str(projA)])
+
+    # The repo slice carries preferences but no per-machine groups.
+    raw = read_repo_file(tmp_path, bare, "global/app-settings.json")
+    slice_data = json.loads(raw)
+    assert slice_data["appearance"]["theme"] == "dark"
+    assert slice_data["editor"]["font_size"] == 15
+    assert "window" not in slice_data and "sync" not in slice_data
+    assert "dispatch" not in slice_data
+
+    # Machine B with its own per-machine values.
+    homeB = tmp_path / "mB"
+    projB = make_project(homeB, "proj", origin)
+    svcB = fresh_service(homeB, str(bare))
+    svcB.settings.set("window.width", 555)
+    repo_url_b = svcB.settings.get("sync.repo_url")
+    svcB.sync([str(projB)])
+
+    stored = json.loads(
+        (homeB / ".config" / "code-companion" / "settings.json").read_text()
+    )
+    assert stored["appearance"]["theme"] == "dark"      # imported
+    assert stored["editor"]["font_size"] == 15          # imported
+    assert stored["window"]["width"] == 555             # per-machine survived
+    assert stored["sync"]["repo_url"] == repo_url_b     # never synced
+
+
+def test_app_settings_export_is_deterministic(tmp_path):
+    from src.services.settings_service import export_syncable_bytes
+
+    f = tmp_path / "settings.json"
+    f.write_text(json.dumps({"editor": {"b": 1, "a": 2}, "window": {"w": 9}}))
+    first = export_syncable_bytes(f)
+    second = export_syncable_bytes(f)
+    assert first == second
+    assert b"window" not in first
+
+
+def test_merge_syncable_keeps_unknown_and_local_keys(tmp_path):
+    from src.services.settings_service import merge_syncable_into_file
+
+    f = tmp_path / "settings.json"
+    f.write_text(json.dumps({"window": {"w": 9}, "editor": {"tab_size": 2}}))
+    incoming = json.dumps(
+        {"editor": {"font_size": 15}, "window": {"w": 111}, "sync": {"enabled": True}}
+    ).encode()
+    merge_syncable_into_file(f, incoming)
+    stored = json.loads(f.read_text())
+    assert stored["editor"] == {"tab_size": 2, "font_size": 15}  # merged
+    assert stored["window"] == {"w": 9}    # incoming per-machine group ignored
+    assert "enabled" not in stored.get("sync", {})  # sync.* never imported
+
+
+def test_refresh_from_disk_silently_reports_changes(tmp_path):
+    home = tmp_path / "m"
+    svc = fresh_service(home, "unused")
+    settings = svc.settings
+    settings.set("appearance.theme", "light")
+
+    # External (worker-thread-style) file mutation.
+    f = home / ".config" / "code-companion" / "settings.json"
+    stored = json.loads(f.read_text())
+    stored["appearance"]["theme"] = "dark"
+    f.write_text(json.dumps(stored))
+
+    seen = []
+    settings.connect("changed", lambda _s, key, value: seen.append((key, value)))
+    changed = settings.refresh_from_disk_silently()
+    assert ("appearance.theme", "dark") in changed
+    assert seen == []  # silent: emission is the caller's (main-thread) job
+    assert settings.get("appearance.theme") == "dark"

@@ -1576,6 +1576,11 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
         self.sync_button.set_sensitive(True)
         self.refresh_spinner.stop()
         self._last_sync_at = GLib.get_monotonic_time()
+        if not result.error:
+            # Synced app settings were merged (file + memory) by the worker;
+            # emit their changed signals here on the main thread (live apply).
+            for key, value in self.sync_service.take_settings_changes():
+                self.sync_service.settings.emit("changed", key, value)
         if not result.error and not silent:
             # A successful attended run proves credentials work again.
             self._auto_sync_blocked = False

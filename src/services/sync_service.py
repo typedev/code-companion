@@ -32,6 +32,7 @@ from . import session_summary_service
 from . import sync_engine as E
 from .config_path import get_config_dir
 from .git_service import AuthenticationRequired
+from . import settings_service as app_settings
 from .settings_service import SettingsService
 from .sync_engine import LocalProjectView, decide_export, decide_import
 from .sync_lock import SyncLock
@@ -70,6 +71,9 @@ class SyncService:
 
         self.state = SyncStateStore(self.config_dir / "sync_state.json")
         self._status_cache: dict[str, dict] = self._load_status_cache()
+        # App-settings keys changed by the last sync's import-merge; the UI
+        # collects them (main thread) to emit `changed` for live apply.
+        self._settings_changes: list[tuple[str, object]] = []
 
     @classmethod
     def get_instance(cls) -> "SyncService":
@@ -85,6 +89,11 @@ class SyncService:
         return bool(
             self.settings.get("sync.enabled") and self.settings.get("sync.repo_url")
         )
+
+    def take_settings_changes(self) -> list[tuple[str, object]]:
+        """Changed app-settings leaves from the last sync (drained on read)."""
+        changes, self._settings_changes = self._settings_changes, []
+        return changes
 
     @property
     def _fields(self) -> list[str]:
@@ -159,6 +168,7 @@ class SyncService:
         Raises ``AuthenticationRequired`` so the caller can drive the creds dialog.
         """
         result = SyncResult()
+        self._settings_changes = []
         lock = SyncLock(self.clone_path)
         if not lock.acquire():
             result.error = "busy"
@@ -370,6 +380,12 @@ class SyncService:
         # are GTK singletons with file monitors — not for worker threads).
         snippets_local = get_config_dir() / "snippets"
         rules_local = get_config_dir() / "rules"
+        # The app's own settings sync as an allowlisted SLICE (file-level, no
+        # GObject singleton on this worker thread): exported as deterministic
+        # bytes, imported by MERGING into the local file so per-machine keys
+        # (window.*, sync.*, dispatch.*) survive. Distinct rel from Claude's
+        # "settings.json".
+        app_settings_local = get_config_dir() / "settings.json"
 
         def local_bytes() -> dict[str, bytes]:
             out: dict[str, bytes] = {}
@@ -392,6 +408,9 @@ class SyncService:
                     out["messages/" + rel] = p.read_bytes()
             if settings_local.exists():
                 out["settings.json"] = settings_local.read_bytes()
+            out["app-settings.json"] = app_settings.export_syncable_bytes(
+                app_settings_local
+            )
             return out
 
         def repo_bytes() -> dict[str, bytes]:
@@ -417,6 +436,9 @@ class SyncService:
             sj = global_dir / "settings.json"
             if sj.exists():
                 out["settings.json"] = sj.read_bytes()
+            asj = global_dir / "app-settings.json"
+            if asj.exists():
+                out["app-settings.json"] = asj.read_bytes()
             return out
 
         def local_target(rel: str) -> Path:
@@ -456,14 +478,35 @@ class SyncService:
             hl = E.hash_bytes(local[rel]) if rel in local else None
             hr = E.hash_bytes(repo_now[rel]) if rel in repo_now else None
             action = decide_import(hl, base.get(rel), hr)
+            if rel == "app-settings.json" and action == "conflict":
+                # Settings never surface conflicts: every machine has a full
+                # slice (defaults), so first contact between two machines would
+                # always "conflict". Instead the repo values win per key (merge
+                # below), the prior local slice is snapshotted, and the export
+                # pass publishes the union.
+                action = "materialize"
             if action == "materialize" and rel in repo_now:
                 if E.validate_file(rel, repo_now[rel]):
                     snapshot(rel)
-                    t = local_target(rel)
-                    t.parent.mkdir(parents=True, exist_ok=True)
-                    tmp = t.with_name(t.name + ".cc-sync.tmp")
-                    tmp.write_bytes(repo_now[rel])
-                    tmp.replace(t)
+                    if rel == "app-settings.json":
+                        # Merge the synced slice — never replace the file
+                        # (per-machine keys must survive) — then refresh this
+                        # process's in-memory settings silently, or a later
+                        # set() would re-save stale memory over the merge. The
+                        # changed keys are handed to the UI (main thread) for
+                        # signal emission after the run.
+                        app_settings.merge_syncable_into_file(
+                            app_settings_local, repo_now[rel]
+                        )
+                        self._settings_changes = (
+                            self.settings.refresh_from_disk_silently()
+                        )
+                    else:
+                        t = local_target(rel)
+                        t.parent.mkdir(parents=True, exist_ok=True)
+                        tmp = t.with_name(t.name + ".cc-sync.tmp")
+                        tmp.write_bytes(repo_now[rel])
+                        tmp.replace(t)
             elif action == "conflict":
                 snapshot(rel)
                 if rel in repo_now:
@@ -478,6 +521,8 @@ class SyncService:
             hl = E.hash_bytes(local[rel]) if rel in local else None
             hr = E.hash_bytes(repo_now[rel]) if rel in repo_now else None
             action = decide_export(hl, base.get(rel), hr)
+            if rel == "app-settings.json" and action == "conflict":
+                action = "write"  # publish the merged union (see import pass)
             if action == "write" and rel in local:
                 t = repo_target(rel)
                 t.parent.mkdir(parents=True, exist_ok=True)

@@ -2,7 +2,8 @@
 
 import copy
 import json
-from typing import Any
+from pathlib import Path
+from typing import Any, Iterator
 
 import gi
 
@@ -11,6 +12,82 @@ gi.require_version("GObject", "2.0")
 from gi.repository import GObject
 
 from .config_path import get_config_dir
+from ..utils.atomic_write import atomic_write_text
+
+# Cross-machine sync allowlist: preference groups that mean the same thing on
+# every machine. Everything else is per-machine and must NEVER sync — window
+# geometry, sync.* itself (feedback loop / machine identity), dispatch pairing,
+# hardware-specific input tuning.
+SYNC_GROUPS = ("appearance", "editor", "git", "mcp", "ai", "sessions", "linters")
+SYNC_EXTRA_KEYS = ("terminal.auto_activate_env",)
+
+
+def _iter_leaves(node: dict, prefix: str = "") -> Iterator[tuple[str, Any]]:
+    """Yield (dot.key, value) for every leaf of a nested settings dict."""
+    for key, value in node.items():
+        dotted = f"{prefix}{key}"
+        if isinstance(value, dict):
+            yield from _iter_leaves(value, dotted + ".")
+        else:
+            yield dotted, value
+
+
+def syncable_slice(settings: dict) -> dict:
+    """The allowlisted, machine-independent slice of a settings dict."""
+    out: dict = {}
+    for group in SYNC_GROUPS:
+        value = settings.get(group)
+        if isinstance(value, dict) and value:
+            out[group] = value
+    for dotted in SYNC_EXTRA_KEYS:
+        group, leaf = dotted.split(".", 1)
+        value = settings.get(group)
+        if isinstance(value, dict) and leaf in value:
+            out.setdefault(group, {})[leaf] = value[leaf]
+    return out
+
+
+def export_syncable_bytes(settings_file: Path) -> bytes:
+    """Deterministic bytes of the syncable slice of a settings.json file.
+
+    Reads the FILE (stored overrides only — untouched defaults have nothing to
+    say cross-machine), so it is safe on sync worker threads: no singleton, no
+    GObject signals. Deterministic (sorted keys) so content hashes are stable.
+    """
+    try:
+        stored = json.loads(settings_file.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        stored = {}
+    if not isinstance(stored, dict):
+        stored = {}
+    return json.dumps(syncable_slice(stored), indent=2, sort_keys=True).encode()
+
+
+def merge_syncable_into_file(settings_file: Path, incoming: bytes) -> None:
+    """Merge an incoming synced slice into settings.json (atomic, file-level).
+
+    Only allowlisted keys are taken from ``incoming``; every per-machine key in
+    the local file survives untouched. No signals — callers on the main thread
+    follow up with ``SettingsService.reload_from_disk()`` for live apply.
+    """
+    try:
+        data = json.loads(incoming.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return
+    if not isinstance(data, dict):
+        return
+    try:
+        current = json.loads(settings_file.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        current = {}
+    if not isinstance(current, dict):
+        current = {}
+    for group, value in syncable_slice(data).items():
+        if isinstance(current.get(group), dict) and isinstance(value, dict):
+            current[group] = {**current[group], **value}
+        else:
+            current[group] = value
+    atomic_write_text(settings_file, json.dumps(current, indent=2))
 
 
 # Default settings
@@ -214,6 +291,28 @@ class SettingsService(GObject.Object):
     def get_all(self) -> dict:
         """Get all settings as a dict."""
         return self._settings.copy()
+
+    def refresh_from_disk_silently(self) -> list[tuple[str, Any]]:
+        """Re-read settings.json into memory WITHOUT emitting signals.
+
+        For sync worker threads: after the file-level merge of synced keys the
+        in-memory copy must catch up immediately (any later ``set()`` in the
+        same process would otherwise re-save the stale memory over the merge).
+        Returns the changed ``(dot.key, new_value)`` leaves so the caller can
+        emit ``changed`` for them later ON THE MAIN THREAD (live apply).
+        """
+        before = self._settings
+        self._load()
+        changed: list[tuple[str, Any]] = []
+        for key, new_value in _iter_leaves(self._settings):
+            old_value = before
+            for part in key.split("."):
+                old_value = old_value.get(part) if isinstance(old_value, dict) else None
+                if old_value is None:
+                    break
+            if old_value != new_value:
+                changed.append((key, new_value))
+        return changed
 
     def reset(self, key: str | None = None) -> None:
         """Reset setting(s) to default.
