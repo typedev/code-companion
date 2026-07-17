@@ -1,18 +1,17 @@
 """Project workspace window."""
 
-import json
 import os
 import secrets
 import shutil
 import socket
 import subprocess
-import tempfile
 from pathlib import Path
 
 from gi.repository import Adw, Gtk, GLib, Gdk, Gio
 
 from .models import Session
 from .services import get_adapter, ProjectLock, ProjectRegistry, GitService, IconCache, ToastService, SettingsService, FileMonitorService, IssuesService, McpServer, run_async
+from .services import LaunchPlan, McpEndpoint
 from .services import session_notify, message_store
 from .utils import git_auth, claude_session
 from .utils.project_identity import resolve_message_address
@@ -47,8 +46,7 @@ class ProjectWindow(Adw.ApplicationWindow):
         self.claude_container: Gtk.Box | None = None
         # Per-window MCP control surface (started with the Claude session).
         self.mcp_server: McpServer | None = None
-        self._mcp_config_path: str | None = None
-        self._notify_settings_path: str | None = None
+        self._launch_temp_files: list[Path] = []
         self._workspace_collapsed = False
         self._workspace_split_position = 260
         self._claude_collapsed = False
@@ -1192,21 +1190,23 @@ class ProjectWindow(Adw.ApplicationWindow):
         self.claude_terminal = terminal
         terminal.terminal.grab_focus()
 
-    def _claude_cli_command(self, mcp_env: dict | None) -> str:
-        """The CLI launch string, with --mcp-config and --settings flags."""
-        cli_command = self.adapter.cli_command
+    def _build_launch_plan(self, mcp_env: dict | None) -> LaunchPlan:
+        """The adapter-built CLI launch plan for a fresh session.
+
+        Tracks the plan's read-once temp files for deletion at teardown.
+        """
+        endpoint = None
         if mcp_env is not None:
-            cli_command = (
-                f"{cli_command} --strict-mcp-config "
-                f"--mcp-config {GLib.shell_quote(self._mcp_config_path)}"
-            )
-        settings_path = self._write_notify_settings()
-        if settings_path:
-            cli_command = f"{cli_command} --settings {GLib.shell_quote(settings_path)}"
-        prompt = self._worktree_system_prompt()
-        if prompt:
-            cli_command = f"{cli_command} --append-system-prompt {GLib.shell_quote(prompt)}"
-        return cli_command
+            endpoint = McpEndpoint(port=int(mcp_env["CC_MCP_PORT"]))
+        plan = self.adapter.build_launch(
+            project_path=self.project_path,
+            session_name=self._claude_session_name(),
+            mcp=endpoint,
+            extra_system_prompt=self._worktree_system_prompt(),
+            notifications=self.settings.get("sessions.notifications", True),
+        )
+        self._launch_temp_files.extend(plan.temp_files)
+        return plan
 
     def _worktree_system_prompt(self) -> str | None:
         """The delegation protocol appended for a worktree session (Stage 5).
@@ -1244,28 +1244,15 @@ class ProjectWindow(Adw.ApplicationWindow):
             f"branch."
         )
 
-    def _write_notify_settings(self) -> str | None:
-        """Write a temp --settings file with a Notification hook that marks this
-        session as needing attention. Returns the path, or None when disabled."""
-        if not self.settings.get("sessions.notifications", True):
-            return None
-        try:
-            payload = session_notify.hook_settings(self._claude_session_name())
-            fd, path = tempfile.mkstemp(prefix="cc_notify_", suffix=".json")
-            os.write(fd, json.dumps(payload).encode())
-            os.close(fd)
-            self._notify_settings_path = path
-            return path
-        except OSError:
-            return None
-
     def _start_claude_plain(self):
         """Fallback when tmux is unavailable: a plain, non-persistent session."""
         mcp_env = self._start_mcp_server()
+        plan = self._build_launch_plan(mcp_env)
+        env = {**(mcp_env or {}), **plan.env} or None
         terminal = TerminalView(
             working_directory=str(self.project_path),
-            run_command=self._claude_cli_command(mcp_env),
-            env=mcp_env,
+            run_command=plan.command,
+            env=env,
         )
         self._mount_claude_pane(terminal)
 
@@ -1273,17 +1260,22 @@ class ProjectWindow(Adw.ApplicationWindow):
         """Start the CLI in a new tmux session (survives window restart).
 
         The stable (port, token) is injected into the tmux session environment
-        via ``-e`` so a reopened window can recover it with ``show-environment``.
+        via ``-e`` so a reopened window can recover it with ``show-environment``;
+        ``CC_PROVIDER`` records which agent runs inside, so a later reopen can
+        label "Reconnect" accurately.
         """
         mcp_env = self._start_mcp_server()
-        cli_command = self._claude_cli_command(mcp_env)
+        plan = self._build_launch_plan(mcp_env)
 
         tmux_argv = ["tmux", "-f", str(_TMUX_CONF), "new-session", "-s", name]
+        tmux_argv += ["-e", f"CC_PROVIDER={self.adapter.provider_id}"]
         if mcp_env is not None:
             tmux_argv += [
                 "-e", f"CC_MCP_PORT={mcp_env['CC_MCP_PORT']}",
                 "-e", f"CC_MCP_TOKEN={mcp_env['CC_MCP_TOKEN']}",
             ]
+        for var, value in plan.env.items():
+            tmux_argv += ["-e", f"{var}={value}"]
         # Pin the desktop session bus explicitly (issue #4): a tmux server
         # started outside the desktop session would otherwise hand children an
         # env without DBUS_SESSION_BUS_ADDRESS, and any GLib call in them would
@@ -1292,7 +1284,7 @@ class ProjectWindow(Adw.ApplicationWindow):
             value = os.environ.get(var)
             if value:
                 tmux_argv += ["-e", f"{var}={value}"]
-        tmux_argv.append(cli_command)  # session command, run by tmux via `sh -c`
+        tmux_argv.append(plan.command)  # session command, run by tmux via `sh -c`
 
         terminal = TerminalView(
             working_directory=str(self.project_path),
@@ -1340,14 +1332,15 @@ class ProjectWindow(Adw.ApplicationWindow):
     ) -> dict | None:
         """Start the per-window MCP server; return env vars for the CLI, or None.
 
-        Fresh session (no args): allocate a free port + new token and write the
-        temp ``--strict-mcp-config``. Re-attach (``port`` + ``token`` given):
-        re-bind the *same* stable endpoint an existing tmux session already
-        points at — no config is written, since the running CLI already read it.
+        Fresh session (no args): allocate a free port + new token (the adapter
+        writes its own MCP config from these in ``build_launch``). Re-attach
+        (``port`` + ``token`` given): re-bind the *same* stable endpoint an
+        existing tmux session already points at — the running CLI already read
+        its config once at launch.
 
         Returns a ``{CC_MCP_PORT, CC_MCP_TOKEN}`` dict, or None when MCP is
         disabled or startup failed (caller then launches/attaches bare). On
-        success sets ``self.mcp_server`` (and ``self._mcp_config_path`` when fresh).
+        success sets ``self.mcp_server``.
         """
         if not self.settings.get("mcp.enabled", True):
             return None
@@ -1382,23 +1375,6 @@ class ProjectWindow(Adw.ApplicationWindow):
             server.start(port, token)
             self.mcp_server = server
 
-            if not rebind:
-                # Temp --strict-mcp-config referencing the secret by env var, so
-                # the plaintext token never lands on disk.
-                config = {
-                    "mcpServers": {
-                        "code-companion": {
-                            "type": "http",
-                            "url": "http://127.0.0.1:${CC_MCP_PORT}/mcp",
-                            "headers": {"Authorization": "Bearer ${CC_MCP_TOKEN}"},
-                        }
-                    }
-                }
-                fd, config_path = tempfile.mkstemp(prefix="cc_mcp_", suffix=".json")
-                os.write(fd, json.dumps(config).encode())
-                os.close(fd)
-                self._mcp_config_path = config_path
-
             return {"CC_MCP_PORT": str(port), "CC_MCP_TOKEN": token}
         except Exception as exc:  # noqa: BLE001 - MCP is optional; fall back to bare CLI
             ToastService.show_error(f"MCP server failed to start: {exc}")
@@ -1406,22 +1382,21 @@ class ProjectWindow(Adw.ApplicationWindow):
             return None
 
     def _stop_mcp_server(self) -> None:
-        """Stop the MCP server and delete its temp config (idempotent)."""
+        """Stop the MCP server and delete launch temp files (idempotent).
+
+        Only read-once files land in ``_launch_temp_files`` — anything the CLI
+        needs for its whole lifetime (e.g. a notify wrapper script) is a stable
+        file the adapter owns, never listed here.
+        """
         if getattr(self, "mcp_server", None) is not None:
             self.mcp_server.stop()
             self.mcp_server = None
-        if getattr(self, "_mcp_config_path", None):
+        for path in getattr(self, "_launch_temp_files", []):
             try:
-                os.unlink(self._mcp_config_path)
+                os.unlink(path)
             except OSError:
                 pass
-            self._mcp_config_path = None
-        if getattr(self, "_notify_settings_path", None):
-            try:
-                os.unlink(self._notify_settings_path)
-            except OSError:
-                pass
-            self._notify_settings_path = None
+        self._launch_temp_files = []
 
     # --- Workspace collapse/expand (also the future MCP tool surface) ---
 

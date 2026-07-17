@@ -1,27 +1,27 @@
-"""Registry for AI CLI history adapters."""
+"""Registry for AI CLI provider adapters."""
 
-from .history_adapter import HistoryAdapter
+from .provider_adapter import ProviderAdapter
 from .adapters import ClaudeHistoryAdapter
 
 
 # Register all available adapters
 # Key is the provider ID used in settings
-ADAPTERS: dict[str, type[HistoryAdapter]] = {
+ADAPTERS: dict[str, type[ProviderAdapter]] = {
     "claude": ClaudeHistoryAdapter,
     # Future adapters:
     # "gemini": GeminiHistoryAdapter,
-    # "codex": CodexHistoryAdapter,
+    # "codex": CodexAdapter,
 }
 
 
-def get_adapter(provider: str) -> HistoryAdapter:
+def get_adapter(provider: str) -> ProviderAdapter:
     """Get adapter instance by provider name.
 
     Args:
         provider: Provider ID (e.g., "claude", "gemini")
 
     Returns:
-        HistoryAdapter instance
+        ProviderAdapter instance
 
     Raises:
         ValueError: If provider is unknown

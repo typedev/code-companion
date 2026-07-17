@@ -1,21 +1,42 @@
-"""Claude Code history adapter."""
+"""Claude Code provider adapter."""
 
+import json
+import os
+import shlex
+import tempfile
 from pathlib import Path
 
-from ..history_adapter import HistoryAdapter
+from ..provider_adapter import (
+    LaunchPlan,
+    McpEndpoint,
+    ProviderAdapter,
+    ProviderCapabilities,
+)
 from ..history import HistoryService
+from .. import session_notify
 from ...models import Session, SessionContent, SessionInsight
 
 
-class ClaudeHistoryAdapter(HistoryAdapter):
-    """Adapter for Claude Code CLI history.
+class ClaudeHistoryAdapter(ProviderAdapter):
+    """Adapter for the Claude Code CLI.
 
-    Reads session history from ~/.claude/projects/
+    Reads session history from ~/.claude/projects/ and builds the launch
+    command for the embedded session (MCP config, notification hooks,
+    appended system prompt).
     """
 
     name = "Claude Code"
+    provider_id = "claude"
     cli_command = "claude"
     icon_name = "claude"
+    capabilities = ProviderCapabilities(
+        mcp=True,
+        notifications=True,
+        notification_clears=True,
+        system_prompt_append=True,
+        resume=True,
+    )
+    instruction_filenames = ("CLAUDE.md",)
 
     def __init__(self):
         self._config_dir = Path.home() / ".claude"
@@ -46,3 +67,69 @@ class ClaudeHistoryAdapter(HistoryAdapter):
     def is_available(cls) -> bool:
         """Check if Claude Code is available (has ~/.claude directory)."""
         return (Path.home() / ".claude").exists()
+
+    def build_launch(
+        self,
+        *,
+        project_path: Path,
+        session_name: str,
+        mcp: McpEndpoint | None,
+        extra_system_prompt: str | None,
+        notifications: bool,
+    ) -> LaunchPlan:
+        """Build the ``claude`` launch command.
+
+        MCP config and hook settings are temp files the CLI reads once at
+        startup; the token reaches the config only as a ``${CC_MCP_TOKEN}``
+        placeholder, resolved from the process environment by Claude itself.
+        A failed temp-file write degrades that one feature (bare launch /
+        no notifications) instead of failing the launch.
+        """
+        command = self.cli_command
+        temp_files: list[Path] = []
+
+        if mcp is not None:
+            config = {
+                "mcpServers": {
+                    mcp.server_id: {
+                        "type": "http",
+                        "url": mcp.url(),
+                        "headers": {
+                            "Authorization": "Bearer ${%s}" % mcp.token_env
+                        },
+                    }
+                }
+            }
+            config_path = self._write_temp("cc_mcp_", config)
+            if config_path is not None:
+                temp_files.append(config_path)
+                command += (
+                    f" --strict-mcp-config"
+                    f" --mcp-config {shlex.quote(str(config_path))}"
+                )
+
+        if notifications:
+            settings_path = self._write_temp(
+                "cc_notify_", session_notify.hook_settings(session_name)
+            )
+            if settings_path is not None:
+                temp_files.append(settings_path)
+                command += f" --settings {shlex.quote(str(settings_path))}"
+
+        if extra_system_prompt:
+            command += (
+                f" --append-system-prompt {shlex.quote(extra_system_prompt)}"
+            )
+
+        return LaunchPlan(command=command, temp_files=temp_files)
+
+    @staticmethod
+    def _write_temp(prefix: str, payload: dict) -> Path | None:
+        """Write a read-once JSON temp file; None when the write fails."""
+        try:
+            fd, path = tempfile.mkstemp(prefix=prefix, suffix=".json")
+            os.write(fd, json.dumps(payload).encode())
+            os.close(fd)
+            return Path(path)
+        except OSError:
+            return None

@@ -1,5 +1,11 @@
 from .history import HistoryService
-from .history_adapter import HistoryAdapter
+from .provider_adapter import (
+    HistoryAdapter,
+    LaunchPlan,
+    McpEndpoint,
+    ProviderAdapter,
+    ProviderCapabilities,
+)
 from .adapter_registry import get_adapter, get_available_adapters, get_all_adapters
 from .adapters import ClaudeHistoryAdapter
 from .config_path import get_config_dir, migrate_config_if_needed
@@ -26,6 +32,10 @@ from .mcp_server import McpServer
 __all__ = [
     "HistoryService",
     "HistoryAdapter",
+    "ProviderAdapter",
+    "ProviderCapabilities",
+    "McpEndpoint",
+    "LaunchPlan",
     "get_adapter",
     "get_available_adapters",
     "get_all_adapters",
