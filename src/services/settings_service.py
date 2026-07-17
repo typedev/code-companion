@@ -49,6 +49,10 @@ DEFAULT_SETTINGS = {
         "enabled": False,
         "repo_url": "https://github.com/typedev/code-companion-sync",
         "last_good_commit": "",
+        # Auto-sync: run at PM start and then periodically in the background.
+        # The manual Sync button always works regardless.
+        "auto": True,
+        "auto_interval_minutes": 30,
         # ("mode" retired: the registry now exports on every sync; a stored
         # legacy value is simply ignored.)
         # Whitelist of ~/.claude.json project fields to sync. "hasTrustDialogAccepted"

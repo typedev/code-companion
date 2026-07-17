@@ -362,6 +362,13 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
         self._msg_seen = self._load_msg_seen()
         GLib.timeout_add_seconds(10, self._scan_messages)
 
+        # Auto-sync: one unattended run shortly after startup, then a 1-minute
+        # ticker that fires when sync.auto_interval_minutes has elapsed.
+        self._auto_sync_blocked = False
+        self._last_sync_at: int | None = None
+        GLib.timeout_add_seconds(5, self._auto_sync_startup)
+        GLib.timeout_add_seconds(60, self._auto_sync_tick)
+
     def _load_projects(self):
         """Load projects from registry and kick off a background status scan."""
         entries = self.registry.get_projects()
@@ -1470,11 +1477,21 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
         row.sync_badges = badges
 
     def _on_sync_clicked(self, _button, credentials: tuple[str, str] | None = None):
-        """Run a bidirectional sync of all registered projects."""
-        if self._syncing:
-            return
+        """Manual sync: the button (or a retry with fresh credentials)."""
         if not self.sync_service.is_configured():
             self._show_sync_config_dialog()
+            return
+        self._start_sync(credentials=credentials, silent=False)
+
+    def _start_sync(self, credentials: tuple[str, str] | None = None,
+                    *, silent: bool = False):
+        """Run a bidirectional sync of all registered projects off-thread.
+
+        ``silent`` marks an unattended (auto) run: it must never raise UI —
+        an AuthenticationRequired sets ``_auto_sync_blocked`` instead of
+        opening the credentials dialog.
+        """
+        if self._syncing:
             return
 
         paths = list(self._rows_by_path.keys())
@@ -1491,11 +1508,50 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
                 result = self.sync_service.sync(
                     paths, credentials=credentials, progress=progress
                 )
-                GLib.idle_add(self._on_sync_done, result)
+                GLib.idle_add(self._on_sync_done, result, silent)
             except AuthenticationRequired as exc:
-                GLib.idle_add(self._on_sync_auth_required, exc.remote_url)
+                if silent:
+                    GLib.idle_add(self._on_auto_sync_auth_blocked)
+                else:
+                    GLib.idle_add(self._on_sync_auth_required, exc.remote_url)
 
         threading.Thread(target=worker, daemon=True).start()
+
+    # -- auto-sync (startup + periodic; silent, dialog-free) ----------------
+
+    def _auto_sync_startup(self) -> bool:
+        """One-shot: sync shortly after the PM opens."""
+        self._maybe_auto_sync()
+        return False
+
+    def _auto_sync_tick(self) -> bool:
+        """Once a minute: fire a background sync when the interval elapsed."""
+        self._maybe_auto_sync()
+        return True
+
+    def _maybe_auto_sync(self):
+        settings = self.sync_service.settings
+        minutes_since_last = None
+        if self._last_sync_at is not None:
+            minutes_since_last = (GLib.get_monotonic_time() - self._last_sync_at) / 60e6
+        if SyncService.should_auto_sync(
+            configured=self.sync_service.is_configured(),
+            auto_enabled=bool(settings.get("sync.auto", True)),
+            syncing=self._syncing,
+            blocked=self._auto_sync_blocked,
+            minutes_since_last=minutes_since_last,
+            interval_minutes=int(settings.get("sync.auto_interval_minutes", 30) or 0),
+        ):
+            self._start_sync(silent=True)
+
+    def _on_auto_sync_auth_blocked(self):
+        """Unattended sync needs credentials: park auto-sync, hint the user."""
+        self._syncing = False
+        self.sync_button.set_sensitive(True)
+        self.refresh_spinner.stop()
+        self._auto_sync_blocked = True
+        self.updated_label.set_text("Sync needs auth — press Sync once")
+        return False
 
     def _apply_sync_status(self, status: ProjectSyncStatus):
         row = self._rows_by_path.get(status.local_path)
@@ -1515,10 +1571,14 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
                                      _remember: bool = True):
         self._on_sync_clicked(None, credentials=credentials)
 
-    def _on_sync_done(self, result):
+    def _on_sync_done(self, result, silent: bool = False):
         self._syncing = False
         self.sync_button.set_sensitive(True)
         self.refresh_spinner.stop()
+        self._last_sync_at = GLib.get_monotonic_time()
+        if not result.error and not silent:
+            # A successful attended run proves credentials work again.
+            self._auto_sync_blocked = False
         if result.error == "busy":
             self.updated_label.set_text("Sync busy on another instance")
         elif result.error:

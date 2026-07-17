@@ -479,3 +479,24 @@ def test_default_settings_never_mutated_by_set(tmp_path):
     home2 = tmp_path / "m2"
     svc2 = fresh_service(home2, "unused")
     assert svc2.settings.get("appearance.theme") == "system"
+
+
+
+# --------------------------------------------------------------------------- #
+# CP7 — auto-sync decision
+# --------------------------------------------------------------------------- #
+
+def test_should_auto_sync_matrix():
+    base = dict(configured=True, auto_enabled=True, syncing=False,
+                blocked=False, minutes_since_last=None, interval_minutes=30)
+
+    assert SyncService.should_auto_sync(**base) is True  # first run this session
+    assert SyncService.should_auto_sync(**{**base, "configured": False}) is False
+    assert SyncService.should_auto_sync(**{**base, "auto_enabled": False}) is False
+    assert SyncService.should_auto_sync(**{**base, "syncing": True}) is False
+    assert SyncService.should_auto_sync(**{**base, "blocked": True}) is False
+    assert SyncService.should_auto_sync(**{**base, "interval_minutes": 0}) is False
+
+    # Interval gating once a run happened.
+    assert SyncService.should_auto_sync(**{**base, "minutes_since_last": 29.9}) is False
+    assert SyncService.should_auto_sync(**{**base, "minutes_since_last": 30.0}) is True

@@ -501,6 +501,31 @@ class SyncService:
     # backup mode (registry export + restore)
     # ------------------------------------------------------------------ #
 
+    @staticmethod
+    def should_auto_sync(
+        *,
+        configured: bool,
+        auto_enabled: bool,
+        syncing: bool,
+        blocked: bool,
+        minutes_since_last: float | None,
+        interval_minutes: int,
+    ) -> bool:
+        """Whether an unattended background sync should fire now.
+
+        ``minutes_since_last`` is None when no sync ran yet this session (fire).
+        ``blocked`` is set after an unattended run hit AuthenticationRequired —
+        auto-sync must never pop a credentials dialog, so it stays silent until
+        a successful manual run clears the flag.
+        """
+        if not (configured and auto_enabled) or syncing or blocked:
+            return False
+        if interval_minutes <= 0:
+            return False
+        if minutes_since_last is None:
+            return True
+        return minutes_since_last >= interval_minutes
+
     def _export_registry(self, repo: SyncRepo, syncable) -> None:
         """Write global/registry.json — a portable map of all synced projects.
 
