@@ -416,9 +416,10 @@ def on_setting_changed(settings, key, value):
 | `linters.ignored_codes` | `""` | Comma-separated codes to ignore; bare = all linters, `linter:code` = scoped (e.g. "E402, shellcheck:SC2086") |
 | `mcp.enabled` | `true` | Per-window MCP control surface for the embedded session |
 | `sessions.notifications` | `true` | Desktop notifications from Claude Notification hooks |
-| `sync.enabled` | `false` | Cross-machine sync of history/memory/plans/summaries/messages |
+| `sync.enabled` | `false` | Cross-machine sync of history/memory/plans/summaries/messages/app-settings |
 | `sync.repo_url` | `""` | Private git remote that backs sync |
-| `sync.mode` | `"selected"` | `selected` (chosen projects) or `backup` (registry-wide) |
+| `sync.auto` | `true` | Auto-sync: at PM start + periodically in the background (silent; never pops dialogs) |
+| `sync.auto_interval_minutes` | `30` | Background sync interval (0 disables the periodic part) |
 | `ai.provider` | `"claude"` | Active AI-CLI adapter |
 
 > Config artifacts under `~/.config/code-companion/`: `settings.json`, `projects.json`,
