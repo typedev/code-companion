@@ -21,7 +21,7 @@ from .services.git_service import AuthenticationRequired, GitService
 from .services.issues_service import GitHubError
 from .services.sync_service import SyncService
 from .services.session_insight_service import SessionInsightService
-from .services.adapter_registry import get_adapter
+from .services.adapter_registry import get_adapter, resolve_provider
 from .services.settings_service import SettingsService
 from .services import model_pricing
 from .models.session import TokenUsage
@@ -626,10 +626,10 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
         indicator.remove_css_class("cc-live-dot-attention")
         if is_live and marker:
             indicator.add_css_class("cc-live-dot-attention")
-            indicator.set_tooltip_text(marker.get("message") or "Claude needs your attention")
+            indicator.set_tooltip_text(marker.get("message") or "Agent needs your attention")
         else:
             indicator.add_css_class("cc-live-dot")
-            indicator.set_tooltip_text("Claude session running")
+            indicator.set_tooltip_text("Agent session running")
 
     # -- live-session token badge (observability on the PM cards) ----------
 
@@ -647,13 +647,21 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
             return
         path = row.project_path
         pid = self._cached_project_id(path)
-        provider = SettingsService.get_instance().get("ai.provider", "claude")
+        default_provider = SettingsService.get_instance().get("ai.provider", "claude")
         row._live_tok_inflight = True
 
         def worker():
             insight = None
             try:
-                adapter = get_adapter(provider)
+                # The live session's provider wins (CC_PROVIDER in its tmux
+                # env); else the project's remembered choice; else the default.
+                live = claude_session.session_env(
+                    claude_session.session_name(path), "CC_PROVIDER"
+                )
+                per_project = self.registry.get_provider(path)
+                adapter = get_adapter(
+                    resolve_provider(live, per_project, default_provider)
+                )
                 insight = SessionInsightService.get_instance().get_latest_insight(
                     adapter, path, pid
                 )
@@ -768,9 +776,9 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
             if app is None:
                 continue
             cwd = marker.get("cwd") or ""
-            label = Path(cwd).name if cwd else "Claude"
-            notification = Gio.Notification.new(f"Claude · {label}")
-            notification.set_body(marker.get("message") or "Claude needs your attention")
+            label = Path(cwd).name if cwd else "Agent"
+            notification = Gio.Notification.new(f"Agent · {label}")
+            notification.set_body(marker.get("message") or "Agent needs your attention")
             app.send_notification(None, notification)
 
     def _update_orphan_affordance(self):

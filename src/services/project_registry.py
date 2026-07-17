@@ -52,12 +52,13 @@ class ProjectRegistry:
     def _normalize_entry(entry) -> dict | None:
         """Coerce a stored entry (legacy str or v2 dict) into a v2 dict."""
         if isinstance(entry, str):
-            return {"path": entry, "name": "", "last_opened": None}
+            return {"path": entry, "name": "", "last_opened": None, "provider": ""}
         if isinstance(entry, dict) and entry.get("path"):
             return {
                 "path": entry["path"],
                 "name": entry.get("name", "") or "",
                 "last_opened": entry.get("last_opened") or None,
+                "provider": entry.get("provider", "") or "",
             }
         return None
 
@@ -164,5 +165,24 @@ class ProjectRegistry:
         for entry in projects:
             if entry["path"] == normalized:
                 entry["name"] = name or ""
+                self._save(projects)
+                return
+
+    def get_provider(self, path: str) -> str | None:
+        """The project's chosen AI provider id, or None when never chosen."""
+        normalized = str(Path(path).resolve())
+        for entry in self._load():
+            if entry["path"] == normalized:
+                return entry.get("provider") or None
+        return None
+
+    def set_provider(self, path: str, provider: str):
+        """Remember the AI provider chosen for a project (per-project sticky)."""
+        projects = self._load()
+        normalized = str(Path(path).resolve())
+
+        for entry in projects:
+            if entry["path"] == normalized:
+                entry["provider"] = provider or ""
                 self._save(projects)
                 return

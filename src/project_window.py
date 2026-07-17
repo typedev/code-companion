@@ -10,8 +10,9 @@ from pathlib import Path
 from gi.repository import Adw, Gtk, GLib, Gdk, Gio
 
 from .models import Session
-from .services import get_adapter, ProjectLock, ProjectRegistry, GitService, IconCache, ToastService, SettingsService, FileMonitorService, IssuesService, McpServer, run_async
+from .services import get_adapter, get_available_adapters, ProjectLock, ProjectRegistry, GitService, IconCache, ToastService, SettingsService, FileMonitorService, IssuesService, McpServer, run_async
 from .services import LaunchPlan, McpEndpoint
+from .services.adapter_registry import resolve_provider
 from .services import session_notify, message_store
 from .utils import git_auth, claude_session
 from .utils.project_identity import resolve_message_address
@@ -100,9 +101,13 @@ class ProjectWindow(Adw.ApplicationWindow):
         # Get settings service (needed by _build_ui)
         self.settings = SettingsService.get_instance()
 
-        # Get AI adapter based on settings
-        provider = self.settings.get("ai.provider", "claude")
-        self.adapter = get_adapter(provider)
+        # Resolve the AI adapter: live session > per-project choice > default
+        self.adapter = get_adapter(self._resolve_initial_provider())
+
+        # Agent picker action (placeholder split-button menu items target it)
+        pick_action = Gio.SimpleAction.new("pick-agent", GLib.VariantType.new("s"))
+        pick_action.connect("activate", self._on_pick_agent)
+        self.add_action(pick_action)
 
         # Initial title without branch (git service not ready yet)
         self.set_title(f"{self.project_name} - Code Companion")
@@ -1078,7 +1083,13 @@ class ProjectWindow(Adw.ApplicationWindow):
             child = nxt
 
     def _show_claude_placeholder(self):
-        """Show the 'Start' placeholder in the Claude pane (no CLI running)."""
+        """Show the 'Start' placeholder in the Claude pane (no CLI running).
+
+        No live session and several installed agents → an ``Adw.SplitButton``:
+        the main click starts the current provider, the menu picks another
+        (remembered per project). A surviving tmux session already made the
+        choice, so it gets a plain "Reconnect to <its provider>" button.
+        """
         self._clear_claude_container()
 
         placeholder = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
@@ -1091,10 +1102,27 @@ class ProjectWindow(Adw.ApplicationWindow):
         live = shutil.which("tmux") and self._tmux_has_session(
             self._claude_session_name()
         )
-        label = f"Reconnect to {self.adapter.name}" if live else f"Start {self.adapter.name}"
+        if live:
+            self._sync_adapter_to_live_session()
 
-        start_btn = Gtk.Button(label=label)
-        start_btn.add_css_class("pill")
+        adapters = get_available_adapters()
+        if not live and len(adapters) > 1:
+            menu = Gio.Menu()
+            for provider_id, display_name in adapters:
+                item = Gio.MenuItem.new(f"Start {display_name}", None)
+                item.set_action_and_target_value(
+                    "win.pick-agent", GLib.Variant.new_string(provider_id)
+                )
+                menu.append_item(item)
+            start_btn = Adw.SplitButton(label=f"Start {self.adapter.name}")
+            start_btn.set_menu_model(menu)
+        else:
+            label = (
+                f"Reconnect to {self.adapter.name}" if live
+                else f"Start {self.adapter.name}"
+            )
+            start_btn = Gtk.Button(label=label)
+            start_btn.add_css_class("pill")
         start_btn.add_css_class("suggested-action")
         start_btn.connect("clicked", lambda _b: self._start_claude_session())
         placeholder.append(start_btn)
@@ -1107,6 +1135,58 @@ class ProjectWindow(Adw.ApplicationWindow):
             placeholder.append(hint)
 
         self.claude_container.append(placeholder)
+
+    def _resolve_initial_provider(self) -> str:
+        """Effective provider at window start (live session wins, then registry)."""
+        live = None
+        if shutil.which("tmux"):
+            live = claude_session.session_env(
+                self._claude_session_name(), "CC_PROVIDER"
+            )
+        return resolve_provider(
+            live,
+            self.registry.get_provider(str(self.project_path)),
+            self.settings.get("ai.provider", "claude"),
+        )
+
+    def _sync_adapter_to_live_session(self):
+        """Align ``self.adapter`` with the provider a surviving session runs.
+
+        A pre-upgrade session has no ``CC_PROVIDER`` in its tmux env — that
+        (or any unknown value) resolves to claude, matching what it runs.
+        """
+        live = claude_session.session_env(self._claude_session_name(), "CC_PROVIDER")
+        provider_id = resolve_provider(live, None, None)
+        if provider_id != self.adapter.provider_id:
+            self._apply_adapter(get_adapter(provider_id))
+
+    def _apply_adapter(self, adapter):
+        """Swap the active adapter and refresh the surfaces that render from it."""
+        self.adapter = adapter
+        panel = getattr(self, "claude_history_panel", None)
+        if panel is not None:
+            panel.set_adapter(adapter)
+        if self.session_detail_view is not None:
+            self.session_detail_view.adapter = adapter
+
+    def _set_provider(self, provider_id: str):
+        """Switch the agent for the NEXT session (no-op while one is running)."""
+        if self.claude_terminal is not None:
+            return
+        if provider_id == self.adapter.provider_id:
+            return
+        try:
+            adapter = get_adapter(provider_id)
+        except ValueError:
+            return
+        self._apply_adapter(adapter)
+        self.registry.set_provider(str(self.project_path), provider_id)
+        self._show_claude_placeholder()
+
+    def _on_pick_agent(self, _action, param):
+        """Placeholder menu: switch provider and start it right away."""
+        self._set_provider(param.get_string())
+        self._start_claude_session()
 
     def _claude_session_name(self) -> str:
         """Deterministic, machine-local tmux session name for this project."""

@@ -170,6 +170,18 @@ class ClaudeHistoryPanel(Gtk.Box):
         if not self._loaded and not self._loading:
             self.refresh()
 
+    def set_adapter(self, adapter: HistoryAdapter):
+        """Follow a provider switch: drop caches, reload if already visible."""
+        if adapter is self.adapter:
+            return
+        self.adapter = adapter
+        self._all_sessions = []
+        self._insights = {}
+        was_loaded = self._loaded
+        self._loaded = False
+        if was_loaded and not self._loading:
+            self.refresh()
+
     def refresh(self):
         """Refresh the sessions list (loads in background thread)."""
         if self._loading:

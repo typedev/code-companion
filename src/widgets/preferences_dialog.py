@@ -264,12 +264,15 @@ class PreferencesDialog(Adw.PreferencesDialog):
         # Provider group
         provider_group = Adw.PreferencesGroup()
         provider_group.set_title("AI Provider")
-        provider_group.set_description("Select which AI CLI tool to use for sessions")
+        provider_group.set_description(
+            "Used for projects without a per-project choice — pick per session "
+            "from the Start button in the agent pane"
+        )
 
         # Provider selector
         provider_row = Adw.ComboRow()
-        provider_row.set_title("Provider")
-        provider_row.set_subtitle("AI CLI tool for code assistance")
+        provider_row.set_title("Default agent")
+        provider_row.set_subtitle("AI CLI tool for new sessions")
 
         # Get all adapters
         adapters = get_all_adapters()
@@ -289,18 +292,6 @@ class PreferencesDialog(Adw.PreferencesDialog):
 
         provider_row.connect("notify::selected", self._on_provider_changed)
         provider_group.add(provider_row)
-
-        # Info label
-        info_label = Gtk.Label()
-        info_label.set_markup(
-            '<span size="small" alpha="60%">'
-            'More providers coming soon (Gemini CLI, Codex CLI, etc.)'
-            '</span>'
-        )
-        info_label.set_xalign(0)
-        info_label.set_margin_start(12)
-        info_label.set_margin_top(8)
-        provider_group.add(info_label)
 
         page.add(provider_group)
 

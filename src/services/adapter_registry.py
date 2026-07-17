@@ -46,6 +46,22 @@ def get_available_adapters() -> list[tuple[str, str]]:
     return available
 
 
+def resolve_provider(
+    live: str | None, per_project: str | None, default: str | None
+) -> str:
+    """Pick the effective provider id by precedence, skipping invalid choices.
+
+    Precedence: the provider a surviving live session runs (``CC_PROVIDER``
+    from its tmux env) > the project's remembered choice > the global default.
+    A candidate must be registered AND available; otherwise "claude".
+    """
+    for candidate in (live, per_project, default):
+        adapter_class = ADAPTERS.get(candidate) if candidate else None
+        if adapter_class is not None and adapter_class.is_available():
+            return candidate
+    return "claude"
+
+
 def get_all_adapters() -> list[tuple[str, str]]:
     """Get list of all registered adapters (available or not).
 
