@@ -13,6 +13,11 @@ from pathlib import Path
 
 from ..models import Session, SessionContent, SessionInsight
 
+# Union of every provider's canonical instruction file. UI surfaces that show
+# or protect "the agent instructions" (Notes → Docs, file monitors) use this
+# union: both files matter in a repo regardless of which agent runs right now.
+INSTRUCTION_FILENAMES: tuple[str, ...] = ("CLAUDE.md", "AGENTS.md")
+
 
 @dataclass(frozen=True)
 class ProviderCapabilities:

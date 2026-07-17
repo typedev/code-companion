@@ -6,7 +6,7 @@ from pathlib import Path
 
 from gi.repository import Gtk, Gdk, GObject, Adw
 
-from ..services import SnippetsService, RulesService, ToastService, GitService, FileStatus, FileMonitorService, run_async
+from ..services import SnippetsService, RulesService, ToastService, GitService, FileStatus, FileMonitorService, run_async, INSTRUCTION_FILENAMES
 from ..services.icon_cache import IconCache
 from ..services.config_path import get_config_dir
 from ..utils.markdown_tasks import count_checkboxes_in_file
@@ -303,10 +303,11 @@ class NotesPanel(Gtk.Box):
 
         doc_files = []
 
-        # CLAUDE.md in root
-        claude_md = self.project_path / "CLAUDE.md"
-        if claude_md.exists():
-            doc_files.append(claude_md)
+        # Agent instruction files in root (CLAUDE.md / AGENTS.md)
+        for name in INSTRUCTION_FILENAMES:
+            instruction_file = self.project_path / name
+            if instruction_file.exists():
+                doc_files.append(instruction_file)
 
         # docs/*.md
         docs_dir = self.project_path / "docs"
@@ -481,8 +482,8 @@ class NotesPanel(Gtk.Box):
             file_path: Path to the file
             section: One of "notes", "docs", "snippets" - determines behavior
         """
-        # Check if this is the protected CLAUDE.md file
-        is_protected = file_path.name == "CLAUDE.md"
+        # Agent instruction files (CLAUDE.md / AGENTS.md) are protected
+        is_protected = file_path.name in INSTRUCTION_FILENAMES
 
         row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
         row.add_css_class("notes-file-btn")
@@ -513,7 +514,7 @@ class NotesPanel(Gtk.Box):
         # Show relative path for docs, just filename for notes/snippets
         try:
             rel = file_path.relative_to(self.project_path)
-            display_name = str(rel) if "docs" in str(rel) or file_path.name == "CLAUDE.md" else file_path.name
+            display_name = str(rel) if "docs" in str(rel) or file_path.name in INSTRUCTION_FILENAMES else file_path.name
             relative_path = str(rel)
         except ValueError:
             display_name = file_path.name

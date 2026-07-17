@@ -290,6 +290,17 @@ class McpServer:
             return self._do_read_file(path, max_bytes)
 
         @mcp.tool()
+        def get_project_memory(name: str | None = None) -> dict:
+            """List or read this project's persistent agent memory (read-only).
+
+            The memory lives in Claude's per-project store but is served to ANY
+            connected provider (Codex, ...) through this tool. Without ``name``:
+            returns ``{files: [{path, size, mtime}]}``. With ``name`` (a listed
+            relative path): returns ``{content, truncated}``.
+            """
+            return self._do_get_project_memory(name)
+
+        @mcp.tool()
         def list_linters() -> dict:
             """List the linters this app knows about and their status for this project.
 
@@ -769,6 +780,47 @@ class McpServer:
         from . import workspace_readonly
         root = getattr(self.window, "project_path", None)
         return workspace_readonly.read_file(root, path, max_bytes) if root else {"ok": False, "error": "no project"}
+
+    _MEMORY_READ_CAP = 200_000  # bytes; memory files are small markdown notes
+
+    def _do_get_project_memory(self, name: str | None) -> dict:
+        """List/read files under the project's agent-memory dir (path-guarded)."""
+        from ..utils import claude_paths
+
+        root = getattr(self.window, "project_path", None)
+        if root is None:
+            return {"ok": False, "error": "no project"}
+        memory_root = claude_paths.project_memory_dir(root).resolve()
+        if not memory_root.is_dir():
+            return {"ok": True, "files": []} if name is None else {
+                "ok": False, "error": "no memory for this project"
+            }
+
+        if name is None:
+            files = []
+            for path in sorted(memory_root.rglob("*")):
+                if not path.is_file():
+                    continue
+                stat = path.stat()
+                files.append({
+                    "path": str(path.relative_to(memory_root)),
+                    "size": stat.st_size,
+                    "mtime": stat.st_mtime,
+                })
+            return {"ok": True, "files": files}
+
+        target = (memory_root / name).resolve()
+        if memory_root not in target.parents and target != memory_root:
+            return {"ok": False, "error": "path escapes the memory directory"}
+        if not target.is_file():
+            return {"ok": False, "error": f"no such memory file: {name}"}
+        try:
+            raw = target.read_bytes()
+        except OSError as exc:
+            return {"ok": False, "error": str(exc)}
+        truncated = len(raw) > self._MEMORY_READ_CAP
+        text = raw[: self._MEMORY_READ_CAP].decode("utf-8", errors="replace")
+        return {"ok": True, "content": text, "truncated": truncated}
 
     def _do_list_linters(self) -> dict:
         from .linter_registry import get_linters

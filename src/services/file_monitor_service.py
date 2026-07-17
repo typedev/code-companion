@@ -5,6 +5,7 @@ from pathlib import Path
 import gi
 
 from ..utils.git_worktree import resolve_worktree_dirs
+from .provider_adapter import INSTRUCTION_FILENAMES
 
 gi.require_version("Gio", "2.0")
 gi.require_version("GLib", "2.0")
@@ -162,14 +163,15 @@ class FileMonitorService(GObject.Object):
                     callback=self._on_notes_changed
                 )
 
-        # Also monitor CLAUDE.md
-        claude_md = self.project_path / "CLAUDE.md"
-        if claude_md.exists():
-            self._add_monitor(
-                claude_md,
-                is_file=True,
-                callback=self._on_notes_changed
-            )
+        # Also monitor the agent instruction files (CLAUDE.md / AGENTS.md)
+        for name in INSTRUCTION_FILENAMES:
+            instruction_file = self.project_path / name
+            if instruction_file.exists():
+                self._add_monitor(
+                    instruction_file,
+                    is_file=True,
+                    callback=self._on_notes_changed
+                )
 
     def _setup_tasks_monitor(self):
         """Set up monitor for VSCode tasks."""

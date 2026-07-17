@@ -1397,3 +1397,64 @@ def test_gui_input_error():
                   "action": "click", "dy": 0}
     )
     assert result["ok"] is False and "virtual pointer" in result["error"]
+
+
+# --------------------------------------------------------------------------- #
+# get_project_memory (Stage 4 knowledge layer)
+# --------------------------------------------------------------------------- #
+def _memory_setup(tmp_path, monkeypatch):
+    """A fake window over tmp project + a memory dir claude_paths points at."""
+    from src.utils import claude_paths
+
+    project = tmp_path / "proj"
+    project.mkdir()
+    memory = tmp_path / "memory"
+    (memory / "sub").mkdir(parents=True)
+    (memory / "MEMORY.md").write_text("# index\n", encoding="utf-8")
+    (memory / "sub" / "fact.md").write_text("a fact", encoding="utf-8")
+    monkeypatch.setattr(claude_paths, "project_memory_dir", lambda p: memory)
+    window = _FakeWindow()
+    window.project_path = project
+    return McpServer(window), memory
+
+
+def test_project_memory_list(tmp_path, monkeypatch):
+    srv, _ = _memory_setup(tmp_path, monkeypatch)
+    result = srv._do_get_project_memory(None)
+    assert result["ok"] is True
+    assert [f["path"] for f in result["files"]] == ["MEMORY.md", "sub/fact.md"]
+    assert all("size" in f and "mtime" in f for f in result["files"])
+
+
+def test_project_memory_read(tmp_path, monkeypatch):
+    srv, _ = _memory_setup(tmp_path, monkeypatch)
+    result = srv._do_get_project_memory("sub/fact.md")
+    assert result == {"ok": True, "content": "a fact", "truncated": False}
+
+
+def test_project_memory_traversal_rejected(tmp_path, monkeypatch):
+    srv, memory = _memory_setup(tmp_path, monkeypatch)
+    (tmp_path / "secret.txt").write_text("no", encoding="utf-8")
+    result = srv._do_get_project_memory("../secret.txt")
+    assert result["ok"] is False and "escapes" in result["error"]
+
+
+def test_project_memory_read_cap(tmp_path, monkeypatch):
+    srv, memory = _memory_setup(tmp_path, monkeypatch)
+    (memory / "big.md").write_text("x" * (srv._MEMORY_READ_CAP + 10), encoding="utf-8")
+    result = srv._do_get_project_memory("big.md")
+    assert result["truncated"] is True
+    assert len(result["content"]) == srv._MEMORY_READ_CAP
+
+
+def test_project_memory_missing_dir(tmp_path, monkeypatch):
+    from src.utils import claude_paths
+
+    monkeypatch.setattr(
+        claude_paths, "project_memory_dir", lambda p: tmp_path / "nope"
+    )
+    window = _FakeWindow()
+    window.project_path = tmp_path
+    srv = McpServer(window)
+    assert srv._do_get_project_memory(None) == {"ok": True, "files": []}
+    assert srv._do_get_project_memory("x.md")["ok"] is False

@@ -1,8 +1,9 @@
-"""Rules service for CLAUDE.md guidelines.
+"""Rules service for agent-instruction guidelines.
 
 Rules are stored as individual .md files in ~/.config/code-companion/rules/
 - Filename (without .md) = rule name
-- File content = rule text for copying into CLAUDE.md
+- File content = rule text for copying into the agent instructions file
+  (CLAUDE.md / AGENTS.md)
 """
 
 from pathlib import Path
@@ -52,7 +53,7 @@ Before implementing new features:
 
 
 class RulesService(GObject.Object):
-    """Singleton service for managing CLAUDE.md rules/guidelines.
+    """Singleton service for managing agent-instruction rules/guidelines.
 
     Rules are stored as .md files in ~/.config/code-companion/rules/
 

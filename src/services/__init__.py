@@ -1,5 +1,6 @@
 from .history import HistoryService
 from .provider_adapter import (
+    INSTRUCTION_FILENAMES,
     HistoryAdapter,
     LaunchPlan,
     McpEndpoint,
@@ -36,6 +37,7 @@ __all__ = [
     "ProviderCapabilities",
     "McpEndpoint",
     "LaunchPlan",
+    "INSTRUCTION_FILENAMES",
     "get_adapter",
     "get_available_adapters",
     "get_all_adapters",

@@ -308,10 +308,13 @@ class IconCache:
         "babel.config.js": "javascript",
         "babel.config.json": "javascript",
 
-        # Claude
+        # Agent instruction files
         "CLAUDE.md": "claude",
         "claude.md": "claude",
         ".claude": "claude",
+        "AGENTS.md": "codex",
+        "Agents.md": "codex",
+        ".codex": "codex",
 
         # Docs
         "README": "readme",
