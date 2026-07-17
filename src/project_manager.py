@@ -1469,6 +1469,14 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
             )
         elif state == SyncState.PAUSED:
             badge = self._make_badge("cc-badge-syncoff", "Sync busy on another instance", text="paused")
+        elif state == SyncState.NOT_SYNCABLE:
+            # Sync runs but can't back this project up — that's a silent data
+            # loss on an OS reinstall, so it warrants a visible warning.
+            badge = self._make_badge(
+                "cc-badge-syncoff",
+                status.detail or "This project has no git identity and is not backed up",
+                text="⚠ not backed up",
+            )
         # NOT_CONFIGURED / SYNCING render nothing to keep the row uncluttered.
 
         badges = [badge] if badge is not None else []

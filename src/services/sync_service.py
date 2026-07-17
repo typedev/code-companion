@@ -243,7 +243,10 @@ class SyncService:
                 continue
             ident = resolve_project_identity(path)
             if ident is None:
-                self._emit(result, progress, self._status(path, "", SyncState.NOT_CONFIGURED))
+                self._emit(result, progress, self._status(
+                    path, "", SyncState.NOT_SYNCABLE,
+                    detail="No git identity — make a commit (or add a remote) "
+                           "so this project can be backed up"))
             else:
                 syncable.append((str(Path(path).resolve()), ident))
 

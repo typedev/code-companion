@@ -15,7 +15,8 @@ SCHEMA_VERSION = 1
 class SyncState(Enum):
     """Per-project sync status, surfaced as a badge in the Project Manager."""
 
-    NOT_CONFIGURED = "not_configured"  # non-git project or sync disabled
+    NOT_CONFIGURED = "not_configured"  # sync disabled / linked worktree
+    NOT_SYNCABLE = "not_syncable"      # no git identity — cannot be backed up
     SYNCED = "synced"                  # local == base == repo
     AHEAD = "ahead"                    # exported local changes this run
     BEHIND = "behind"                  # imported remote changes this run

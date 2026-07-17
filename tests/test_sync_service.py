@@ -590,3 +590,45 @@ def test_refresh_from_disk_silently_reports_changes(tmp_path):
     assert ("appearance.theme", "dark") in changed
     assert seen == []  # silent: emission is the caller's (main-thread) job
     assert settings.get("appearance.theme") == "dark"
+
+
+
+
+# --------------------------------------------------------------------------- #
+# CP9 — non-syncable projects get a warning state
+# --------------------------------------------------------------------------- #
+
+def test_identity_less_project_reports_not_syncable(tmp_path):
+    bare = make_bare(tmp_path)
+    home = tmp_path / "m"
+    svc = fresh_service(home, str(bare))
+
+    # A plain directory (not git) and a git repo with no commits/remote.
+    plain = home / "work" / "notes"; plain.mkdir(parents=True)
+    empty_repo = home / "work" / "empty"; empty_repo.mkdir(parents=True)
+    git(home / "work", "init", "-q", str(empty_repo))
+
+    res = svc.sync([str(plain), str(empty_repo)])
+    for p in (plain, empty_repo):
+        status = res.per_project[str(p)]
+        assert status.state == SyncState.NOT_SYNCABLE
+        assert "git identity" in status.detail
+        # And the cached status round-trips for instant PM badges.
+        cached = svc.get_cached_status(str(p))
+        assert cached.state == SyncState.NOT_SYNCABLE
+
+
+def test_linked_worktree_still_not_configured(tmp_path):
+    bare = make_bare(tmp_path)
+    home = tmp_path / "m"
+    proj = make_project(home, "proj", "https://github.com/test/proj.git")
+    (proj / "f.txt").write_text("x")
+    git(proj, "add", "-A"); git(proj, "commit", "-q", "-m", "c1")
+    wt = home / "work" / "wt"
+    git(proj, "worktree", "add", "-q", str(wt), "-b", "feature")
+
+    svc = fresh_service(home, str(bare))
+    res = svc.sync([str(wt)])
+    status = res.per_project[str(wt)]
+    assert status.state == SyncState.NOT_CONFIGURED
+    assert "worktree" in status.detail
