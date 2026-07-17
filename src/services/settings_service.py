@@ -1,5 +1,6 @@
 """Settings service for application-wide configuration."""
 
+import copy
 import json
 from typing import Any
 
@@ -145,13 +146,18 @@ class SettingsService(GObject.Object):
             print(f"Failed to save settings: {e}")
 
     def _deep_merge(self, defaults: dict, overrides: dict) -> dict:
-        """Deep merge overrides into defaults."""
-        result = defaults.copy()
+        """Deep merge overrides into defaults.
+
+        The result must NOT share nested dicts with ``defaults``: ``set()``
+        mutates the merged tree in place, and a shared reference would corrupt
+        module-level DEFAULT_SETTINGS for every later instance (and ``reset()``).
+        """
+        result = copy.deepcopy(defaults)
         for key, value in overrides.items():
             if key in result and isinstance(result[key], dict) and isinstance(value, dict):
                 result[key] = self._deep_merge(result[key], value)
             else:
-                result[key] = value
+                result[key] = copy.deepcopy(value)
         return result
 
     def get(self, key: str, default: Any = None) -> Any:
@@ -211,7 +217,7 @@ class SettingsService(GObject.Object):
             key: Specific key to reset, or None to reset all
         """
         if key is None:
-            self._settings = DEFAULT_SETTINGS.copy()
+            self._settings = copy.deepcopy(DEFAULT_SETTINGS)
             self._save()
             self.emit("changed", "*", None)
         else:

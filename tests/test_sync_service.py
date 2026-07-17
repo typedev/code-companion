@@ -449,3 +449,18 @@ def test_sync_run_prunes_old_snapshots(tmp_path):
     ])
     assert svc.sync([str(proj)]).error is None
     assert len(run_dirs(svc)) == 3
+
+
+def test_default_settings_never_mutated_by_set(tmp_path):
+    # Regression: _deep_merge used to share nested dicts with DEFAULT_SETTINGS,
+    # so set() on one instance polluted the defaults for every later instance.
+    from src.services.settings_service import DEFAULT_SETTINGS
+
+    home1 = tmp_path / "m1"
+    svc1 = fresh_service(home1, "unused")
+    svc1.settings.set("appearance.theme", "dark")
+    assert DEFAULT_SETTINGS["appearance"]["theme"] == "system"
+
+    home2 = tmp_path / "m2"
+    svc2 = fresh_service(home2, "unused")
+    assert svc2.settings.get("appearance.theme") == "system"
