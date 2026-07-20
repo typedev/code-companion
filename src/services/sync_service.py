@@ -306,7 +306,7 @@ class SyncService:
                 snapshot=imp.snapshot_path,
             )
             self._emit(result, progress, status)
-            self._advance_base(ident, local_path, repo, conflicts)
+            self._advance_base(ident, local_path, repo, exp)
 
         if global_conflicts:
             result.global_ok = False
@@ -328,8 +328,12 @@ class SyncService:
             claude_json_fields=self._fields,
         )
 
-    def _advance_base(self, ident, local_path, repo, conflicts) -> None:
-        """New base = files where local and repo now agree (conflicts keep old base)."""
+    def _advance_base(self, ident, local_path, repo, exp) -> None:
+        """New base = files where local and repo agree, plus whatever we published.
+
+        Conflicted files keep the old base: they differ on both sides, so neither
+        pass below claims them.
+        """
         view = self._view(local_path, ident)
         repo_proj = repo.worktree() / "projects" / ident.project_id
         local_now = view.local_hashes()
@@ -339,6 +343,15 @@ class SyncService:
             hl, hr = local_now.get(rel), repo_now.get(rel)
             if hl is not None and hl == hr:
                 new_base[rel] = hl
+        # Files this run published. Re-reading local is not enough: an agent that
+        # rewrites a memory file mid-run leaves local != repo here, the file gets
+        # no base at all, and every later run then deadlocks on it (import says
+        # conflict, export refuses to clobber). What we wrote IS the new common
+        # ancestor. Guarded on the repo still holding it — a pull --rebase between
+        # the export and this point can have replaced it.
+        for rel, h in exp.published.items():
+            if repo_now.get(rel) == h:
+                new_base[rel] = h
         self.state.set_base(ident.project_id, new_base)
 
     @staticmethod
@@ -520,6 +533,7 @@ class SyncService:
 
         # re-read local after import for export decisions.
         local = local_bytes()
+        published: dict[str, str] = {}
         for rel in sorted(set(local) | set(repo_now) | set(base)):
             hl = E.hash_bytes(local[rel]) if rel in local else None
             hr = E.hash_bytes(repo_now[rel]) if rel in repo_now else None
@@ -530,10 +544,13 @@ class SyncService:
                 t = repo_target(rel)
                 t.parent.mkdir(parents=True, exist_ok=True)
                 t.write_bytes(local[rel])
+                published[rel] = E.hash_bytes(local[rel])
             elif action == "conflict":
                 conflicts.append("global/" + rel)
 
-        # advance global base (agreed files).
+        # advance global base (agreed files, plus whatever we published — see
+        # _advance_base: a local write racing the run must not strand a file
+        # without a base, or later runs deadlock on a phantom conflict).
         local = local_bytes()
         repo_now = repo_bytes()
         new_base = dict(base)
@@ -542,6 +559,9 @@ class SyncService:
             hr = E.hash_bytes(repo_now[rel]) if rel in repo_now else None
             if hl is not None and hl == hr:
                 new_base[rel] = hl
+        for rel, h in published.items():
+            if rel in repo_now and E.hash_bytes(repo_now[rel]) == h:
+                new_base[rel] = h
         self.state.set_base(_GLOBAL_ID, new_base)
         return conflicts
 

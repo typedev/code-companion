@@ -390,6 +390,15 @@ def _repo_write(repo_project_dir: Path, rel: str, data: bytes) -> None:
 class ExportReport:
     written: list[str] = field(default_factory=list)
     conflicts: list[str] = field(default_factory=list)
+    published: dict[str, str] = field(default_factory=dict)
+    """rel -> sha256 of the bytes this run actually wrote into the repo.
+
+    The caller advances the merge base from this rather than from a fresh read of
+    the disk: what we published *is* the new common ancestor even if the local
+    file has moved on since (an agent writing mid-run). Re-reading instead left
+    such a file with no base entry at all, which `decide_import`/`decide_export`
+    then deadlock on forever (conflict on import, never-clobber skip on export).
+    """
 
 
 @dataclass
@@ -423,8 +432,10 @@ def export_project(
             if h_local is None:
                 continue
             if h_repo is None:
-                _repo_write(repo_project_dir, rel, view.read_local_bytes(rel) or b"")
+                data = view.read_local_bytes(rel) or b""
+                _repo_write(repo_project_dir, rel, data)
                 report.written.append(rel)
+                report.published[rel] = hash_bytes(data)
             elif h_local != h_repo:
                 merged = merge_session_pair(
                     view.read_local_bytes(rel) or b"",
@@ -433,12 +444,15 @@ def export_project(
                 if hash_bytes(merged) != h_repo:
                     _repo_write(repo_project_dir, rel, merged)
                     report.written.append(rel)
+                    report.published[rel] = hash_bytes(merged)
             continue
 
         action = decide_export(h_local, h_base, h_repo)
         if action == "write":
-            _repo_write(repo_project_dir, rel, view.read_local_bytes(rel) or b"")
+            data = view.read_local_bytes(rel) or b""
+            _repo_write(repo_project_dir, rel, data)
             report.written.append(rel)
+            report.published[rel] = hash_bytes(data)
         elif action == "conflict":
             report.conflicts.append(rel)
     return report

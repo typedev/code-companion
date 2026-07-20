@@ -198,6 +198,45 @@ def test_same_file_conflict_is_not_destructive(tmp_path):
     assert (claude_proj_dir(homeB, projB) / "memory" / "M.md").read_text() == "BBB\n"
 
 
+def test_local_write_during_run_does_not_strand_the_base(tmp_path, monkeypatch):
+    """An agent rewriting a memory file mid-run must not deadlock later syncs.
+
+    The base used to be re-read from disk after commit/push, so a file written
+    between the export and that read got no base entry at all — and with no base,
+    import says "conflict" while export refuses to clobber, forever.
+    """
+    from src.services import sync_service as S
+    from src.utils.project_identity import resolve_project_identity
+
+    bare = make_bare(tmp_path)
+    origin = "https://github.com/test/proj.git"
+    homeA = tmp_path / "mA"
+    projA = make_project(homeA, "proj", origin)
+    seed_memory(homeA, projA, {"M.md": "v1\n"})
+
+    # Simulate the race: the local file is rewritten right after export read it.
+    real_export = S.E.export_project
+
+    def export_then_local_write(view, repo_project_dir, base):
+        report = real_export(view, repo_project_dir, base)
+        seed_memory(homeA, projA, {"M.md": "v1 + more\n"})
+        return report
+
+    monkeypatch.setattr(S.E, "export_project", export_then_local_write)
+    svc = fresh_service(homeA, str(bare))
+    assert svc.sync([str(projA)]).error is None
+    monkeypatch.undo()
+
+    # The base must record what we published, not what is on disk now.
+    pid = resolve_project_identity(projA).project_id
+    assert svc.state.get_base(pid).get("memory/M.md") is not None
+
+    # So the next run publishes the newer text cleanly instead of conflicting.
+    res = fresh_service(homeA, str(bare)).sync([str(projA)])
+    assert res.per_project[str(projA.resolve())].state != SyncState.CONFLICT
+    assert read_repo_file(tmp_path, bare, f"projects/{pid}/memory/M.md") == "v1 + more\n"
+
+
 def test_schema_guard_refuses_newer_repo(tmp_path):
     bare = make_bare(tmp_path)
     origin = "https://github.com/test/proj.git"
