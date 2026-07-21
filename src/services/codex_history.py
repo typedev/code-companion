@@ -194,6 +194,21 @@ class CodexHistoryService:
         """Codex has no per-project directory; return the sessions root."""
         return self.sessions_root if self.sessions_root.exists() else None
 
+    def rollout_paths_for_cwd(self, project_path: Path) -> list[Path]:
+        """Rollout file paths whose recorded cwd is this project (index-only).
+
+        Lean counterpart to ``get_sessions_for_path``: refreshes the first-line
+        index and filters by cwd, but never scans display metadata. Cheap enough
+        to call from the sync worker per project. Empty when Codex is unused.
+        """
+        if not self.sessions_root.exists():
+            return []
+        cwd = os.path.realpath(str(project_path))
+        with self._lock:
+            index = self._refresh_index()
+            return [Path(key) for key, entry in index.items()
+                    if entry.get("cwd") == cwd]
+
     def get_sessions_for_path(self, project_path: Path) -> list[Session]:
         """All Codex sessions whose recorded cwd is this project."""
         cwd = os.path.realpath(str(project_path))

@@ -176,11 +176,13 @@ Key patterns:
 - **Session supervisor**: `claude` runs as the root of a per-project **tmux** session
   (`cc-<sha1(path)>`), so restarting the IDE window re-attaches instead of killing the session;
   stable `(port, token)` recovered from the tmux env; PM shows live/attention dots
-- **Cross-machine sync**: git-backed 3-way merge (`sync_service`/`sync_engine`) of Claude history,
+- **Cross-machine sync**: git-backed 3-way merge (`sync_service`/`sync_engine`) of Claude history
+  **and Codex rollouts** (`~/.codex/sessions`, per-project via the `codex/` rel-prefix),
   memory, plans, session summaries, snippets/rules and the message store to a private remote;
   keyed by
-  `resolve_project_identity` (canonical git remote → stable `project_id`). Trigger model:
-  silent pull-only at PM start, manual push (Sync button)
+  `resolve_project_identity` (canonical git remote → stable `project_id`). Session/rollout
+  transcripts get a machine-independent `cwd` placeholder so native `/resume` works after a
+  cross-machine pull. Trigger model: silent pull-only at PM start, manual push (Sync button)
 - **Coordination hub**: `project_catalog` (list/resolve sibling projects) + `message_store`
   (event-sourced, synced inter-project mailbox); both exposed as MCP tools and a GUI Messages panel
 - **Credential keyring**: `CredentialService` stores git/GitHub PATs in libsecret (opt-in), with a
@@ -417,7 +419,7 @@ def on_setting_changed(settings, key, value):
 | `linters.ignored_codes` | `""` | Comma-separated codes to ignore; bare = all linters, `linter:code` = scoped (e.g. "E402, shellcheck:SC2086") |
 | `mcp.enabled` | `true` | Per-window MCP control surface for the embedded session |
 | `sessions.notifications` | `true` | Desktop notifications from Claude Notification hooks |
-| `sync.enabled` | `false` | Cross-machine sync of history/memory/plans/summaries/messages/app-settings |
+| `sync.enabled` | `false` | Cross-machine sync of Claude+Codex history/memory/plans/summaries/messages/app-settings |
 | `sync.repo_url` | `""` | Private git remote that backs sync |
 | `sync.pull_on_start` | `true` | Auto-pull the backup once at PM start (silent, pull-only, never pushes/pops dialogs). Every push is manual via the Sync button; there is no periodic background sync |
 | `ai.provider` | `"claude"` | Active AI-CLI adapter |

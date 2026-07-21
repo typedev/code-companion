@@ -26,6 +26,19 @@ from pathlib import Path
 CONFIG_REL = "claude-config.json"
 MEMORY_PREFIX = "memory/"
 SESSIONS_PREFIX = "sessions/"
+# Codex rollout transcripts (~/.codex/sessions/<YYYY/MM/DD>/rollout-*.jsonl).
+# Same append-only + cwd-placeholder treatment as Claude sessions; the date
+# subpath is preserved under the prefix so a restore lands them back in place.
+CODEX_PREFIX = "codex/"
+
+
+def _is_session_like(rel: str) -> bool:
+    """True for append-only transcript rels (Claude sessions or Codex rollouts).
+
+    These share the same handling: superset merge, cwd<->placeholder rewrite, and
+    destructive-only snapshotting. Memory/config rels are plain 3-way files.
+    """
+    return rel.startswith(SESSIONS_PREFIX) or rel.startswith(CODEX_PREFIX)
 
 
 # --------------------------------------------------------------------------- #
@@ -239,6 +252,10 @@ class LocalProjectView:
     memory_dir: Path        # project_dir/memory
     claude_json_path: Path  # ~/.claude.json
     claude_json_fields: list[str] = field(default_factory=list)
+    # Codex rollouts for this project (cwd-matched); root = ~/.codex/sessions.
+    # Empty when Codex is unused, so the codex layer is a pure no-op then.
+    codex_sessions_root: Path | None = None
+    codex_rollout_paths: list[Path] = field(default_factory=list)
 
     # --- reads ---
 
@@ -252,7 +269,7 @@ class LocalProjectView:
         if path is None or not path.exists():
             return None
         data = path.read_bytes()
-        if rel.startswith(SESSIONS_PREFIX):
+        if _is_session_like(rel):
             data = sanitize_jsonl(data)
             # Normalize the local project path to a machine-independent placeholder
             # *below* the hashing/merge layer, so synced files hash identically on
@@ -277,6 +294,11 @@ class LocalProjectView:
         if self.project_dir.exists():
             for p in sorted(self.project_dir.glob("*.jsonl")):
                 yield SESSIONS_PREFIX + p.name
+        if self.codex_sessions_root is not None:
+            for p in sorted(self.codex_rollout_paths):
+                if p.is_file():
+                    yield CODEX_PREFIX + p.relative_to(
+                        self.codex_sessions_root).as_posix()
         if self.read_local_bytes(CONFIG_REL) is not None:
             yield CONFIG_REL
 
@@ -285,6 +307,10 @@ class LocalProjectView:
             return self.memory_dir / rel[len(MEMORY_PREFIX):]
         if rel.startswith(SESSIONS_PREFIX):
             return self.project_dir / rel[len(SESSIONS_PREFIX):]
+        if rel.startswith(CODEX_PREFIX):
+            if self.codex_sessions_root is None:
+                return None
+            return self.codex_sessions_root / rel[len(CODEX_PREFIX):]
         return None  # CONFIG_REL is virtual
 
     # --- writes ---
@@ -311,7 +337,7 @@ class LocalProjectView:
 
     def materialized_bytes(self, rel: str, data: bytes) -> bytes:
         """The bytes write_local() would actually land on disk for `data`."""
-        if rel.startswith(SESSIONS_PREFIX):
+        if _is_session_like(rel):
             # Materialize the placeholder back to this machine's project path so
             # native /resume lists the session for the current working directory.
             return _placeholder_to_cwd(data, self.local_abs_path)
@@ -365,6 +391,11 @@ def _repo_hashes(repo_project_dir: Path) -> dict[str, str]:
     if sess.exists():
         for p in sorted(sess.glob("*.jsonl")):
             result[SESSIONS_PREFIX + p.name] = hash_file(p)
+    codex = repo_project_dir / "codex"
+    if codex.exists():
+        for p in sorted(codex.rglob("*.jsonl")):
+            if p.is_file():
+                result[CODEX_PREFIX + p.relative_to(codex).as_posix()] = hash_file(p)
     cfg = repo_project_dir / CONFIG_REL
     if cfg.exists():
         result[CONFIG_REL] = hash_file(cfg)
@@ -427,8 +458,8 @@ def export_project(
         h_base = base.get(rel)
         h_repo = repo.get(rel)
 
-        # Sessions: append-only union — publish local if it is a superset.
-        if rel.startswith(SESSIONS_PREFIX):
+        # Sessions/rollouts: append-only union — publish local if a superset.
+        if _is_session_like(rel):
             if h_local is None:
                 continue
             if h_repo is None:
@@ -507,8 +538,8 @@ def import_project(
         h_base = base.get(rel)
         h_repo = repo.get(rel)
 
-        # Sessions: union — materialize any repo session that is a superset.
-        if rel.startswith(SESSIONS_PREFIX):
+        # Sessions/rollouts: union — materialize any repo copy that is a superset.
+        if _is_session_like(rel):
             if h_repo is None:
                 continue
             repo_bytes = _repo_read(repo_project_dir, rel) or b""

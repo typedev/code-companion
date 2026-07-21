@@ -82,6 +82,25 @@ def seed_summary(home: Path, project_path: Path, content: str, title: str = "") 
     return key
 
 
+def seed_codex_rollout(home: Path, project_path: Path, rel_date: str, name: str,
+                       records: list[dict] | None = None) -> Path:
+    """Write a Codex rollout under home's ~/.codex/sessions/<rel_date>/<name>.
+
+    The first line is a ``session_meta`` event carrying the project's realpath as
+    ``cwd`` (that is how Codex records it and how the index keys sessions).
+    """
+    cwd = os.path.realpath(str(project_path))
+    root = home / ".codex" / "sessions" / rel_date
+    root.mkdir(parents=True, exist_ok=True)
+    lines = [json.dumps({"type": "session_meta",
+                         "payload": {"cwd": cwd, "id": name, "timestamp": "t"}})]
+    for rec in (records or [{"type": "response_item", "payload": {"n": 1}}]):
+        lines.append(json.dumps(rec))
+    path = root / name
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path
+
+
 def read_repo_file(tmp_path: Path, bare: Path, rel: str) -> str | None:
     """Clone the bare remote fresh and read a file from it."""
     check = tmp_path / f"check-{abs(hash(rel)) % 10000}"
@@ -130,6 +149,63 @@ def test_history_and_memory_roundtrip_between_machines(tmp_path):
     # settings rel agrees byte-for-byte.)
     assert not svcA.snapshots_dir.exists()
     assert not svcB.snapshots_dir.exists()
+
+
+def test_codex_history_roundtrip_between_machines(tmp_path):
+    """Codex rollouts sync per-project with the same cwd-placeholder remap."""
+    bare = make_bare(tmp_path)
+    origin = "https://github.com/test/proj.git"
+    rel_date, name = "2026/07/20", "rollout-2026-07-20T10-00-00-abc.jsonl"
+
+    # Machine A has a Codex rollout recorded for projA; push it.
+    homeA = tmp_path / "mA"
+    projA = make_project(homeA, "proj", origin)
+    seed_codex_rollout(homeA, projA, rel_date, name)
+    svcA = fresh_service(homeA, str(bare))
+    resA = svcA.sync([str(projA)])
+    assert resA.error is None
+    assert resA.per_project[str(projA.resolve())].state == SyncState.AHEAD
+
+    from src.utils.project_identity import resolve_project_identity
+    pid = resolve_project_identity(projA).project_id
+
+    # In the repo the rollout lives under codex/<date>/ with cwd placeholdered.
+    repo_rollout = read_repo_file(tmp_path, bare, f"projects/{pid}/codex/{rel_date}/{name}")
+    assert repo_rollout is not None
+    assert "__CC_PROJECT_ROOT__" in repo_rollout
+    assert os.path.realpath(str(projA)) not in repo_rollout
+
+    # Machine B (same origin, different path) pulls it into its own ~/.codex.
+    homeB = tmp_path / "mB"
+    projB = make_project(homeB, "proj-elsewhere", origin)
+    svcB = fresh_service(homeB, str(bare))
+    resB = svcB.sync([str(projB)])
+    assert resB.error is None
+    assert resB.per_project[str(projB.resolve())].state == SyncState.BEHIND
+
+    landed = homeB / ".codex" / "sessions" / rel_date / name
+    text = landed.read_text(encoding="utf-8")
+    # cwd is materialized back to B's own project path (native /resume works).
+    assert os.path.realpath(str(projB)) in text
+    assert "__CC_PROJECT_ROOT__" not in text
+    assert os.path.realpath(str(projA)) not in text
+
+
+def test_sync_without_codex_home_is_noop(tmp_path):
+    """A machine that never used Codex syncs Claude data with no codex/ rels."""
+    bare = make_bare(tmp_path)
+    origin = "https://github.com/test/proj.git"
+    homeA = tmp_path / "mA"
+    projA = make_project(homeA, "proj", origin)
+    seed_memory(homeA, projA, {"M.md": "m\n"})
+    res = fresh_service(homeA, str(bare)).sync([str(projA)])
+    assert res.error is None
+
+    from src.utils.project_identity import resolve_project_identity
+    pid = resolve_project_identity(projA).project_id
+    # No ~/.codex on this machine → nothing under codex/ in the repo.
+    assert read_repo_file(tmp_path, bare, f"projects/{pid}/codex/x.jsonl") is None
+    assert not (homeA / ".codex").exists()
 
 
 def test_different_projects_on_two_machines_do_not_clobber(tmp_path):

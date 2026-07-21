@@ -331,12 +331,17 @@ class SyncService:
     # ------------------------------------------------------------------ #
 
     def _view(self, local_path: str, ident: ProjectIdentity) -> LocalProjectView:
+        # Codex rollouts for this project (empty / no-op when Codex is unused).
+        from .codex_history import CodexHistoryService
+        codex = CodexHistoryService()
         return LocalProjectView(
             local_abs_path=local_path,
             project_dir=claude_paths.project_dir(local_path),
             memory_dir=claude_paths.project_memory_dir(local_path),
             claude_json_path=claude_paths.claude_json(),
             claude_json_fields=self._fields,
+            codex_sessions_root=codex.sessions_root,
+            codex_rollout_paths=codex.rollout_paths_for_cwd(Path(local_path)),
         )
 
     def _advance_base(self, ident, local_path, repo, exp) -> None:

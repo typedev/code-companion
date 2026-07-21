@@ -25,7 +25,8 @@ Before wiping the OS, note that after restoring you must manually:
    servers) — re-login to Claude Code; other per-project config re-syncs.
 4. **Press Sync (push) once on the old machine before wiping.** The startup run is
    pull-only and every push is manual, so the last local state only leaves the
-   machine when you click Sync.
+   machine when you click Sync. (Claude history AND Codex rollouts under
+   `~/.codex/sessions` are both carried by that push.)
 
 ## Context
 
