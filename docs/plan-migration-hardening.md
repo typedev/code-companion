@@ -23,7 +23,9 @@ Before wiping the OS, note that after restoring you must manually:
    `paired-devices.json`, `dispatch-tokens.json` are per-machine secrets.
 3. **`~/.claude.json` beyond the 3 synced fields** (OAuth/account, global MCP
    servers) — re-login to Claude Code; other per-project config re-syncs.
-4. Run one final Sync on the old machine (auto-sync makes this near-automatic).
+4. **Press Sync (push) once on the old machine before wiping.** The startup run is
+   pull-only and every push is manual, so the last local state only leaves the
+   machine when you click Sync.
 
 ## Context
 

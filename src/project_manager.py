@@ -372,12 +372,10 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
         self._msg_seen = self._load_msg_seen()
         GLib.timeout_add_seconds(10, self._scan_messages)
 
-        # Auto-sync: one unattended run shortly after startup, then a 1-minute
-        # ticker that fires when sync.auto_interval_minutes has elapsed.
+        # Fetch the backup once shortly after startup (silent pull-only). Every
+        # push is manual — there is no periodic background sync.
         self._auto_sync_blocked = False
-        self._last_sync_at: int | None = None
         GLib.timeout_add_seconds(5, self._auto_sync_startup)
-        GLib.timeout_add_seconds(60, self._auto_sync_tick)
 
     def _load_projects(self):
         """Load projects from registry and kick off a background status scan."""
@@ -1502,12 +1500,13 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
         self._start_sync(credentials=credentials, silent=False)
 
     def _start_sync(self, credentials: tuple[str, str] | None = None,
-                    *, silent: bool = False):
-        """Run a bidirectional sync of all registered projects off-thread.
+                    *, silent: bool = False, push: bool = True):
+        """Run a sync of all registered projects off-thread.
 
-        ``silent`` marks an unattended (auto) run: it must never raise UI —
+        ``silent`` marks an unattended (startup) run: it must never raise UI —
         an AuthenticationRequired sets ``_auto_sync_blocked`` instead of
-        opening the credentials dialog.
+        opening the credentials dialog. ``push=False`` is the pull-only startup
+        run (fetch the backup without sending anything).
         """
         if self._syncing:
             return
@@ -1516,7 +1515,7 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
         self._syncing = True
         self.sync_button.set_sensitive(False)
         self.refresh_spinner.start()
-        self.updated_label.set_text("Syncing…")
+        self.updated_label.set_text("Pulling…" if not push else "Syncing…")
 
         def worker():
             def progress(status: ProjectSyncStatus):
@@ -1524,7 +1523,7 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
 
             try:
                 result = self.sync_service.sync(
-                    paths, credentials=credentials, progress=progress
+                    paths, credentials=credentials, progress=progress, push=push
                 )
                 GLib.idle_add(self._on_sync_done, result, silent)
             except AuthenticationRequired as exc:
@@ -1535,32 +1534,23 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
 
         threading.Thread(target=worker, daemon=True).start()
 
-    # -- auto-sync (startup + periodic; silent, dialog-free) ----------------
+    # -- startup pull (silent, pull-only, dialog-free) ----------------------
 
     def _auto_sync_startup(self) -> bool:
-        """One-shot: sync shortly after the PM opens."""
-        self._maybe_auto_sync()
-        return False
+        """One-shot pull-only run shortly after the PM opens.
 
-    def _auto_sync_tick(self) -> bool:
-        """Once a minute: fire a background sync when the interval elapsed."""
-        self._maybe_auto_sync()
-        return True
-
-    def _maybe_auto_sync(self):
+        Fetches the backup so other machines' work lands automatically. Every
+        push stays manual (the Sync button), so this never writes to the remote.
+        """
         settings = self.sync_service.settings
-        minutes_since_last = None
-        if self._last_sync_at is not None:
-            minutes_since_last = (GLib.get_monotonic_time() - self._last_sync_at) / 60e6
-        if SyncService.should_auto_sync(
+        if SyncService.should_pull_on_start(
             configured=self.sync_service.is_configured(),
-            auto_enabled=bool(settings.get("sync.auto", True)),
+            enabled=bool(settings.get("sync.pull_on_start", True)),
             syncing=self._syncing,
             blocked=self._auto_sync_blocked,
-            minutes_since_last=minutes_since_last,
-            interval_minutes=int(settings.get("sync.auto_interval_minutes", 30) or 0),
         ):
-            self._start_sync(silent=True)
+            self._start_sync(silent=True, push=False)
+        return False
 
     def _on_auto_sync_auth_blocked(self):
         """Unattended sync needs credentials: park auto-sync, hint the user."""
@@ -1593,7 +1583,6 @@ class ProjectManagerWindow(Adw.ApplicationWindow):
         self._syncing = False
         self.sync_button.set_sensitive(True)
         self.refresh_spinner.stop()
-        self._last_sync_at = GLib.get_monotonic_time()
         if not result.error:
             # Synced app settings were merged (file + memory) by the worker;
             # emit their changed signals here on the main thread (live apply).

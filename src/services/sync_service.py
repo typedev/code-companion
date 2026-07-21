@@ -162,8 +162,15 @@ class SyncService:
         project_paths: list[str],
         credentials: tuple[str, str] | None = None,
         progress=None,
+        push: bool = True,
     ) -> SyncResult:
-        """Run a full bidirectional sync. Blocking — call off the GTK thread.
+        """Run a sync. Blocking — call off the GTK thread.
+
+        ``push=True`` (default) is the full bidirectional run: import remote
+        changes, then export/commit/push local ones. ``push=False`` is a
+        pull-only run: integrate the remote and materialize inbound changes, but
+        never write to, commit, or push the sync repo. The PM uses pull-only at
+        startup so the backup is fetched automatically while sending stays manual.
 
         Raises ``AuthenticationRequired`` so the caller can drive the creds dialog.
         """
@@ -176,7 +183,7 @@ class SyncService:
                 self._emit(result, progress, self._status(path, "", SyncState.PAUSED))
             return result
         try:
-            self._run(project_paths, credentials, result, progress)
+            self._run(project_paths, credentials, result, progress, push=push)
         except AuthenticationRequired:
             raise
         except Exception as exc:  # noqa: BLE001 — surface as ERROR, never crash the UI
@@ -209,7 +216,7 @@ class SyncService:
         except OSError:
             pass
 
-    def _run(self, project_paths, credentials, result, progress):
+    def _run(self, project_paths, credentials, result, progress, push=True):
         repo = SyncRepo(self.clone_path, self.settings.get("sync.repo_url"))
 
         # 0. clone if missing + heal a crashed prior run.
@@ -261,43 +268,47 @@ class SyncService:
             base = self.state.get_base(ident.project_id)
 
             imp = E.import_project(view, repo_proj, base, snap_root / ident.project_id)
-            exp = E.export_project(view, repo_proj, base)
-            self._write_meta(repo_proj, ident)
+            # Pull-only never writes to the repo: skip the outbound half.
+            exp = None
+            if push:
+                exp = E.export_project(view, repo_proj, base)
+                self._write_meta(repo_proj, ident)
             per_project_reports[ident.project_id] = (local_path, ident, imp, exp)
 
-        # Global layer (plans + settings).
-        global_conflicts = self._sync_global(repo, snap_root)
+        # Global layer (plans + settings). Pull-only imports but never exports.
+        global_conflicts = self._sync_global(repo, snap_root, push=push)
 
-        # Always record the project registry for clean-OS restore: the list of
-        # projects (+ names/remotes) is tiny and without it a fresh machine has
-        # nothing to enumerate. (This retired the old "backup mode" toggle —
-        # registry export was the only thing sync.mode ever controlled.)
-        self._export_registry(repo, syncable)
-
-        # Ensure manifest is present/current.
-        self._write_manifest(repo)
-
-        # 5. commit.
-        host = socket.gethostname()
-        stamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
-        changed = repo.commit_all(f"sync {host} {stamp}")
-
-        # 6. integrate + push.
         push_blocked_ids: set[str] = set()
-        if changed:
-            try:
-                repo.pull_rebase(credentials)
-            except RebaseConflict as conflict:
-                repo.abort_rebase()
-                push_blocked_ids = self._ids_from_paths(conflict.paths)
-            else:
+        if push:
+            # Always record the project registry for clean-OS restore: the list
+            # of projects (+ names/remotes) is tiny and without it a fresh machine
+            # has nothing to enumerate. (This retired the old "backup mode" toggle
+            # — registry export was the only thing sync.mode ever controlled.)
+            self._export_registry(repo, syncable)
+
+            # Ensure manifest is present/current.
+            self._write_manifest(repo)
+
+            # 5. commit.
+            host = socket.gethostname()
+            stamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
+            changed = repo.commit_all(f"sync {host} {stamp}")
+
+            # 6. integrate + push.
+            if changed:
+                try:
+                    repo.pull_rebase(credentials)
+                except RebaseConflict as conflict:
+                    repo.abort_rebase()
+                    push_blocked_ids = self._ids_from_paths(conflict.paths)
+                else:
+                    repo.push(credentials)
+            elif repo.has_unpushed_commits():
                 repo.push(credentials)
-        elif repo.has_unpushed_commits():
-            repo.push(credentials)
 
         # 7 + 8. per-project status, base advance, manifest / last_good_commit.
         for pid, (local_path, ident, imp, exp) in per_project_reports.items():
-            conflicts = list(imp.conflicts) + list(exp.conflicts)
+            conflicts = list(imp.conflicts) + (list(exp.conflicts) if exp else [])
             if pid in push_blocked_ids:
                 conflicts.append("(push blocked by remote change)")
             state, detail = self._classify(imp, exp, conflicts)
@@ -332,7 +343,8 @@ class SyncService:
         """New base = files where local and repo agree, plus whatever we published.
 
         Conflicted files keep the old base: they differ on both sides, so neither
-        pass below claims them.
+        pass below claims them. ``exp`` is None on a pull-only run (nothing was
+        published), so only the agreed-files half applies.
         """
         view = self._view(local_path, ident)
         repo_proj = repo.worktree() / "projects" / ident.project_id
@@ -343,6 +355,9 @@ class SyncService:
             hl, hr = local_now.get(rel), repo_now.get(rel)
             if hl is not None and hl == hr:
                 new_base[rel] = hl
+        if exp is None:
+            self.state.set_base(ident.project_id, new_base)
+            return
         # Files this run published. Re-reading local is not enough: an agent that
         # rewrites a memory file mid-run leaves local != repo here, the file gets
         # no base at all, and every later run then deadlocks on it (import says
@@ -358,7 +373,8 @@ class SyncService:
     def _classify(imp, exp, conflicts) -> tuple[SyncState, str]:
         if conflicts:
             return SyncState.CONFLICT, f"{len(conflicts)} conflict(s)"
-        if exp.written:
+        # exp is None on a pull-only run — it can only ever be BEHIND or SYNCED.
+        if exp is not None and exp.written:
             return SyncState.AHEAD, f"pushed {len(exp.written)} file(s)"
         if imp.materialized:
             return SyncState.BEHIND, f"updated {len(imp.materialized)} file(s)"
@@ -386,7 +402,7 @@ class SyncService:
     # global layer (plans + settings + snippets/rules)
     # ------------------------------------------------------------------ #
 
-    def _sync_global(self, repo: SyncRepo, snap_root: Path) -> list[str]:
+    def _sync_global(self, repo: SyncRepo, snap_root: Path, push: bool = True) -> list[str]:
         global_dir = repo.worktree() / "global"
         plans_local = claude_paths.plans_dir()
         settings_local = claude_paths.settings_json()
@@ -534,19 +550,23 @@ class SyncService:
         # re-read local after import for export decisions.
         local = local_bytes()
         published: dict[str, str] = {}
-        for rel in sorted(set(local) | set(repo_now) | set(base)):
-            hl = E.hash_bytes(local[rel]) if rel in local else None
-            hr = E.hash_bytes(repo_now[rel]) if rel in repo_now else None
-            action = decide_export(hl, base.get(rel), hr)
-            if rel == "app-settings.json" and action == "conflict":
-                action = "write"  # publish the merged union (see import pass)
-            if action == "write" and rel in local:
-                t = repo_target(rel)
-                t.parent.mkdir(parents=True, exist_ok=True)
-                t.write_bytes(local[rel])
-                published[rel] = E.hash_bytes(local[rel])
-            elif action == "conflict":
-                conflicts.append("global/" + rel)
+        # Pull-only never writes to the repo — skip the whole outbound pass. The
+        # base-advance below still runs (published is empty, so it only claims
+        # files where local and repo now agree, i.e. what import materialized).
+        if push:
+            for rel in sorted(set(local) | set(repo_now) | set(base)):
+                hl = E.hash_bytes(local[rel]) if rel in local else None
+                hr = E.hash_bytes(repo_now[rel]) if rel in repo_now else None
+                action = decide_export(hl, base.get(rel), hr)
+                if rel == "app-settings.json" and action == "conflict":
+                    action = "write"  # publish the merged union (see import pass)
+                if action == "write" and rel in local:
+                    t = repo_target(rel)
+                    t.parent.mkdir(parents=True, exist_ok=True)
+                    t.write_bytes(local[rel])
+                    published[rel] = E.hash_bytes(local[rel])
+                elif action == "conflict":
+                    conflicts.append("global/" + rel)
 
         # advance global base (agreed files, plus whatever we published — see
         # _advance_base: a local write racing the run must not strand a file
@@ -570,29 +590,21 @@ class SyncService:
     # ------------------------------------------------------------------ #
 
     @staticmethod
-    def should_auto_sync(
+    def should_pull_on_start(
         *,
         configured: bool,
-        auto_enabled: bool,
+        enabled: bool,
         syncing: bool,
         blocked: bool,
-        minutes_since_last: float | None,
-        interval_minutes: int,
     ) -> bool:
-        """Whether an unattended background sync should fire now.
+        """Whether the silent pull-only run should fire when the PM opens.
 
-        ``minutes_since_last`` is None when no sync ran yet this session (fire).
-        ``blocked`` is set after an unattended run hit AuthenticationRequired —
-        auto-sync must never pop a credentials dialog, so it stays silent until
-        a successful manual run clears the flag.
+        There is no periodic auto-sync anymore: the PM pulls once at startup and
+        every push is manual. ``blocked`` is set after a silent run hit
+        AuthenticationRequired — the startup pull must never pop a credentials
+        dialog, so it stays silent until a successful manual Sync clears the flag.
         """
-        if not (configured and auto_enabled) or syncing or blocked:
-            return False
-        if interval_minutes <= 0:
-            return False
-        if minutes_since_last is None:
-            return True
-        return minutes_since_last >= interval_minutes
+        return configured and enabled and not syncing and not blocked
 
     def _export_registry(self, repo: SyncRepo, syncable) -> None:
         """Write global/registry.json — a portable map of all synced projects.

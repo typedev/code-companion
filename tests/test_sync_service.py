@@ -522,23 +522,55 @@ def test_default_settings_never_mutated_by_set(tmp_path):
 
 
 # --------------------------------------------------------------------------- #
-# CP7 — auto-sync decision
+# CP7 — startup pull decision
 # --------------------------------------------------------------------------- #
 
-def test_should_auto_sync_matrix():
-    base = dict(configured=True, auto_enabled=True, syncing=False,
-                blocked=False, minutes_since_last=None, interval_minutes=30)
+def test_should_pull_on_start_matrix():
+    base = dict(configured=True, enabled=True, syncing=False, blocked=False)
 
-    assert SyncService.should_auto_sync(**base) is True  # first run this session
-    assert SyncService.should_auto_sync(**{**base, "configured": False}) is False
-    assert SyncService.should_auto_sync(**{**base, "auto_enabled": False}) is False
-    assert SyncService.should_auto_sync(**{**base, "syncing": True}) is False
-    assert SyncService.should_auto_sync(**{**base, "blocked": True}) is False
-    assert SyncService.should_auto_sync(**{**base, "interval_minutes": 0}) is False
+    assert SyncService.should_pull_on_start(**base) is True
+    assert SyncService.should_pull_on_start(**{**base, "configured": False}) is False
+    assert SyncService.should_pull_on_start(**{**base, "enabled": False}) is False
+    assert SyncService.should_pull_on_start(**{**base, "syncing": True}) is False
+    assert SyncService.should_pull_on_start(**{**base, "blocked": True}) is False
 
-    # Interval gating once a run happened.
-    assert SyncService.should_auto_sync(**{**base, "minutes_since_last": 29.9}) is False
-    assert SyncService.should_auto_sync(**{**base, "minutes_since_last": 30.0}) is True
+
+def test_pull_only_run_fetches_without_publishing(tmp_path):
+    """push=False imports the remote but never writes/commits/pushes the repo."""
+    bare = make_bare(tmp_path)
+    origin = "https://github.com/test/proj.git"
+
+    # Machine A publishes M.md via a full sync.
+    homeA = tmp_path / "mA"
+    projA = make_project(homeA, "proj", origin)
+    seed_memory(homeA, projA, {"M.md": "fromA\n"})
+    fresh_service(homeA, str(bare)).sync([str(projA)])
+    head_before = git(bare, "rev-parse", "HEAD")
+
+    # Machine B has a purely local memory file that a full sync WOULD export.
+    homeB = tmp_path / "mB"
+    projB = make_project(homeB, "proj", origin)
+    seed_memory(homeB, projB, {"LOCAL.md": "onlyB\n"})
+    svcB = fresh_service(homeB, str(bare))
+    resB = svcB.sync([str(projB)], push=False)
+
+    from src.utils.project_identity import resolve_project_identity
+    pid = resolve_project_identity(projB).project_id
+    memB = claude_proj_dir(homeB, projB) / "memory"
+
+    # B pulled A's file in and kept its own — but published nothing.
+    assert resB.error is None
+    assert (memB / "M.md").read_text() == "fromA\n"      # materialized inbound
+    assert (memB / "LOCAL.md").read_text() == "onlyB\n"  # local untouched
+    assert resB.per_project[str(projB.resolve())].state == SyncState.BEHIND
+    assert git(bare, "rev-parse", "HEAD") == head_before  # repo HEAD did not move
+    assert read_repo_file(tmp_path, bare, f"projects/{pid}/memory/LOCAL.md") is None
+
+    # A later manual (full) sync on B still pushes the local file — pull-only
+    # left the base in a state that lets the outbound half proceed normally.
+    resB2 = svcB.sync([str(projB)])
+    assert resB2.per_project[str(projB.resolve())].state == SyncState.AHEAD
+    assert read_repo_file(tmp_path, bare, f"projects/{pid}/memory/LOCAL.md") == "onlyB\n"
 
 
 # --------------------------------------------------------------------------- #

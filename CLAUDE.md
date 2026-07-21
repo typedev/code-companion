@@ -179,7 +179,8 @@ Key patterns:
 - **Cross-machine sync**: git-backed 3-way merge (`sync_service`/`sync_engine`) of Claude history,
   memory, plans, session summaries, snippets/rules and the message store to a private remote;
   keyed by
-  `resolve_project_identity` (canonical git remote → stable `project_id`)
+  `resolve_project_identity` (canonical git remote → stable `project_id`). Trigger model:
+  silent pull-only at PM start, manual push (Sync button)
 - **Coordination hub**: `project_catalog` (list/resolve sibling projects) + `message_store`
   (event-sourced, synced inter-project mailbox); both exposed as MCP tools and a GUI Messages panel
 - **Credential keyring**: `CredentialService` stores git/GitHub PATs in libsecret (opt-in), with a
@@ -418,8 +419,7 @@ def on_setting_changed(settings, key, value):
 | `sessions.notifications` | `true` | Desktop notifications from Claude Notification hooks |
 | `sync.enabled` | `false` | Cross-machine sync of history/memory/plans/summaries/messages/app-settings |
 | `sync.repo_url` | `""` | Private git remote that backs sync |
-| `sync.auto` | `true` | Auto-sync: at PM start + periodically in the background (silent; never pops dialogs) |
-| `sync.auto_interval_minutes` | `30` | Background sync interval (0 disables the periodic part) |
+| `sync.pull_on_start` | `true` | Auto-pull the backup once at PM start (silent, pull-only, never pushes/pops dialogs). Every push is manual via the Sync button; there is no periodic background sync |
 | `ai.provider` | `"claude"` | Active AI-CLI adapter |
 
 > Config artifacts under `~/.config/code-companion/`: `settings.json`, `projects.json`,
